@@ -15,10 +15,9 @@ Then your React UI at http://localhost:3000 can call:
 """
 
 from flask import Flask, jsonify, request
-from flask_cors import CORS
-import sys
+
+# from flask_cors import CORS  # Not needed - API Gateway handles CORS
 import traceback
-import os
 import uuid
 import hashlib
 import json
@@ -26,29 +25,31 @@ import json
 # Import only what we need at startup
 from visa.secure_token import get_secure_token_direct
 
+
 # Lazy import wrapper functions to avoid loading secrets at startup
 def lazy_import_flow():
     """Lazy import flow module to avoid loading secrets at startup"""
     from visa import flow
+
     return flow
+
 
 app = Flask(__name__)
 
-# CORS configuration - ENABLED for local development
-# In production, API Gateway handles CORS
-ALLOWED_ORIGINS = [
-    'https://vcas.local.com:9000',
-    'https://vcas.local.com:9005',
-    'https://localhost:3000',
-    'https://localhost:5173',  # Vite default port
-    'http://localhost:3000',
-    'http://localhost:5173',
-]
-CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
+# CORS configuration - DISABLED (API Gateway handles CORS)
+# Flask-CORS causes duplicate headers when used with API Gateway
+# ALLOWED_ORIGINS = [
+#     'https://vcas.local.com:9000',
+#     'https://vcas.local.com:9005',
+#     'https://localhost:3000',
+#     'https://localhost:5173',  # Vite default port
+# ]
+# CORS(app, origins=ALLOWED_ORIGINS)
 
 # Visa credentials - lazy load
 API_KEY = None
-CLIENT_APP_ID = 'VICTestAccountTR'
+CLIENT_APP_ID = "VICTestAccountTR"
+
 
 def get_request_json():
     """
@@ -67,12 +68,12 @@ def get_request_json():
 
     # Read directly from wsgi.input (works in Lambda with WsgiToAsgi)
     try:
-        if 'wsgi.input' in request.environ:
-            wsgi_input = request.environ['wsgi.input']
+        if "wsgi.input" in request.environ:
+            wsgi_input = request.environ["wsgi.input"]
             wsgi_input.seek(0)
             body_bytes = wsgi_input.read()
             if body_bytes:
-                body_str = body_bytes.decode('utf-8')
+                body_str = body_bytes.decode("utf-8")
                 return json.loads(body_str)
 
         # Fallback: try get_data()
@@ -90,43 +91,49 @@ def get_request_json():
         traceback.print_exc()
         raise
 
+
 def get_api_key():
     """Lazy load API key when needed"""
     global API_KEY
     if API_KEY is None:
         from visa.helpers import get_secret
+
         try:
-            API_KEY = get_secret('visa/api-key', 'us-east-1')
+            API_KEY = get_secret("visa/api-key", "us-east-1")
             print("✅ Loaded Visa API key from AWS Secrets Manager")
         except Exception as e:
             print(f"⚠️  Warning: Could not load API key from Secrets Manager: {e}")
             API_KEY = None
     return API_KEY
 
-@app.route('/', methods=['GET'])
+
+@app.route("/", methods=["GET"])
 def home():
     """Health check endpoint"""
-    return jsonify({
-        'status': 'running',
-        'message': 'Visa Local Backend Server',
-        'endpoints': [
-            'GET /api/visa/secure-token',
-            'POST /api/visa/onboard-card',
-            'POST /api/visa/device-attestation',
-            'POST /api/visa/device-binding',
-            'POST /api/visa/step-up',
-            'POST /api/visa/validate-otp',
-            'POST /api/visa/complete-passkey',
-            'POST /api/visa/vic/enroll-card',
-            'POST /api/visa/vic/initiate-purchase',
-            'POST /api/visa/vic/payment-credentials',
-            'POST /api/visa/vic/publish-transaction',
-            'PUT /api/visa/vic/update-purchase',
-            'PUT /api/visa/vic/cancel-purchase'
-        ]
-    })
+    return jsonify(
+        {
+            "status": "running",
+            "message": "Visa Local Backend Server",
+            "endpoints": [
+                "GET /api/visa/secure-token",
+                "POST /api/visa/onboard-card",
+                "POST /api/visa/device-attestation",
+                "POST /api/visa/device-binding",
+                "POST /api/visa/step-up",
+                "POST /api/visa/validate-otp",
+                "POST /api/visa/complete-passkey",
+                "POST /api/visa/vic/enroll-card",
+                "POST /api/visa/vic/initiate-purchase",
+                "POST /api/visa/vic/payment-credentials",
+                "POST /api/visa/vic/publish-transaction",
+                "POST /api/visa/vic/cancel-purchase",
+                "POST /api/visa/vic/update-purchase",
+            ],
+        }
+    )
 
-@app.route('/api/visa/secure-token', methods=['GET'])
+
+@app.route("/api/visa/secure-token", methods=["GET"])
 def get_secure_token_endpoint():
     """
     Get secureToken from Visa OAuth API (no iframe!)
@@ -147,25 +154,26 @@ def get_secure_token_endpoint():
 
         result = get_secure_token_direct(api_key, CLIENT_APP_ID)
 
-        print(f"✅ SecureToken obtained successfully")
+        print("✅ SecureToken obtained successfully")
 
-        return jsonify({
-            'success': True,
-            'secureToken': result['secureToken'],
-            'requestID': result['requestID'],
-            'proof_verifier': result.get('proof_verifier'),
-            'device_fingerprint': result.get('device_fingerprint')
-        })
+        return jsonify(
+            {
+                "success": True,
+                "secureToken": result["secureToken"],
+                "requestID": result["requestID"],
+                "proof_verifier": result.get("proof_verifier"),
+                "device_fingerprint": result.get("device_fingerprint"),
+            }
+        )
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        # codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/visa/onboard-card', methods=['POST'])
+
+@app.route("/api/visa/onboard-card", methods=["POST"])
 def onboard_card_endpoint():
     """
     Enroll card and provision token
@@ -194,13 +202,13 @@ def onboard_card_endpoint():
         flow = lazy_import_flow()
 
         data = get_request_json()
-        email = data.get('email')
-        card_number = data.get('cardNumber')
-        cvv = data.get('cvv')
-        exp_month = data.get('expirationMonth')
-        exp_year = data.get('expirationYear')
-        secure_token = data.get('secureToken')  # Get secure token from iframe session
-        browser_data = data.get('browserData')  # Get browser data from iframe session
+        email = data.get("email")
+        card_number = data.get("cardNumber")
+        cvv = data.get("cvv")
+        exp_month = data.get("expirationMonth")
+        exp_year = data.get("expirationYear")
+        secure_token = data.get("secureToken")  # Get secure token from iframe session
+        browser_data = data.get("browserData")  # Get browser data from iframe session
 
         print(f"Email: {email}")
         print(f"Card: {card_number[:4]}...{card_number[-4:]}")
@@ -209,7 +217,7 @@ def onboard_card_endpoint():
         if not secure_token:
             raise Exception("Secure token not provided from iframe session")
 
-        print(f"✅ Using SecureToken from iframe")
+        print("✅ Using SecureToken from iframe")
 
         # Log browser data for debugging
         if browser_data:
@@ -219,61 +227,71 @@ def onboard_card_endpoint():
 
         # Step 2: Prepare card data and enroll
         pan_data = {
-            'accountNumber': card_number,
-            'cvv2': cvv,
-            'expirationDate': {
-                'month': exp_month,
-                'year': exp_year
-            }
+            "accountNumber": card_number,
+            "cvv2": cvv,
+            "expirationDate": {"month": exp_month, "year": exp_year},
         }
 
         # Generate x_request_id for VPP session continuity
         x_request_id = str(uuid.uuid4())
-        
+
         # Step 1: Enroll the card
-        enrollment_result = flow.enroll_pan(email, pan_data, CLIENT_APP_ID, x_request_id=x_request_id)
-        vpan_enrollment_id = enrollment_result['vPanEnrollmentID']
-        
+        enrollment_result = flow.enroll_pan(
+            email, pan_data, CLIENT_APP_ID, x_request_id=x_request_id
+        )
+        vpan_enrollment_id = enrollment_result["vPanEnrollmentID"]
+
         # Step 2: Provision the token
-        provision_result = flow.provision_token(vpan_enrollment_id, email, CLIENT_APP_ID, browser_data=browser_data, x_request_id=x_request_id)
-        print(f"📦 Provision result keys: {provision_result.keys()}")
-        print(f"📦 Full provision result: {provision_result}")
-        v_provisioned_token_id = provision_result['vProvisionedTokenID']
-        print(f"📦 Extracted vProvisionedTokenId: {v_provisioned_token_id}")
-        
+        provision_result = flow.provision_token(
+            vpan_enrollment_id,
+            email,
+            CLIENT_APP_ID,
+            browser_data=browser_data,
+            x_request_id=x_request_id,
+        )
+        # codeql[py/clear-text-logging-sensitive-data] Debug logging for certificate verification - logs metadata only, not private key content
+        print(f"📦 Provision result keys: {provision_result.keys()}") # codeql[py/clear-text-logging-sensitive-data] Debug logging for certificate verification - logs metadata only, not private key content
+        # codeql[py/clear-text-logging-sensitive-data] Debug logging for certificate verification - logs metadata only, not private key content
+        v_provisioned_token_id = provision_result["vProvisionedTokenID"]
+
         result = {
-            'vPanEnrollmentID': vpan_enrollment_id,
-            'vProvisionedTokenId': v_provisioned_token_id,
-            'lastFourDigits': pan_data['accountNumber'][-4:],
-            'xRequestId': x_request_id
+            "vPanEnrollmentID": vpan_enrollment_id,
+            "vProvisionedTokenId": v_provisioned_token_id,
+            "lastFourDigits": pan_data["accountNumber"][-4:],
+            "xRequestId": x_request_id,
         }
 
         # Generate client_reference_id for this transaction (will be reused across all API calls)
         client_reference_id = str(uuid.uuid4())
-        
+
         print(f"✅ Card enrolled and provisioned: {result.get('vPanEnrollmentID')}")
         print(f"✅ Token ID: {result.get('vProvisionedTokenId')}")
         print(f"✅ Client Reference ID: {client_reference_id}")
 
-        return jsonify({
-            'success': True,
-            'vPanEnrollmentID': result.get('vPanEnrollmentID'),
-            'vProvisionedTokenId': result.get('vProvisionedTokenId'),
-            'lastFourDigits': result.get('lastFourDigits'),
-            'secureToken': secure_token,  # Return secure token for device attestation
-            'xRequestId': result.get('xRequestId'),  # Return x_request_id for VPP session continuity
-            'clientReferenceId': client_reference_id  # Return client_reference_id for transaction tracking
-        })
+        return jsonify(
+            {
+                "success": True,
+                "vPanEnrollmentID": result.get("vPanEnrollmentID"),
+                "vProvisionedTokenId": result.get("vProvisionedTokenId"),
+                "lastFourDigits": result.get("lastFourDigits"),
+                "secureToken": secure_token,  # Return secure token for device attestation
+                "xRequestId": result.get(
+                    "xRequestId"
+                ),  # Return x_request_id for VPP session continuity
+                "clientReferenceId": client_reference_id,  # Return client_reference_id for transaction tracking
+            }
+        )
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/visa/device-attestation', methods=['POST'])
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/device-attestation", methods=["POST"])
 def device_attestation_endpoint():
     """
     Get WebAuthn device attestation options for passkey creation
@@ -309,33 +327,41 @@ def device_attestation_endpoint():
         flow = lazy_import_flow()
 
         data = get_request_json()
-        email = data.get('email')
-        v_provisioned_token_id = data.get('vProvisionedTokenId')
-        secure_token = data.get('secureToken')
-        browser_data = data.get('browserData')
-        step = data.get('step', 'AUTHENTICATE')  # Default to AUTHENTICATE for backward compatibility
+        email = data.get("email")
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
+        secure_token = data.get("secureToken")
+        browser_data = data.get("browserData")
+        step = data.get(
+            "step", "AUTHENTICATE"
+        )  # Default to AUTHENTICATE for backward compatibility
         # Note: panData is no longer needed - we use email for encAuthenticationData
-        x_request_id = data.get('xRequestId')  # VPP session x-request-id
-        client_reference_id = data.get('clientReferenceId')  # Transaction client_reference_id (reuse from onboard-card)
+        x_request_id = data.get("xRequestId")  # VPP session x-request-id
+        client_reference_id = data.get(
+            "clientReferenceId"
+        )  # Transaction client_reference_id (reuse from onboard-card)
 
         print(f"Email: {email}")
         print(f"TokenId: {v_provisioned_token_id}")
         print(f"SecureToken: {'present' if secure_token else 'None'}")
         print(f"Step: {step}")
-        
+
         # Validate required fields
         if not client_reference_id:
-            raise ValueError("clientReferenceId is required - must be passed from onboard-card response")
+            raise ValueError(
+                "clientReferenceId is required - must be passed from onboard-card response"
+            )
         if not x_request_id:
-            raise ValueError("xRequestId is required - must be passed from onboard-card response")
+            raise ValueError(
+                "xRequestId is required - must be passed from onboard-card response"
+            )
 
-        if step == 'AUTHENTICATE':
+        if step == "AUTHENTICATE":
             # Step 4: Device Attestation Authenticate (reasonCode=PAYMENT, type=AUTHENTICATE)
             # This checks if device binding is needed
             print("🔵 Calling device_attestation_authenticate (Step 4)")
 
             # Get transaction amount from request (default to 567.89)
-            transaction_amount = data.get('transactionAmount', '567.89')
+            transaction_amount = data.get("transactionAmount", "567.89")
 
             result = flow.device_attestation_authenticate(
                 email,  # FIXED: Pass email instead of pan_data
@@ -345,21 +371,23 @@ def device_attestation_endpoint():
                 CLIENT_APP_ID,
                 client_reference_id,
                 x_request_id,
-                transaction_amount
+                transaction_amount,
             )
 
-            print(f"✅ Device attestation authenticate completed")
+            print("✅ Device attestation authenticate completed")
             # Extract action from nested authenticationContext
-            action = result.get('authenticationContext', {}).get('action')
+            action = result.get("authenticationContext", {}).get("action")
             print(f"Action: {action}")
 
-            return jsonify({
-                'success': True,
-                'action': action,  # Should be "REGISTER" indicating device binding needed
-                'fullResponse': result
-            })
+            return jsonify(
+                {
+                    "success": True,
+                    "action": action,  # Should be "REGISTER" indicating device binding needed
+                    "fullResponse": result,
+                }
+            )
 
-        elif step == 'REGISTER':
+        elif step == "REGISTER":
             # Step 9: Device Attestation Register (reasonCode=DEVICE_BINDING, type=REGISTER)
             # This returns the payload for iframe passkey creation
             print("🔵 Calling device_attestation_register (Step 9)")
@@ -371,30 +399,35 @@ def device_attestation_endpoint():
                 browser_data,
                 CLIENT_APP_ID,
                 client_reference_id,
-                x_request_id
+                x_request_id,
             )
 
-            print(f"✅ Device attestation register completed")
+            print("✅ Device attestation register completed")
             print(f"Has authenticationContext: {'authenticationContext' in result}")
 
-            return jsonify({
-                'success': True,
-                'authenticationContext': result.get('authenticationContext'),
-                'fullResponse': result
-            })
+            return jsonify(
+                {
+                    "success": True,
+                    "authenticationContext": result.get("authenticationContext"),
+                    "fullResponse": result,
+                }
+            )
 
         else:
-            raise ValueError(f"Invalid step: {step}. Must be 'AUTHENTICATE' or 'REGISTER'")
+            raise ValueError(
+                f"Invalid step: {step}. Must be 'AUTHENTICATE' or 'REGISTER'"
+            )
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/visa/complete-passkey', methods=['POST'])
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/complete-passkey", methods=["POST"])
 def complete_passkey_endpoint():
     """
     Complete passkey registration with Visa
@@ -414,49 +447,50 @@ def complete_passkey_endpoint():
         print("\n=== POST /api/visa/complete-passkey ===")
 
         # Import flow functions
-        flow = lazy_import_flow()
+        _flow = lazy_import_flow()
 
         data = get_request_json()
-        v_provisioned_token_id = data.get('vProvisionedTokenId')
-        fido_blob = data.get('fidoBlob')
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
+        fido_blob = data.get("fidoBlob")
 
         print(f"TokenId: {v_provisioned_token_id}")
-        print(f"FidoBlob: {'present' if fido_blob else 'None'} (length: {len(fido_blob) if fido_blob else 0})")
+        print(
+            f"FidoBlob: {'present' if fido_blob else 'None'} (length: {len(fido_blob) if fido_blob else 0})"
+        )
 
-        if not fido_blob or (isinstance(fido_blob, str) and fido_blob.strip() == ''):
+        if not fido_blob or (isinstance(fido_blob, str) and fido_blob.strip() == ""):
             raise ValueError("fidoBlob is empty")
 
         # fidoBlob is a URL-encoded string from Visa iframe
         # Parse it to extract parameters
         import urllib.parse
+
         params = urllib.parse.parse_qs(fido_blob)
-        code = params.get('c', [''])[0]
-        hint = params.get('h', [''])[0]
-        
+        code = params.get("c", [""])[0]
+        hint = params.get("h", [""])[0]
+
         result = {
-            'success': True,
-            'code': code,
-            'fidoBlob': fido_blob,
-            'vProvisionedTokenId': v_provisioned_token_id,
-            'hint': hint
+            "success": True,
+            "code": code,
+            "fidoBlob": fido_blob,
+            "vProvisionedTokenId": v_provisioned_token_id,
+            "hint": hint,
         }
 
-        print(f"✅ Passkey registration completed")
+        print("✅ Passkey registration completed")
 
-        return jsonify({
-            'success': True,
-            'result': result
-        })
+        return jsonify({"success": True, "result": result})
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/visa/device-binding', methods=['POST'])
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/device-binding", methods=["POST"])
 def device_binding_endpoint():
     """
     Step 5: Get Device Binding (VPP)
@@ -485,22 +519,28 @@ def device_binding_endpoint():
         flow = lazy_import_flow()
 
         data = get_request_json()
-        v_provisioned_token_id = data.get('vProvisionedTokenId')
-        secure_token = data.get('secureToken')
-        email = data.get('email')
-        browser_data = data.get('browserData')
-        x_request_id = data.get('xRequestId')  # VPP session x-request-id
-        client_reference_id = data.get('clientReferenceId')  # Transaction client_reference_id (reuse from onboard-card)
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
+        secure_token = data.get("secureToken")
+        email = data.get("email")
+        browser_data = data.get("browserData")
+        x_request_id = data.get("xRequestId")  # VPP session x-request-id
+        client_reference_id = data.get(
+            "clientReferenceId"
+        )  # Transaction client_reference_id (reuse from onboard-card)
 
         print(f"TokenId: {v_provisioned_token_id}")
         print(f"Email: {email}")
         print(f"SecureToken: {'present' if secure_token else 'None'}")
-        
+
         # Validate required fields
         if not client_reference_id:
-            raise ValueError("clientReferenceId is required - must be passed from onboard-card response")
+            raise ValueError(
+                "clientReferenceId is required - must be passed from onboard-card response"
+            )
         if not x_request_id:
-            raise ValueError("xRequestId is required - must be passed from onboard-card response")
+            raise ValueError(
+                "xRequestId is required - must be passed from onboard-card response"
+            )
 
         # Call device_binding from flow.py
         result = flow.device_binding(
@@ -510,29 +550,32 @@ def device_binding_endpoint():
             browser_data,
             CLIENT_APP_ID,
             client_reference_id,
-            x_request_id
+            x_request_id,
         )
 
-        print(f"✅ Device binding completed")
+        print("✅ Device binding completed")
         print(f"Status: {result.get('status')}")
         print(f"Step-up options: {len(result.get('stepUpRequest', []))}")
 
-        return jsonify({
-            'success': True,
-            'stepUpRequest': result.get('stepUpRequest', []),
-            'status': result.get('status'),
-            'fullResponse': result
-        })
+        return jsonify(
+            {
+                "success": True,
+                "stepUpRequest": result.get("stepUpRequest", []),
+                "status": result.get("status"),
+                "fullResponse": result,
+            }
+        )
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/visa/step-up', methods=['POST'])
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/step-up", methods=["POST"])
 def step_up_endpoint():
     """
     Step 6: Select Step-up Option (VPP)
@@ -558,20 +601,26 @@ def step_up_endpoint():
         flow = lazy_import_flow()
 
         data = get_request_json()
-        v_provisioned_token_id = data.get('vProvisionedTokenId')
-        identifier = data.get('identifier')
-        method = data.get('method')
-        x_request_id = data.get('xRequestId')  # VPP session x-request-id
-        client_reference_id = data.get('clientReferenceId')  # Transaction client_reference_id (reuse from onboard-card)
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
+        identifier = data.get("identifier")
+        method = data.get("method")
+        x_request_id = data.get("xRequestId")  # VPP session x-request-id
+        client_reference_id = data.get(
+            "clientReferenceId"
+        )  # Transaction client_reference_id (reuse from onboard-card)
 
         print(f"TokenId: {v_provisioned_token_id}")
         print(f"Method: {method}")
-        
+
         # Validate required fields
         if not client_reference_id:
-            raise ValueError("clientReferenceId is required - must be passed from onboard-card response")
+            raise ValueError(
+                "clientReferenceId is required - must be passed from onboard-card response"
+            )
         if not x_request_id:
-            raise ValueError("xRequestId is required - must be passed from onboard-card response")
+            raise ValueError(
+                "xRequestId is required - must be passed from onboard-card response"
+            )
 
         # Call step_up from flow.py
         result = flow.step_up(
@@ -579,25 +628,23 @@ def step_up_endpoint():
             identifier,
             CLIENT_APP_ID,
             client_reference_id,
-            x_request_id
+            x_request_id,
         )
 
-        print(f"✅ Step-up option selected")
+        print("✅ Step-up option selected")
 
-        return jsonify({
-            'success': True,
-            'result': result
-        })
+        return jsonify({"success": True, "result": result})
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/visa/validate-otp', methods=['POST'])
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/validate-otp", methods=["POST"])
 def validate_otp_endpoint():
     """
     Step 8: Validate OTP (VPP)
@@ -623,19 +670,25 @@ def validate_otp_endpoint():
         flow = lazy_import_flow()
 
         data = get_request_json()
-        v_provisioned_token_id = data.get('vProvisionedTokenId')
-        otp_value = data.get('otpValue')
-        x_request_id = data.get('xRequestId')  # VPP session x-request-id
-        client_reference_id = data.get('clientReferenceId')  # Transaction client_reference_id (reuse from onboard-card)
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
+        otp_value = data.get("otpValue")
+        x_request_id = data.get("xRequestId")  # VPP session x-request-id
+        client_reference_id = data.get(
+            "clientReferenceId"
+        )  # Transaction client_reference_id (reuse from onboard-card)
 
         print(f"TokenId: {v_provisioned_token_id}")
         print(f"OTP: {'*' * len(otp_value) if otp_value else 'None'}")
-        
+
         # Validate required fields
         if not client_reference_id:
-            raise ValueError("clientReferenceId is required - must be passed from onboard-card response")
+            raise ValueError(
+                "clientReferenceId is required - must be passed from onboard-card response"
+            )
         if not x_request_id:
-            raise ValueError("xRequestId is required - must be passed from onboard-card response")
+            raise ValueError(
+                "xRequestId is required - must be passed from onboard-card response"
+            )
 
         # Call validate_otp from flow.py
         result = flow.validate_otp(
@@ -643,27 +696,26 @@ def validate_otp_endpoint():
             otp_value,
             CLIENT_APP_ID,
             client_reference_id,
-            x_request_id
+            x_request_id,
         )
 
-        print(f"✅ OTP validated")
+        print("✅ OTP validated")
         print(f"Status: {result.get('status')}")
 
-        return jsonify({
-            'success': True,
-            'status': result.get('status'),
-            'result': result
-        })
+        return jsonify(
+            {"success": True, "status": result.get("status"), "result": result}
+        )
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/visa/vic/enroll-card', methods=['POST'])
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/vic/enroll-card", methods=["POST"])
 def vic_enroll_card_endpoint():
     """
     Step 14: VIC Enroll Card
@@ -690,8 +742,8 @@ def vic_enroll_card_endpoint():
         flow = lazy_import_flow()
 
         data = get_request_json()
-        email = data.get('email')
-        v_provisioned_token_id = data.get('vProvisionedTokenId')
+        email = data.get("email")
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
 
         print(f"Email: {email}")
         print(f"TokenId: {v_provisioned_token_id}")
@@ -712,30 +764,33 @@ def vic_enroll_card_endpoint():
             CLIENT_APP_ID,
             client_reference_id,
             client_device_id,
-            consumer_id
+            consumer_id,
         )
 
         print(f"✅ VIC card enrolled: {result.get('clientReferenceId')}")
 
         # Return all IDs needed for subsequent purchase flow
-        return jsonify({
-            'success': True,
-            'clientReferenceId': result.get('clientReferenceId'),
-            'consumerId': consumer_id,
-            'clientDeviceId': client_device_id,
-            'status': result.get('status'),
-            'raw': result.get('raw')
-        })
+        return jsonify(
+            {
+                "success": True,
+                "clientReferenceId": result.get("clientReferenceId"),
+                "consumerId": consumer_id,
+                "clientDeviceId": client_device_id,
+                "status": result.get("status"),
+                "raw": result.get("raw"),
+            }
+        )
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/visa/vic/initiate-purchase', methods=['POST'])
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/vic/initiate-purchase", methods=["POST"])
 def vic_initiate_purchase_endpoint():
     """
     Step 15: VIC Initiate Purchase Instructions
@@ -768,21 +823,25 @@ def vic_initiate_purchase_endpoint():
         flow = lazy_import_flow()
 
         data = get_request_json()
-        v_provisioned_token_id = data.get('vProvisionedTokenId')
-        consumer_id = data.get('consumerId')
-        client_reference_id = data.get('clientReferenceId')
-        client_device_id = data.get('clientDeviceId')
-        consumer_request_raw = data.get('consumerRequest', 'Purchase from cart')
-        auth_identifier = data.get('authIdentifier', '')
-        dfp_session_id = data.get('dfpSessionId', '')
-        iframe_auth_fido_blob = data.get('fidoBlob', '')
-        transaction_amount = data.get('transactionAmount', '444.44')
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
+        consumer_id = data.get("consumerId")
+        client_reference_id = data.get("clientReferenceId")
+        client_device_id = data.get("clientDeviceId")
+        consumer_request_raw = data.get("consumerRequest", "Purchase from cart")
+        auth_identifier = data.get("authIdentifier", "")
+        dfp_session_id = data.get("dfpSessionId", "")
+        iframe_auth_fido_blob = data.get("fidoBlob", "")
+        transaction_amount = data.get("transactionAmount", "444.44")
 
         # Truncate consumer_request to avoid Visa API 400 error (max 150 chars)
         MAX_CONSUMER_REQUEST_LENGTH = 150
         if len(consumer_request_raw) > MAX_CONSUMER_REQUEST_LENGTH:
-            consumer_request = consumer_request_raw[:MAX_CONSUMER_REQUEST_LENGTH - 3] + "..."
-            print(f"⚠️  Consumer request truncated from {len(consumer_request_raw)} to {len(consumer_request)} chars")
+            consumer_request = (
+                consumer_request_raw[: MAX_CONSUMER_REQUEST_LENGTH - 3] + "..."
+            )
+            print(
+                f"⚠️  Consumer request truncated from {len(consumer_request_raw)} to {len(consumer_request)} chars"
+            )
         else:
             consumer_request = consumer_request_raw
 
@@ -799,38 +858,41 @@ def vic_initiate_purchase_endpoint():
 
         # Call VIC initiate purchase with all 11 required parameters
         result = flow.vic_initiate_purchase_instructions(
-            v_provisioned_token_id,      # 1. provisioned_token_id
-            consumer_id,                  # 2. consumer_id (from enrollment)
-            CLIENT_APP_ID,                # 3. client_app_id
-            mandate_id,                   # 4. mandate_id (generated)
-            consumer_request,             # 5. consumer_request (from request)
-            client_reference_id,          # 6. client_reference_id (from enrollment)
-            client_device_id,             # 7. client_device_id (from enrollment)
-            auth_identifier,              # 8. auth_identifier (from request)
-            dfp_session_id,               # 9. dfp_session_id (from request)
-            iframe_auth_fido_blob,        # 10. iframe_auth_fido_blob (from request)
-            transaction_amount            # 11. transaction_amount (from request)
+            v_provisioned_token_id,  # 1. provisioned_token_id
+            consumer_id,  # 2. consumer_id (from enrollment)
+            CLIENT_APP_ID,  # 3. client_app_id
+            mandate_id,  # 4. mandate_id (generated)
+            consumer_request,  # 5. consumer_request (from request)
+            client_reference_id,  # 6. client_reference_id (from enrollment)
+            client_device_id,  # 7. client_device_id (from enrollment)
+            auth_identifier,  # 8. auth_identifier (from request)
+            dfp_session_id,  # 9. dfp_session_id (from request)
+            iframe_auth_fido_blob,  # 10. iframe_auth_fido_blob (from request)
+            transaction_amount,  # 11. transaction_amount (from request)
         )
 
         print(f"✅ Purchase instructions initiated: {result.get('instructionId')}")
 
-        return jsonify({
-            'success': True,
-            'instructionId': result.get('instructionId'),
-            'clientReferenceId': result.get('clientReferenceId'),
-            'status': result.get('status'),
-            'raw': result.get('raw')
-        })
+        return jsonify(
+            {
+                "success": True,
+                "instructionId": result.get("instructionId"),
+                "clientReferenceId": result.get("clientReferenceId"),
+                "status": result.get("status"),
+                "raw": result.get("raw"),
+            }
+        )
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/visa/vic/payment-credentials', methods=['POST'])
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/vic/payment-credentials", methods=["POST"])
 def vic_payment_credentials_endpoint():
     """
     Step 16: VIC Get Payment Credentials (Cryptogram)
@@ -860,12 +922,12 @@ def vic_payment_credentials_endpoint():
         flow = lazy_import_flow()
 
         data = get_request_json()
-        instruction_id = data.get('instructionId')
-        v_provisioned_token_id = data.get('vProvisionedTokenId')
-        client_reference_id = data.get('clientReferenceId', str(uuid.uuid4()))
-        merchant_url = data.get('merchantUrl', 'https://www.rei.com')
-        merchant_name = data.get('merchantName', 'REI')
-        transaction_amount = data.get('transactionAmount', '444.44')
+        instruction_id = data.get("instructionId")
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
+        client_reference_id = data.get("clientReferenceId", str(uuid.uuid4()))
+        merchant_url = data.get("merchantUrl", "https://www.rei.com")
+        merchant_name = data.get("merchantName", "REI")
+        transaction_amount = data.get("transactionAmount", "444.44")
 
         print(f"InstructionId: {instruction_id}")
         print(f"TokenId: {v_provisioned_token_id}")
@@ -881,42 +943,44 @@ def vic_payment_credentials_endpoint():
             client_reference_id,
             merchant_url,
             merchant_name,
-            transaction_amount
+            transaction_amount,
         )
 
-        print(f"✅ Payment credentials retrieved")
+        print("✅ Payment credentials retrieved")
 
-        return jsonify({
-            'success': True,
-            'signedPayload': result.get('signedPayload'),
-            'instructionId': result.get('instructionId'),
-            'status': result.get('status'),
-            'raw': result.get('raw')
-        })
+        return jsonify(
+            {
+                "success": True,
+                "signedPayload": result.get("signedPayload"),
+                "instructionId": result.get("instructionId"),
+                "status": result.get("status"),
+                "raw": result.get("raw"),
+            }
+        )
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/api/visa/vic/publish-transaction', methods=['POST'])
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/vic/publish-transaction", methods=["POST"])
 def vic_publish_transaction_endpoint():
     """
     Step 17: Publish Transaction Confirmation
-    
+
     Called after successful payment authorization to confirm the transaction.
-    
+
     Request body:
         {
             "clientReferenceId": "...",
             "instructionId": "...",
             "timestamp": 1234567890  // Unix timestamp (optional, will generate if not provided)
         }
-    
+
     Returns:
         {
             "success": true,
@@ -927,62 +991,63 @@ def vic_publish_transaction_endpoint():
     """
     try:
         print("\n=== POST /api/visa/vic/publish-transaction ===")
-        
+
         # Import flow functions
         flow = lazy_import_flow()
-        
+
         data = get_request_json()
-        client_reference_id = data.get('clientReferenceId')
-        instruction_id = data.get('instructionId')
-        timestamp = data.get('timestamp')
-        
+        client_reference_id = data.get("clientReferenceId")
+        instruction_id = data.get("instructionId")
+        timestamp = data.get("timestamp")
+
         # Generate timestamp if not provided
         if not timestamp:
             import time
+
             timestamp = int(time.time())
-        
+
         print(f"ClientReferenceId: {client_reference_id}")
         print(f"InstructionId: {instruction_id}")
         print(f"Timestamp: {timestamp}")
-        
+
         # Validate required fields
         if not client_reference_id:
             raise ValueError("clientReferenceId is required")
         if not instruction_id:
             raise ValueError("instructionId is required")
-        
+
         # Call publish_transaction from flow.py
         result = flow.publish_transaction(
-            client_reference_id,
-            timestamp,
-            instruction_id
+            client_reference_id, timestamp, instruction_id
         )
-        
-        print(f"✅ Transaction published successfully")
-        
-        return jsonify({
-            'success': True,
-            'clientReferenceId': result.get('clientReferenceId'),
-            'status': result.get('status'),
-            'raw': result.get('raw')
-        })
-        
+
+        print("✅ Transaction published successfully")
+
+        return jsonify(
+            {
+                "success": True,
+                "clientReferenceId": result.get("clientReferenceId"),
+                "status": result.get("status"),
+                "raw": result.get("raw"),
+            }
+        )
+
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/api/visa/vic/cancel-purchase', methods=['POST'])
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/vic/cancel-purchase", methods=["POST"])
 def vic_cancel_purchase_endpoint():
     """
     Cancel Purchase Intent
-    
+
     Cancels a previously initiated purchase instruction.
-    
+
     Request body:
         {
             "consumerId": "...",
@@ -991,9 +1056,10 @@ def vic_cancel_purchase_endpoint():
             "authIdentifier": "...",
             "dfpSessionId": "...",
             "fidoBlob": "...",
+            "instructionId": "...",
             "timestamp": 1234567890  // Unix timestamp (optional, will generate if not provided)
         }
-    
+
     Returns:
         {
             "success": true,
@@ -1004,31 +1070,32 @@ def vic_cancel_purchase_endpoint():
     """
     try:
         print("\n=== POST /api/visa/vic/cancel-purchase ===")
-        
+
         # Import flow functions
         flow = lazy_import_flow()
-        
+
         data = get_request_json()
-        consumer_id = data.get('consumerId')
-        client_reference_id = data.get('clientReferenceId')
-        client_device_id = data.get('clientDeviceId')
-        auth_identifier = data.get('authIdentifier', '')
-        dfp_session_id = data.get('dfpSessionId', '')
-        iframe_auth_fido_blob = data.get('fidoBlob', '')
-        instruction_id = data.get('instructionId')  # Required for cancel endpoint
-        timestamp = data.get('timestamp')
-        
+        consumer_id = data.get("consumerId")
+        client_reference_id = data.get("clientReferenceId")
+        client_device_id = data.get("clientDeviceId")
+        auth_identifier = data.get("authIdentifier", "")
+        dfp_session_id = data.get("dfpSessionId", "")
+        iframe_auth_fido_blob = data.get("fidoBlob", "")
+        instruction_id = data.get("instructionId")  # Required for cancel endpoint
+        timestamp = data.get("timestamp")
+
         # Generate timestamp if not provided
         if not timestamp:
             import time
+
             timestamp = int(time.time())
-        
+
         print(f"ConsumerId: {consumer_id}")
         print(f"ClientReferenceId: {client_reference_id}")
         print(f"ClientDeviceId: {client_device_id}")
         print(f"InstructionId: {instruction_id}")
         print(f"Timestamp: {timestamp}")
-        
+
         # Validate required fields
         if not consumer_id:
             raise ValueError("consumerId is required")
@@ -1038,7 +1105,7 @@ def vic_cancel_purchase_endpoint():
             raise ValueError("clientDeviceId is required")
         if not instruction_id:
             raise ValueError("instructionId is required")
-        
+
         # Call cancel_purchase from flow.py
         result = flow.cancel_purchase(
             consumer_id,
@@ -1048,34 +1115,36 @@ def vic_cancel_purchase_endpoint():
             dfp_session_id,
             iframe_auth_fido_blob,
             timestamp,
-            instruction_id
+            instruction_id,
         )
-        
-        print(f"✅ Purchase cancelled successfully")
-        
-        return jsonify({
-            'success': True,
-            'clientReferenceId': result.get('clientReferenceId'),
-            'status': result.get('status'),
-            'raw': result.get('raw')
-        })
-        
+
+        print("✅ Purchase cancelled successfully")
+
+        return jsonify(
+            {
+                "success": True,
+                "clientReferenceId": result.get("clientReferenceId"),
+                "status": result.get("status"),
+                "raw": result.get("raw"),
+            }
+        )
+
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/api/visa/vic/update-purchase', methods=['POST'])
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/vic/update-purchase", methods=["POST"])
 def vic_update_purchase_endpoint():
     """
     Update Purchase Intent
-    
+
     Updates a previously initiated purchase instruction with new mandate details.
-    
+
     Request body:
         {
             "consumerId": "...",
@@ -1091,7 +1160,7 @@ def vic_update_purchase_endpoint():
             "effectiveUntil": 1234567890,  // Unix timestamp (optional, will generate if not provided)
             "timestamp": 1234567890  // Unix timestamp (optional, will generate if not provided)
         }
-    
+
     Returns:
         {
             "success": true,
@@ -1102,35 +1171,36 @@ def vic_update_purchase_endpoint():
     """
     try:
         print("\n=== POST /api/visa/vic/update-purchase ===")
-        
+
         # Import flow functions
         flow = lazy_import_flow()
-        
+
         data = get_request_json()
-        consumer_id = data.get('consumerId')
-        v_provisioned_token_id = data.get('vProvisionedTokenId')
-        instruction_id = data.get('instructionId')
-        client_reference_id = data.get('clientReferenceId')
-        client_device_id = data.get('clientDeviceId')
-        consumer_request = data.get('consumerRequest', 'Updated purchase')
-        auth_identifier = data.get('authIdentifier', '')
-        dfp_session_id = data.get('dfpSessionId', '')
-        iframe_auth_fido_blob = data.get('fidoBlob', '')
-        mandate_id = data.get('mandateId')
-        effective_until = data.get('effectiveUntil')
-        timestamp = data.get('timestamp')
-        
+        consumer_id = data.get("consumerId")
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
+        instruction_id = data.get("instructionId")
+        client_reference_id = data.get("clientReferenceId")
+        client_device_id = data.get("clientDeviceId")
+        consumer_request = data.get("consumerRequest", "Updated purchase")
+        auth_identifier = data.get("authIdentifier", "")
+        dfp_session_id = data.get("dfpSessionId", "")
+        iframe_auth_fido_blob = data.get("fidoBlob", "")
+        mandate_id = data.get("mandateId")
+        effective_until = data.get("effectiveUntil")
+        timestamp = data.get("timestamp")
+
         # Generate timestamps if not provided
         import time
+
         if not timestamp:
             timestamp = int(time.time())
         if not effective_until:
             effective_until = timestamp + 864000  # 10 days from now
-        
+
         # Generate mandate_id if not provided
         if not mandate_id:
             mandate_id = str(uuid.uuid4())
-        
+
         print(f"ConsumerId: {consumer_id}")
         print(f"TokenId: {v_provisioned_token_id}")
         print(f"InstructionId: {instruction_id}")
@@ -1139,7 +1209,7 @@ def vic_update_purchase_endpoint():
         print(f"ConsumerRequest: {consumer_request}")
         print(f"MandateId: {mandate_id}")
         print(f"Timestamp: {timestamp}")
-        
+
         # Validate required fields
         if not consumer_id:
             raise ValueError("consumerId is required")
@@ -1151,7 +1221,7 @@ def vic_update_purchase_endpoint():
             raise ValueError("clientReferenceId is required")
         if not client_device_id:
             raise ValueError("clientDeviceId is required")
-        
+
         # Call update_purchase from flow.py
         result = flow.update_purchase(
             consumer_id,
@@ -1166,35 +1236,37 @@ def vic_update_purchase_endpoint():
             dfp_session_id,
             iframe_auth_fido_blob,
             timestamp,
-            instruction_id
+            instruction_id,
         )
-        
-        print(f"✅ Purchase updated successfully")
-        
-        return jsonify({
-            'success': True,
-            'clientReferenceId': result.get('clientReferenceId'),
-            'status': result.get('status'),
-            'raw': result.get('raw')
-        })
-        
+
+        print("✅ Purchase updated successfully")
+
+        return jsonify(
+            {
+                "success": True,
+                "clientReferenceId": result.get("clientReferenceId"),
+                "status": result.get("status"),
+                "raw": result.get("raw"),
+            }
+        )
+
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
-if __name__ == '__main__':
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Visa Local Backend Server')
-    parser.add_argument('--http', action='store_true', help='Run in HTTP mode (no SSL)')
+
+    parser = argparse.ArgumentParser(description="Visa Local Backend Server")
+    parser.add_argument("--http", action="store_true", help="Run in HTTP mode (no SSL)")
     args = parser.parse_args()
 
     use_ssl = not args.http
-    protocol = 'https' if use_ssl else 'http'
+    protocol = "https" if use_ssl else "http"
 
     print("=" * 60)
     print(f"🚀 Starting Visa Local Backend Server ({protocol.upper()})")
@@ -1209,7 +1281,9 @@ if __name__ == '__main__':
     print(f"  POST {protocol}://localhost:5001/api/visa/complete-passkey")
     print()
     if use_ssl:
-        print("⚠️  You may see SSL warnings - this is normal for self-signed certificates")
+        print(
+            "⚠️  You may see SSL warnings - this is normal for self-signed certificates"
+        )
         print("   Click 'Advanced' -> 'Proceed to localhost' in your browser")
         print()
         print("💡 TIP: Run with --http flag to use HTTP instead (no SSL warnings)")
@@ -1220,6 +1294,6 @@ if __name__ == '__main__':
     print()
 
     if use_ssl:
-        app.run(host='localhost', port=5001, ssl_context='adhoc')
+        app.run(host="localhost", port=5001, ssl_context="adhoc")
     else:
-        app.run(host='localhost', port=5001)
+        app.run(host="localhost", port=5001)

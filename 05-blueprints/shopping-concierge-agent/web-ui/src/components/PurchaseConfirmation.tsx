@@ -2,10 +2,9 @@ import { useState, useEffect, useRef } from 'react'
 import { userProfileService } from '../services/userProfileService'
 import { showToast } from '../utils/toast'
 
-// Use local server in dev mode, or VITE_VISA_PROXY_URL in production
-const API_BASE_URL = import.meta.env.DEV
-  ? 'https://localhost:5001'  // Use HTTPS for local dev (server runs with SSL)
-  : (import.meta.env.VITE_VISA_PROXY_URL || '').replace(/\/$/, '')
+// Use VITE_VISA_PROXY_URL from environment (can be Lambda API Gateway or local server)
+// Remove trailing slash to avoid double slashes in URLs
+const API_BASE_URL = (import.meta.env.VITE_VISA_PROXY_URL || '').replace(/\/$/, '')
 
 const VISA_IFRAME_URL = import.meta.env.VITE_VISA_IFRAME_URL || 'https://sbx.vts.auth.visa.com'
 const API_KEY = import.meta.env.VITE_VISA_API_KEY
@@ -60,9 +59,20 @@ const PurchaseConfirmation = ({ userEmail, userId, cartItems, onComplete, onErro
     const handleMessage = (event: MessageEvent) => {
       console.log('📬 Message received from:', event.origin, event.data)
 
-      if (!event.origin.includes('auth.visa.com')) {
-        console.log('⚠️ Ignoring message from non-Visa origin:', event.origin)
-        return
+      // Verify origin - must be exactly auth.visa.com or a proper subdomain
+      try {
+        const originUrl = new URL(event.origin);
+        const hostname = originUrl.hostname;
+        const isVisaAuthDomain = hostname === 'auth.visa.com' ||
+                                 hostname.endsWith('.auth.visa.com') ||
+                                 hostname === 'visa.com' ||
+                                 hostname.endsWith('.visa.com');
+        if (!isVisaAuthDomain) {
+          console.log('⚠️ Ignoring message from non-Visa origin:', event.origin)
+          return;
+        }
+      } catch {
+        return; // Invalid URL
       }
 
       const data: IframeMessage = event.data
