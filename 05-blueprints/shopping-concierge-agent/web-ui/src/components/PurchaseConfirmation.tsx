@@ -2,9 +2,10 @@ import { useState, useEffect, useRef } from 'react'
 import { userProfileService } from '../services/userProfileService'
 import { showToast } from '../utils/toast'
 
-// Use VITE_VISA_PROXY_URL from environment (can be Lambda API Gateway or local server)
-// Remove trailing slash to avoid double slashes in URLs
-const API_BASE_URL = (import.meta.env.VITE_VISA_PROXY_URL || '').replace(/\/$/, '')
+// Use local server in dev mode, or VITE_VISA_PROXY_URL in production
+const API_BASE_URL = import.meta.env.DEV
+  ? 'https://localhost:5001'  // Use HTTPS for local dev (server runs with SSL)
+  : (import.meta.env.VITE_VISA_PROXY_URL || '').replace(/\/$/, '')
 
 const VISA_IFRAME_URL = import.meta.env.VITE_VISA_IFRAME_URL || 'https://sbx.vts.auth.visa.com'
 const API_KEY = import.meta.env.VITE_VISA_API_KEY
@@ -44,26 +45,24 @@ const PurchaseConfirmation = ({ userEmail, userId, cartItems, onComplete, onErro
   const [authIdentifier, setAuthIdentifier] = useState('')
   const [fidoBlob, setFidoBlob] = useState('')
   const [vProvisionedTokenId, setVProvisionedTokenId] = useState('')
+  
+  // Store purchase data for cancel/update operations
+  const [purchaseData, setPurchaseData] = useState<{
+    instructionId: string
+    consumerId: string
+    clientReferenceId: string
+    clientDeviceId: string
+    totalAmount: string
+  } | null>(null)
 
   // Handle messages from Visa iframe
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       console.log('📬 Message received from:', event.origin, event.data)
 
-      // Verify origin - must be exactly auth.visa.com or a proper subdomain
-      try {
-        const originUrl = new URL(event.origin);
-        const hostname = originUrl.hostname;
-        const isVisaAuthDomain = hostname === 'auth.visa.com' ||
-                                 hostname.endsWith('.auth.visa.com') ||
-                                 hostname === 'visa.com' ||
-                                 hostname.endsWith('.visa.com');
-        if (!isVisaAuthDomain) {
-          console.log('⚠️ Ignoring message from non-Visa origin:', event.origin)
-          return;
-        }
-      } catch {
-        return; // Invalid URL
+      if (!event.origin.includes('auth.visa.com')) {
+        console.log('⚠️ Ignoring message from non-Visa origin:', event.origin)
+        return
       }
 
       const data: IframeMessage = event.data
@@ -362,6 +361,32 @@ const PurchaseConfirmation = ({ userEmail, userId, cartItems, onComplete, onErro
         })
       })
 
+      // Step 6: Publish Transaction Confirmation
+      setStatusMessage('Confirming transaction...')
+      console.log('🔵 Step 6: Publishing transaction confirmation')
+
+      console.log('🔍 PUBLISH TRANSACTION DEBUG:')
+      console.log('  instructionId:', instructionId)
+      console.log('  clientReferenceId:', enrolledCardData.clientReferenceId)
+
+      const publishResponse = await fetch(`${API_BASE_URL}/api/visa/vic/publish-transaction`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientReferenceId: enrolledCardData.clientReferenceId,
+          instructionId: instructionId,
+          timestamp: Math.floor(Date.now() / 1000)  // Current Unix timestamp
+        })
+      })
+
+      const publishData = await publishResponse.json()
+      if (!publishData.success) {
+        console.warn('⚠️ Failed to publish transaction confirmation:', publishData.error)
+        // Don't throw - this is a confirmation step, payment already succeeded
+      } else {
+        console.log('✅ Transaction confirmation published:', publishData)
+      }
+
       const credentialsData = await credentialsResponse.json()
       if (!credentialsData.success) {
         throw new Error(credentialsData.error || 'Failed to get payment credentials')
@@ -380,21 +405,38 @@ const PurchaseConfirmation = ({ userEmail, userId, cartItems, onComplete, onErro
       setStep('complete')
       setStatusMessage('Purchase complete!')
 
-      // Return success with payment data
-      onComplete({
-        success: true,
+      // Store purchase data for cancel/update operations
+      setPurchaseData({
         instructionId: instructionId,
-        signedPayload: credentialsData.signedPayload,
-        status: credentialsData.status,
-        cartItems: cartItems,
+        consumerId: enrolledCardData.consumerId,
+        clientReferenceId: enrolledCardData.clientReferenceId,
+        clientDeviceId: enrolledCardData.clientDeviceId,
         totalAmount: totalAmount
       })
+
+      // Don't call onComplete yet - let user interact with Cancel/Update buttons
+      // Store the result to pass later when user closes the modal
+      console.log('✅ Purchase complete - waiting for user action')
 
     } catch (error: any) {
       console.error('❌ Error in purchase flow:', error)
       const errorMessage = error.message || 'Failed to complete purchase'
       showToast.error(errorMessage)
       onError(errorMessage)
+    }
+  }
+
+  // Close modal and notify parent of completion
+  const handleDone = () => {
+    if (purchaseData) {
+      onComplete({
+        success: true,
+        instructionId: purchaseData.instructionId,
+        cartItems: cartItems,
+        totalAmount: purchaseData.totalAmount
+      })
+    } else {
+      onCancel()
     }
   }
 
@@ -413,6 +455,101 @@ const PurchaseConfirmation = ({ userEmail, userId, cartItems, onComplete, onErro
       return sum + (price * (item.qty || 1))
     }, 0)
     return total.toFixed(2)
+  }
+
+  // Cancel Purchase
+  const handleCancelPurchase = async () => {
+    if (!purchaseData) {
+      showToast.error('No purchase data available')
+      return
+    }
+
+    try {
+      setStatusMessage('Cancelling purchase...')
+      console.log('🔵 Cancelling purchase:', purchaseData.instructionId)
+
+      const response = await fetch(`${API_BASE_URL}/api/visa/vic/cancel-purchase`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          consumerId: purchaseData.consumerId,
+          clientReferenceId: purchaseData.clientReferenceId,
+          clientDeviceId: purchaseData.clientDeviceId,
+          instructionId: purchaseData.instructionId,  // Required for cancel
+          authIdentifier: authIdentifier,
+          dfpSessionId: dfpSessionId,
+          fidoBlob: fidoBlob,
+          timestamp: Math.floor(Date.now() / 1000)
+        })
+      })
+
+      const data = await response.json()
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to cancel purchase')
+      }
+
+      console.log('✅ Purchase cancelled:', data)
+      showToast.success('Purchase cancelled successfully')
+      setStatusMessage('Purchase cancelled')
+      
+      // Close the modal
+      setTimeout(() => onCancel(), 1500)
+
+    } catch (error: any) {
+      console.error('❌ Error cancelling purchase:', error)
+      showToast.error(error.message || 'Failed to cancel purchase')
+    }
+  }
+
+  // Update Purchase
+  const handleUpdatePurchase = async () => {
+    if (!purchaseData) {
+      showToast.error('No purchase data available')
+      return
+    }
+
+    try {
+      setStatusMessage('Updating purchase...')
+      console.log('🔵 Updating purchase:', purchaseData.instructionId)
+
+      // For demo purposes, we'll update with a new consumer request
+      const updatedRequest = `Updated: ${buildConsumerRequest(cartItems)}`
+
+      const response = await fetch(`${API_BASE_URL}/api/visa/vic/update-purchase`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          consumerId: purchaseData.consumerId,
+          vProvisionedTokenId: vProvisionedTokenId,
+          instructionId: purchaseData.instructionId,
+          clientReferenceId: purchaseData.clientReferenceId,
+          clientDeviceId: purchaseData.clientDeviceId,
+          consumerRequest: updatedRequest,
+          authIdentifier: authIdentifier,
+          dfpSessionId: dfpSessionId,
+          fidoBlob: fidoBlob,
+          mandateId: crypto.randomUUID(),
+          effectiveUntil: Math.floor(Date.now() / 1000) + 864000, // 10 days from now
+          timestamp: Math.floor(Date.now() / 1000)
+        })
+      })
+
+      const data = await response.json()
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to update purchase')
+      }
+
+      console.log('✅ Purchase updated:', data)
+      showToast.success('Purchase updated successfully')
+      setStatusMessage('Purchase updated')
+      
+      // Close the modal after a short delay
+      setTimeout(() => onCancel(), 1500)
+
+    } catch (error: any) {
+      console.error('❌ Error updating purchase:', error)
+      showToast.error(error.message || 'Failed to update purchase')
+    }
   }
 
   // Initialize iframe
@@ -472,6 +609,31 @@ const PurchaseConfirmation = ({ userEmail, userId, cartItems, onComplete, onErro
             <div className="text-center my-5">
               <div className="text-5xl text-emerald-500">✅</div>
               <p className="text-emerald-500 font-bold mt-2">Payment Authorized!</p>
+              <p className="text-gray-600 text-sm mt-1">Transaction ID: {purchaseData?.instructionId.slice(-8)}</p>
+              
+              {/* Action buttons for cancel and update */}
+              <div className="flex flex-col gap-3 mt-6">
+                <div className="flex gap-3 justify-center">
+                  <button
+                    onClick={handleUpdatePurchase}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                  >
+                    Update Purchase
+                  </button>
+                  <button
+                    onClick={handleCancelPurchase}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+                  >
+                    Cancel Purchase
+                  </button>
+                </div>
+                <button
+                  onClick={handleDone}
+                  className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition-colors"
+                >
+                  Done
+                </button>
+              </div>
             </div>
           )}
 
