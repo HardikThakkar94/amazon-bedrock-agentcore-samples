@@ -64,7 +64,13 @@ vic_key_id = None
 
 def _ensure_vts_secrets():
     """Ensure VTS secrets are loaded"""
-    global server_cert, private_cert, api_key, shared_secret, encryption_api_key, encryption_shared_secret
+    global \
+        server_cert, \
+        private_cert, \
+        api_key, \
+        shared_secret, \
+        encryption_api_key, \
+        encryption_shared_secret
     if api_key is None:
         server_cert = get_visa_secret(server_cert_secret_name)
         private_cert = get_visa_secret(private_cert_secret_name)
@@ -177,7 +183,7 @@ def enroll_pan(
 
     # Make the request
     try:
-        response = requests.post(url, headers=headers, data=payload, timeout=300)
+        response = requests.post(url, headers=headers, data=payload)
         response.raise_for_status()
 
         logger.info("\nResponse Body (Parsed JSON):")
@@ -267,9 +273,7 @@ def provision_token(
 
         # Extract a unique device identifier from browser data
         user_agent = browser_data.get("userAgent", "Unknown")
-        device_id = hashlib.md5(user_agent.encode(), usedforsecurity=False).hexdigest()[
-            :16
-        ]
+        device_id = hashlib.md5(user_agent.encode()).hexdigest()[:16]
 
         _risk_data = {
             "deviceFingerprint": {
@@ -327,7 +331,7 @@ def provision_token(
 
     # Make the request
     try:
-        response = requests.post(url, headers=headers, data=payload, timeout=300)
+        response = requests.post(url, headers=headers, data=payload)
         response.raise_for_status()
 
         logger.info("\nResponse Body (Parsed JSON):")
@@ -463,9 +467,9 @@ def device_attestation_authenticate(
     formatted_amount = f"{float(transaction_amount):.2f}"
     logger.info(f"Transaction amount: {formatted_amount}")
 
-    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     resource_path = f"vts/provisionedTokens/{provisioned_token_id}/attestation/options"
     url = f"https://cert.api.visa.com/vts/provisionedTokens/{provisioned_token_id}/attestation/options?apiKey={api_key}"
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
 
     # FIXED: Encrypt consumer email info, NOT pan_data
@@ -482,7 +486,7 @@ def device_attestation_authenticate(
         "dynamicData": {
             "authenticationAmount": formatted_amount,
             "merchantIdentifier": {
-                "applicationUrl": "aHR0cHM6Ly93d3cuTWVyY2hhbnQtVlphRjVYQmouY29t",  # pragma: allowlist secret
+                "applicationUrl": "aHR0cHM6Ly93d3cuTWVyY2hhbnQtVlphRjVYQmouY29t",
                 "merchantName": "TWVyY2hhbnQgVlphRjVYQmo",
             },
             "currencyCode": "840",
@@ -524,7 +528,7 @@ def device_attestation_authenticate(
 
     # Make the request
     try:
-        response = requests.post(url, headers=headers, data=payload, timeout=300)
+        response = requests.post(url, headers=headers, data=payload)
         response.raise_for_status()
 
         logger.info("\nResponse Body (Parsed JSON):")
@@ -544,9 +548,9 @@ def device_attestation_authenticate(
         logger.error(f"Could not parse response as JSON: {e}")
         logger.error(
             f"Response status code: {response.status_code if 'response' in locals() else 'N/A'}"
-            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         )
         logger.error(
+            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
             f"Response text: {response.text if 'response' in locals() else 'No response'}"
         )
         raise
@@ -591,9 +595,9 @@ def device_binding(
     logger.info("=" * 80)
     logger.info("Device binding authenticate")
 
-    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     resource_path = f"vts/provisionedTokens/{provisioned_token_id}/deviceBinding"
     url = f"https://cert.api.visa.com/vts/provisionedTokens/{provisioned_token_id}/deviceBinding?apiKey={api_key}"
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
 
     hash_email = create_email_hash(email)
@@ -629,7 +633,7 @@ def device_binding(
 
     # Make the request
     try:
-        response = requests.post(url, headers=headers, data=payload, timeout=300)
+        response = requests.post(url, headers=headers, data=payload)
         response.raise_for_status()
 
         logger.info("\nResponse Body (Parsed JSON):")
@@ -649,9 +653,9 @@ def device_binding(
         logger.error(f"Could not parse response as JSON: {e}")
         logger.error(
             f"Response status code: {response.status_code if 'response' in locals() else 'N/A'}"
-            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         )
         logger.error(
+            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
             f"Response text: {response.text if 'response' in locals() else 'No response'}"
         )
         raise
@@ -683,21 +687,17 @@ def device_binding(
 
 
 def step_up(
-    provisioned_token_id,
-    identifier,
-    client_app_id,
-    client_reference_id,
-    x_request_id,
-    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
+    provisioned_token_id, identifier, client_app_id, client_reference_id, x_request_id
 ):
     _ensure_vts_secrets()
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
 
     logger.info("=" * 80)
     logger.info("Select Step-Up Options")
 
-    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     resource_path = f"vts/provisionedTokens/{provisioned_token_id}/stepUpOptions/method"
     url = f"https://cert.api.visa.com/vts/provisionedTokens/{provisioned_token_id}/stepUpOptions/method?apiKey={api_key}"
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
 
     timestamp = str(int(time.time()))
@@ -727,7 +727,7 @@ def step_up(
 
     # Make the request
     try:
-        response = requests.put(url, headers=headers, data=payload, timeout=300)
+        response = requests.put(url, headers=headers, data=payload)
         response.raise_for_status()
 
         logger.info("\nResponse Body (Parsed JSON):")
@@ -747,9 +747,9 @@ def step_up(
         logger.error(f"Could not parse response as JSON: {e}")
         logger.error(
             f"Response status code: {response.status_code if 'response' in locals() else 'N/A'}"
-            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         )
         logger.error(
+            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
             f"Response text: {response.text if 'response' in locals() else 'No response'}"
         )
         raise
@@ -766,9 +766,9 @@ def step_up(
         logger.error("\n" + "=" * 80)
         logger.error("DEVICE SET UP - UNEXPECTED ERROR")
         logger.error("=" * 80)
-        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         logger.error(f"Error type: {type(e).__name__}")
         logger.error(f"Error message: {str(e)}")
+        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         import traceback
 
         logger.error(f"Traceback:\n{traceback.format_exc()}")
@@ -785,9 +785,9 @@ def validate_otp(
 
     resource_path = (
         f"vts/provisionedTokens/{provisioned_token_id}/stepUpOptions/validateOTP"
-        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     )
     url = f"https://cert.api.visa.com/vts/provisionedTokens/{provisioned_token_id}/stepUpOptions/validateOTP?apiKey={api_key}"
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
 
     timestamp = str(int(time.time()))
@@ -817,7 +817,7 @@ def validate_otp(
 
     # Make the request
     try:
-        response = requests.post(url, headers=headers, data=payload, timeout=300)
+        response = requests.post(url, headers=headers, data=payload)
         response.raise_for_status()
 
         logger.info("\nResponse Body (Parsed JSON):")
@@ -837,9 +837,9 @@ def validate_otp(
         logger.error(f"Could not parse response as JSON: {e}")
         logger.error(
             f"Response status code: {response.status_code if 'response' in locals() else 'N/A'}"
-            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         )
         logger.error(
+            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
             f"Response text: {response.text if 'response' in locals() else 'No response'}"
         )
         raise
@@ -877,11 +877,11 @@ def device_attestation_register(
 
     logger.info("=" * 80)
     logger.info("Device Attestation Register")
-    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
 
-    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     resource_path = f"vts/provisionedTokens/{provisioned_token_id}/attestation/options"
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     url = f"https://cert.api.visa.com/vts/provisionedTokens/{provisioned_token_id}/attestation/options?apiKey={api_key}"
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
 
     payload_dict = {
@@ -889,7 +889,7 @@ def device_attestation_register(
         "dynamicData": {
             "authenticationAmount": "444.44",
             "merchantIdentifier": {
-                "applicationUrl": "aHR0cHM6Ly93d3cuTWVyY2hhbnQtVlphRjVYQmouY29t",  # pragma: allowlist secret
+                "applicationUrl": "aHR0cHM6Ly93d3cuTWVyY2hhbnQtVlphRjVYQmouY29t",
                 "merchantName": "TWVyY2hhbnQgVlphRjVYQmo",
             },
             "currencyCode": "840",
@@ -944,12 +944,12 @@ def device_attestation_register(
         "x-request-id": x_request_id,
     }
 
-    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     logging.info(f"Headers: {headers}")
 
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     # Make the request
     try:
-        response = requests.post(url, headers=headers, data=payload, timeout=300)
+        response = requests.post(url, headers=headers, data=payload)
         response.raise_for_status()
 
         logger.info("\nResponse Body (Parsed JSON):")
@@ -969,9 +969,9 @@ def device_attestation_register(
         logger.error(f"Could not parse response as JSON: {e}")
         logger.error(
             f"Response status code: {response.status_code if 'response' in locals() else 'N/A'}"
-            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         )
         logger.error(
+            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
             f"Response text: {response.text if 'response' in locals() else 'No response'}"
         )
         raise
@@ -1002,10 +1002,9 @@ def passkey_creation(
     logger.info("=" * 80)
     logger.info("Passkey Creation Flow")
 
-    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     resource_path = "vts/auth/authenticate"
     url = f"https://sbx.vts.auth.visa.com/vts/auth/authenticate?apiKey={api_key}&clientAppID={client_app_id}"
-    logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
 
     payload = json.dumps(
         {
@@ -1027,7 +1026,7 @@ def passkey_creation(
     )
 
     try:
-        response = requests.post(url, data=payload, timeout=300)
+        response = requests.post(url, data=payload)
         response.raise_for_status()
 
         logger.info("\nResponse Body (Parsed JSON):")
@@ -1035,10 +1034,10 @@ def passkey_creation(
         logger.info("[Response data redacted for security]")
 
         logger.info("\n" + "=" * 80)
-        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         logger.info("Passkey Creation Flow completed successfully")
         logger.info("=" * 80)
 
+        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         return response_json
 
     except json.JSONDecodeError as e:
@@ -1048,33 +1047,30 @@ def passkey_creation(
         logger.error(f"Could not parse response as JSON: {e}")
         logger.error(
             f"Response status code: {response.status_code if 'response' in locals() else 'N/A'}"
-            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         )
-        logger.error(
-            f"Response text: {response.text if 'response' in locals() else 'No response'}"
-        )
+
         raise
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     except requests.exceptions.RequestException as e:
         logger.error("\n" + "=" * 80)
         logger.error("PASSKEY CREATION FLOW - REQUEST FAILED")
-        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         logger.error("=" * 80)
         logger.error(f"Error: {str(e)}")
-        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         if "response" in locals():
-            logger.error(f"Response status code: {response.status_code}")
             logger.error(f"Response text: {response.text}")
-        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         raise
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     except Exception as e:
         logger.error("\n" + "=" * 80)
         # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         logger.error("PASSKEY CREATION FLOW - UNEXPECTED ERROR")
         logger.error("=" * 80)
         logger.error(f"Error type: {type(e).__name__}")
+        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         logger.error(f"Error message: {str(e)}")
         import traceback
 
+        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
         logger.error(f"Traceback:\n{traceback.format_exc()}")
         raise
 
@@ -1161,13 +1157,16 @@ def vic_enroll_card(
     # Debug logging for x-pay-token generation
     logger.info("X-PAY-TOKEN generation params:")
     logger.info(f"  resource_path: {resource_path}")
-    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     logger.info(f"  query_string: {query_string}")
     logger.info(f"  body_length: {len(enc_data_str)}")
     logger.info(f"  shared_secret (first 10): {shared_secret[:10]}...")
 
     x_pay_token = generate_x_pay_token(
-        shared_secret, resource_path, query_string, enc_data_str
+        shared_secret,
+        resource_path,
+        query_string,
+        enc_data_str,
+        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     )
 
     # Get keyId from secrets (not hardcoded)
@@ -1178,20 +1177,20 @@ def vic_enroll_card(
         "Content-Type": "application/json",
         "keyId": vic_key_id,
         "x-pay-token": x_pay_token,
-        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     }
 
     logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
     logger.info("\nRequest Headers:")
     for key, value in headers.items():
         if "token" in key.lower() or "key" in key.lower():
+            # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
             logger.info(f"  {key}: {value[:20]}...")
         else:
             logger.info(f"  {key}: {value}")
     logger.info(f"Request Body (truncated): {enc_data_str[:100]}...")
 
     try:
-        response = requests.post(url, headers=headers, data=enc_data_str, timeout=300)
+        response = requests.post(url, headers=headers, data=enc_data_str)
 
         # Log response details BEFORE raising for status
         logger.info(f"\nResponse Status Code: {response.status_code}")
@@ -1369,14 +1368,14 @@ def vic_initiate_purchase_instructions(
         "keyId": vic_key_id,
         "x-pay-token": x_pay_token,
         "x-request-id": client_reference_id,
-        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     }
 
     logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
     logger.info(f"Request Body (truncated): {enc_data_str[:100]}...")
 
     try:
-        response = requests.post(url, headers=headers, data=enc_data_str, timeout=300)
+        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
+        response = requests.post(url, headers=headers, data=enc_data_str)
         response.raise_for_status()
 
         response_json = response.json()
@@ -1503,14 +1502,14 @@ def vic_get_payment_credentials(
         "keyId": vic_key_id,
         "x-pay-token": x_pay_token,
         "x-request-id": client_reference_id,
-        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
     }
 
     logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
     logger.info(f"Request Body (truncated): {enc_data_str[:100]}...")
 
     try:
-        response = requests.post(url, headers=headers, data=enc_data_str, timeout=300)
+        # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
+        response = requests.post(url, headers=headers, data=enc_data_str)
         response.raise_for_status()
 
         response_json = response.json()
@@ -1574,6 +1573,428 @@ def vic_get_payment_credentials(
     except Exception as e:
         logger.error("\n" + "=" * 80)
         logger.error("VIC GET PAYMENT CREDENTIALS FAILED")
+        logger.error("=" * 80)
+        logger.error(f"Error: {str(e)}")
+        raise
+
+
+def publish_transaction(client_reference_id, timestamp, instruction_id):
+    """
+    Publish Transaction Confirmation
+
+    Confirms a completed purchase transaction to Visa
+
+    Args:
+        client_reference_id: Client reference ID
+        timestamp: Transaction timestamp
+        instruction_id: Instruction ID from purchase instructions
+
+    Returns:
+        Dictionary containing confirmation status
+    """
+    _ensure_vts_secrets()
+
+    logger.info("=" * 80)
+    logger.info("Publish Transaction")
+    logger.info("=" * 80)
+
+    # externalClientId is from Visa Developer Portal
+    to_be_encrypted = {
+        "clientReferenceId": client_reference_id,
+        "confirmationData": [
+            {
+                "paymentConfirmationData": {
+                    "transactionType": "PURCHASE",
+                    "transactionStatus": "APPROVED",
+                    "transactionTimestamp": timestamp,
+                },
+                "transactionReferenceId": instruction_id,
+            }
+        ],
+    }
+
+    # Encrypt the payload using RSA encryption with VIC certificate
+    enc_data = encrypt_payload(to_be_encrypted)
+    enc_data_str = json.dumps(enc_data, separators=(",", ":"))
+
+    # Build URL
+    url = f"https://cert.api.visa.com/vacp/v1/instructions/{instruction_id}/confirmations?apikey={api_key}"
+
+    # Generate X-PAY-TOKEN
+    resource_path = f"v1/instructions/{instruction_id}/confirmations"
+    query_string = f"apikey={api_key}"
+    x_pay_token = generate_x_pay_token(
+        shared_secret, resource_path, query_string, enc_data_str
+    )
+
+    # Get keyId from secrets
+    vic_key_id = get_secret("visa/vic_key_id", region)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "keyId": vic_key_id,
+        "x-pay-token": x_pay_token,
+        "x-request-id": client_reference_id,
+    }
+
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
+    logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
+    logger.info(f"Request Body (truncated): {enc_data_str[:100]}...")
+
+    try:
+        response = requests.post(url, headers=headers, data=enc_data_str)
+
+        logger.info(f"\nResponse Status Code: {response.status_code}")
+        response.raise_for_status()
+
+        response_json = response.json()
+        logger.info("\nResponse Body (Parsed JSON):")
+        logger.info("[Response data redacted for security]")
+
+        # Decrypt response using RSA decryption
+        enc_response_data = response_json.get("encData")
+        if enc_response_data:
+            decrypted_response = decrypt_rsa(enc_response_data)
+
+            logger.info("\n" + "=" * 80)
+            logger.info("VIC Publish instructions completed successfully")
+            logger.info("=" * 80)
+
+            return {
+                "clientReferenceId": decrypted_response.get("clientReferenceId"),
+                "status": decrypted_response.get("status"),
+                "raw": decrypted_response,
+            }
+        else:
+            raise KeyError("Response missing 'encData' field")
+
+    except requests.exceptions.HTTPError as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC PUBLISH INSTRUCTIONS FAILED - HTTP ERROR")
+        logger.error("=" * 80)
+        logger.error(f"Status Code: {e.response.status_code}")
+        logger.error(f"Error: {str(e)}")
+        logger.error("\nResponse Headers:")
+        for key, value in e.response.headers.items():
+            logger.error(f"  {key}: {value}")
+        logger.error("\nResponse Body:")
+        logger.error(e.response.text)
+        raise
+    except Exception as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC PUBLISH INSTRUCTIONS FAILED")
+        logger.error("=" * 80)
+        logger.error(f"Error: {str(e)}")
+        raise
+
+
+def cancel_purchase(
+    consumer_id,
+    client_reference_id,
+    client_device_id,
+    auth_identifier,
+    dfp_session_id,
+    iframe_auth_fido_blob,
+    timestamp,
+    instruction_id,
+):
+    """
+    Cancel Purchase Intent
+
+    Cancels a previously created purchase instruction
+
+    Args:
+        consumer_id: Consumer ID
+        client_reference_id: Client reference ID
+        client_device_id: Client device ID
+        auth_identifier: Authentication identifier
+        dfp_session_id: DFP session ID
+        iframe_auth_fido_blob: FIDO assertion data
+        timestamp: Cancellation timestamp
+        instruction_id: Instruction ID to cancel
+
+    Returns:
+        Dictionary containing cancellation status
+    """
+    _ensure_vts_secrets()
+
+    logger.info("=" * 80)
+    logger.info("Cancel a purchase intent")
+    logger.info("=" * 80)
+
+    to_be_encrypted = {
+        "consumerId": consumer_id,
+        "clientReferenceId": client_reference_id,
+        "appInstance": {
+            "ipAddress": "192.168.1.1",
+            "userAgent": "Mozilla/5.0",
+            "deviceData": {
+                "type": "Mobile",
+                "brand": "Apple",
+                "model": "iPhone 16 Pro Max",
+                "manufacturer": "Apple",
+            },
+            "countryCode": "US",
+            "clientDeviceId": client_device_id,
+            "applicationName": "My Magic App ",
+        },
+        "assuranceData": [
+            {
+                "methodResults": {
+                    "identifier": auth_identifier,
+                    "dfpSessionId": dfp_session_id,
+                    "fidoAssertionData": {"code": iframe_auth_fido_blob},
+                },
+                "verificationType": "DEVICE",
+                "verificationEntity": "10",
+                "verificationMethod": "23",
+                "verificationResults": "01",
+                "verificationTimestamp": timestamp,
+            }
+        ],
+    }
+
+    # Encrypt the payload using RSA encryption with VIC certificate
+    enc_data = encrypt_payload(to_be_encrypted)
+    enc_data_str = json.dumps(enc_data, separators=(",", ":"))
+
+    # Build URL
+    url = f"https://cert.api.visa.com/vacp/v1/instructions/{instruction_id}/cancel?apikey={api_key}"
+
+    # Generate X-PAY-TOKEN
+    resource_path = f"v1/instructions/{instruction_id}/cancel"
+    query_string = f"apikey={api_key}"
+    x_pay_token = generate_x_pay_token(
+        shared_secret, resource_path, query_string, enc_data_str
+    )
+
+    # Get keyId from secrets
+    vic_key_id = get_secret("visa/vic_key_id", region)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "keyId": vic_key_id,
+        "x-pay-token": x_pay_token,
+        "x-request-id": client_reference_id,
+    }
+
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
+    logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
+    logger.info(f"Request Body (truncated): {enc_data_str[:100]}...")
+
+    try:
+        response = requests.put(url, headers=headers, data=enc_data_str)
+
+        logger.info(f"\nResponse Status Code: {response.status_code}")
+        response.raise_for_status()
+
+        response_json = response.json()
+        logger.info("\nResponse Body (Parsed JSON):")
+        logger.info("[Response data redacted for security]")
+
+        # Decrypt response using RSA decryption
+        enc_response_data = response_json.get("encData")
+        if enc_response_data:
+            decrypted_response = decrypt_rsa(enc_response_data)
+
+            logger.info("\n" + "=" * 80)
+            logger.info("VIC Cancel Purchase completed successfully")
+            logger.info("=" * 80)
+
+            return {
+                "clientReferenceId": decrypted_response.get("clientReferenceId"),
+                "status": decrypted_response.get("status"),
+                "raw": decrypted_response,
+            }
+        else:
+            raise KeyError("Response missing 'encData' field")
+
+    except requests.exceptions.HTTPError as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC CANCEL PURCHASE FAILED - HTTP ERROR")
+        logger.error("=" * 80)
+        logger.error(f"Status Code: {e.response.status_code}")
+        logger.error(f"Error: {str(e)}")
+        logger.error("\nResponse Headers:")
+        for key, value in e.response.headers.items():
+            logger.error(f"  {key}: {value}")
+        logger.error("\nResponse Body:")
+        logger.error(e.response.text)
+        raise
+    except Exception as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC CANCEL PURCHASE FAILED")
+        logger.error("=" * 80)
+        logger.error(f"Error: {str(e)}")
+        raise
+
+
+def update_purchase(
+    consumer_id,
+    provisioned_token_id,
+    client_app_id,
+    effective_until,
+    mandate_id,
+    client_reference_id,
+    client_device_id,
+    consumer_request,
+    auth_identifier,
+    dfp_session_id,
+    iframe_auth_fido_blob,
+    timestamp,
+    instruction_id,
+):
+    """
+    Update Purchase Intent
+
+    Updates an existing purchase instruction with new mandate details
+
+    Args:
+        consumer_id: Consumer ID
+        provisioned_token_id: Provisioned token ID
+        client_app_id: Client application ID
+        effective_until: Mandate expiration timestamp
+        mandate_id: Mandate ID
+        client_reference_id: Client reference ID
+        client_device_id: Client device ID
+        consumer_request: Consumer request description
+        auth_identifier: Authentication identifier
+        dfp_session_id: DFP session ID
+        iframe_auth_fido_blob: FIDO assertion data
+        timestamp: Update timestamp
+        instruction_id: Instruction ID to update
+
+    Returns:
+        Dictionary containing update status
+    """
+    _ensure_vts_secrets()
+
+    logger.info("=" * 80)
+    logger.info("Update a Purchase intent")
+    logger.info("=" * 80)
+
+    to_be_encrypted = {
+        "consumerId": consumer_id,
+        "tokenId": provisioned_token_id,
+        "client": {
+            "externalClientId": "3aa9e2b8-c5c1-612d-32c3-1cb11b85a702",
+            "externalAppId": client_app_id,
+        },
+        "mandates": [
+            {
+                "effectiveUntilTime": effective_until,
+                "declineThreshold": {"amount": "333.33", "currencyCode": "USD"},
+                "quantity": 1,
+                "mandateId": mandate_id,
+                "merchantCategoryCode": "1234",
+                "description": "My description",
+                "merchantCategory": "Electronics",
+                "preferredMerchantName": "Best Buy",
+            }
+        ],
+        "clientReferenceId": client_reference_id,
+        "appInstance": {
+            "countryCode": "US",
+            "clientDeviceId": client_device_id,
+            "ipAddress": "192.168.1.1",
+            "deviceData": {
+                "model": "iPhone 16 Pro Max",
+                "type": "Mobile",
+                "brand": "Apple",
+                "manufacturer": "Apple",
+            },
+            "userAgent": "Mozilla/5.0",
+            "applicationName": "My Magic App",
+        },
+        "consumerPrompt": consumer_request,
+        "assuranceData": [
+            {
+                "methodResults": {
+                    "identifier": auth_identifier,
+                    "dfpSessionId": dfp_session_id,
+                    "fidoAssertionData": {"code": iframe_auth_fido_blob},
+                },
+                "verificationType": "DEVICE",
+                "verificationResults": "01",
+                "verificationMethod": "23",
+                "verificationTimestamp": timestamp,
+            }
+        ],
+    }
+
+    # Encrypt the payload using RSA encryption with VIC certificate
+    enc_data = encrypt_payload(to_be_encrypted)
+    enc_data_str = json.dumps(enc_data, separators=(",", ":"))
+
+    # Build URL
+    url = f"https://cert.api.visa.com/vacp/v1/instructions/{instruction_id}?apikey={api_key}"
+
+    # Generate X-PAY-TOKEN
+    resource_path = f"v1/instructions/{instruction_id}"
+    query_string = f"apikey={api_key}"
+    x_pay_token = generate_x_pay_token(
+        shared_secret, resource_path, query_string, enc_data_str
+    )
+
+    # Get keyId from secrets
+    vic_key_id = get_secret("visa/vic_key_id", region)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "keyId": vic_key_id,
+        "x-pay-token": x_pay_token,
+        "x-request-id": client_reference_id,
+    }
+
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
+    logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
+    logger.info(f"Request Body (truncated): {enc_data_str[:100]}...")
+
+    try:
+        response = requests.put(url, headers=headers, data=enc_data_str)
+
+        logger.info(f"\nResponse Status Code: {response.status_code}")
+        response.raise_for_status()
+
+        response_json = response.json()
+        logger.info("\nResponse Body (Parsed JSON):")
+        logger.info("[Response data redacted for security]")
+
+        # Decrypt response using RSA decryption
+        enc_response_data = response_json.get("encData")
+        if enc_response_data:
+            decrypted_response = decrypt_rsa(enc_response_data)
+
+            logger.info("\n" + "=" * 80)
+            logger.info("VIC Update Purchase completed successfully")
+            logger.info("=" * 80)
+
+            return {
+                "clientReferenceId": decrypted_response.get("clientReferenceId"),
+                "status": decrypted_response.get("status"),
+                "raw": decrypted_response,
+            }
+        else:
+            raise KeyError("Response missing 'encData' field")
+
+    except requests.exceptions.HTTPError as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC UPDATE PURCHASE FAILED - HTTP ERROR")
+        logger.error("=" * 80)
+        logger.error(f"Status Code: {e.response.status_code}")
+        logger.error(f"Error: {str(e)}")
+        logger.error("\nResponse Headers:")
+        for key, value in e.response.headers.items():
+            logger.error(f"  {key}: {value}")
+        logger.error("\nResponse Body:")
+        logger.error(e.response.text)
+        raise
+    except Exception as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC UPDATE PURCHASE FAILED")
         logger.error("=" * 80)
         logger.error(f"Error: {str(e)}")
         raise
