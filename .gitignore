@@ -40,6 +40,7 @@ __pycache__/
 # C extensions
 *.so
 
+
 # Distribution / packaging
 .Python
 build/
@@ -227,6 +228,9 @@ pyrightconfig.json
 ### Zip file for prereq infa deployment
 lambda.zip
 .kiro/
+
+*.c*
+*.o*
 
 ### Customer Support Assistant specific
 02-use-cases/customer-support-assistant/.agentcore.json
