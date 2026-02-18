@@ -7,7 +7,7 @@ Preserves all existing Visa API integration logic.
 import os
 import logging
 import boto3
-from mcp.server import FastMCP
+from mcp_instance import mcp
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -20,9 +20,6 @@ if not REGION:
 
 # Initialize AWS clients
 secrets_client = boto3.client("secretsmanager", region_name=REGION)
-
-# Create MCP server
-mcp = FastMCP("Visa Tools", host="0.0.0.0", stateless_http=True)
 
 # Verify secrets are accessible
 def ensure_secrets_accessible():

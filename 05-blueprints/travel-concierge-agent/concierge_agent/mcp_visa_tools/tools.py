@@ -4,7 +4,7 @@ Visa MCP Tool Implementations
 import logging
 import uuid
 import urllib.parse
-from server import mcp
+from mcp_instance import mcp
 from visa.secure_token import get_secure_token_direct
 from visa.helpers import get_secret
 from visa.flow import (
