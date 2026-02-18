@@ -35,19 +35,8 @@ def ensure_secrets_accessible():
 
 ensure_secrets_accessible()
 
-# Import all tools (must be after mcp is defined)
-from tools import (
-    visa_get_secure_token,
-    visa_onboard_card,
-    visa_device_attestation,
-    visa_device_binding,
-    visa_step_up,
-    visa_validate_otp,
-    visa_complete_passkey,
-    visa_vic_enroll_card,
-    visa_vic_initiate_purchase,
-    visa_vic_payment_credentials
-)
+# Import tools module to register all @mcp.tool() decorators
+import tools  # noqa: F401
 
 # Health check endpoint
 @mcp.get("/health")
