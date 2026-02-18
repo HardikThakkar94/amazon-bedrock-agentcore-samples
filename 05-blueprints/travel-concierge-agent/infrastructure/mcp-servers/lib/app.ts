@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import { TravelStack } from './travel-stack';
 import { CartStack } from './cart-stack';
 import { ItineraryStack } from './itinerary-stack';
+import { VisaStack } from './visa-stack';
 
 // Load deployment config
 const deploymentConfig = JSON.parse(fs.readFileSync('../../deployment-config.json', 'utf-8'));
@@ -30,6 +31,11 @@ new CartStack(app, `CartStack-${DEPLOYMENT_ID}`, {
 new ItineraryStack(app, `ItineraryStack-${DEPLOYMENT_ID}`, {
   env,
   description: `Itinerary MCP Server - Itinerary management tools (${DEPLOYMENT_ID})`
+});
+
+new VisaStack(app, `VisaStack-${DEPLOYMENT_ID}`, {
+  env,
+  description: `Visa MCP Server - Visa payment integration tools (${DEPLOYMENT_ID})`
 });
 
 app.synth();
