@@ -47,6 +47,7 @@ export class AgentStack extends cdk.Stack {
     const travelRuntimeArn = cdk.Fn.importValue(`TravelStack-${DEPLOYMENT_ID}-RuntimeArn`);
     const cartRuntimeArn = cdk.Fn.importValue(`CartStack-${DEPLOYMENT_ID}-RuntimeArn`);
     const itineraryRuntimeArn = cdk.Fn.importValue(`ItineraryStack-${DEPLOYMENT_ID}-RuntimeArn`);
+    const visaRuntimeArn = cdk.Fn.importValue(`VisaStack-${DEPLOYMENT_ID}-RuntimeArn`);
 
     // 1. Create Custom Resource Lambda for OAuth Provider
     const oauthProviderRole = new iam.Role(this, 'OAuthProviderLambdaRole', {
@@ -229,7 +230,8 @@ export class AgentStack extends cdk.Stack {
       mcpRuntimeArns: [
         { name: 'CartTools', arn: cartRuntimeArn },
         { name: 'ItineraryTools', arn: itineraryRuntimeArn },
-        { name: 'TravelTools', arn: travelRuntimeArn }
+        { name: 'TravelTools', arn: travelRuntimeArn },
+        { name: 'VisaTools', arn: visaRuntimeArn }
       ],
       cognitoClientId: machineClientId,  // Use M2M client (same as runtime and OAuth)
       cognitoDiscoveryUrl: discoveryUrl,
