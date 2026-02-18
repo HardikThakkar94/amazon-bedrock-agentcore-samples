@@ -38,16 +38,6 @@ ensure_secrets_accessible()
 # Import tools module to register all @mcp.tool() decorators
 import tools  # noqa: F401
 
-# Health check endpoint
-@mcp.get("/health")
-def health_check():
-    """Health check endpoint for container orchestration"""
-    return {
-        "status": "healthy",
-        "service": "visa-mcp",
-        "tools": 10
-    }
-
 if __name__ == "__main__":
     logger.info("Starting Visa Tools MCP Server...")
     logger.info("10 Visa tools registered")
