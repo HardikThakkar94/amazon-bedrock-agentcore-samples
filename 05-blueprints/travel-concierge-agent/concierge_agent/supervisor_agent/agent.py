@@ -17,6 +17,7 @@ from dynamodb_manager import DynamoDBManager
 from gateway_client import get_gateway_client
 from cart_subagent import cart_manager
 from travel_subagent import travel_assistant
+from visa_subagent import visa_payment_assistant
 
 # Configure logging
 logging.basicConfig(
@@ -140,7 +141,7 @@ def create_supervisor_agent(user_id: str, session_id: str) -> Agent:
     agent = Agent(
         name="supervisor_agent",
         system_prompt=base_prompt,
-        tools=[itinerary_client, cart_manager, travel_assistant],
+        tools=[itinerary_client, cart_manager, travel_assistant, visa_payment_assistant],
         model=bedrock_model,
         session_manager=session_manager,
         trace_attributes={
@@ -148,7 +149,7 @@ def create_supervisor_agent(user_id: str, session_id: str) -> Agent:
             "session.id": session_id,
         },
     )
-    logger.info("✅ Agent created with itinerary tools and subagents (cart + travel)")
+    logger.info("✅ Agent created with itinerary tools and subagents (cart + travel + visa)")
 
     logger.info("Supervisor agent created successfully with session manager")
     return agent
