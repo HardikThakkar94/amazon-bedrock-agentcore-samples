@@ -2,7 +2,7 @@
 Visa Tools MCP Server
 
 Exposes Visa payment APIs as MCP tools for AI agents.
-Preserves all existing Visa API integration logic.
+Also provides REST API endpoints for frontend access via custom routes.
 """
 import os
 import logging
@@ -35,7 +35,11 @@ ensure_secrets_accessible()
 # Import tools module to register all @mcp.tool() decorators
 import tools  # noqa: F401
 
+# Add custom HTTP routes to FastMCP app for REST API
+from rest_api import register_rest_routes
+register_rest_routes(mcp.app)
+
 if __name__ == "__main__":
     logger.info("Starting Visa Tools MCP Server...")
-    logger.info("10 Visa tools registered")
+    logger.info("10 Visa MCP tools + REST API endpoints registered")
     mcp.run(transport="streamable-http")

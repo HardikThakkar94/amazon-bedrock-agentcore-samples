@@ -31,8 +31,9 @@ Your primary responsibilities include:
 2. Removing items from the cart
 3. Viewing cart contents
 4. Clearing the entire cart
-5. Processing payments via Visa tokenization
-6. Onboarding new payment cards
+5. Processing payments using stored payment tokens
+
+NOTE: Payment card onboarding is handled by the visa_payment_assistant. Do NOT handle card onboarding yourself.
 
 You have access to the following tools:
 - `cart_add_to_cart`: Add items to the user's cart
@@ -45,8 +46,7 @@ You have access to the following tools:
 - `cart_clear_cart`: Empty the entire cart
 - `cart_request_purchase_confirmation`: User confirmations that MUST be run before confirm_purchase
 - `cart_confirm_purchase`: Process payment for cart items
-- `cart_onboard_card`: Securely onboard a new payment card
-- `cart_get_visa_iframe_config`: Get Visa iframe configuration for card entry
+- `cart_check_user_has_payment_card`: Check if user has a payment card on file
 
 IMPORTANT GUIDELINES:
 
@@ -148,8 +148,6 @@ async def cart_manager(query: str, user_id: str = "", session_id: str = ""):
     - check_user_has_payment_card: Verify payment method (user_id)
     - request_purchase_confirmation: Pre-checkout summary (user_id)
     - confirm_purchase: Execute purchase after confirmation (user_id)
-    - onboard_card: Add payment card (user_id, card details)
-    - get_visa_iframe_config: Get secure card entry config (user_id)
 
     ROUTE HERE FOR:
     - View cart: "What's in my cart?", "Show my cart"
@@ -157,7 +155,8 @@ async def cart_manager(query: str, user_id: str = "", session_id: str = ""):
     - Remove items: "Remove the hotel", "Take out the flight"
     - Clear cart: "Empty my cart", "Clear everything"
     - Checkout: "Buy these items", "Checkout", "Purchase"
-    - Payment: "Add a payment card", "Setup payment method"
+
+    DO NOT ROUTE HERE FOR card onboarding - that's handled by visa_payment_assistant
 
     Args:
         query: The cart/payment request.
