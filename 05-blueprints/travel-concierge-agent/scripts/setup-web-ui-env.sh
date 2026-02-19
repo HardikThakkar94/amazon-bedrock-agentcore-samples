@@ -40,18 +40,10 @@ MEMORY_ID=$(echo "$CDK_OUTPUTS" | jq -r '.[] | select(.OutputKey=="MemoryId") | 
 GATEWAY_URL=$(echo "$CDK_OUTPUTS" | jq -r '.[] | select(.OutputKey=="GatewayUrl") | .OutputValue // empty')
 GATEWAY_ID=$(echo "$CDK_OUTPUTS" | jq -r '.[] | select(.OutputKey=="GatewayId") | .OutputValue // empty')
 
-# Get Visa Lambda proxy URL from VisaLambdaStack
-VISA_STACK_NAME="VisaLambdaStack-${DEPLOYMENT_ID}"
-echo "📊 Querying ${VISA_STACK_NAME}..."
-VISA_OUTPUTS=$(aws cloudformation describe-stacks --stack-name "$VISA_STACK_NAME" --region us-east-1 --query "Stacks[0].Outputs" --output json 2>/dev/null) || {
-    echo "⚠️  Could not query ${VISA_STACK_NAME}. Visa Lambda not deployed - using mock mode."
-    VISA_PROXY_URL=""
-}
-if [[ -n "$VISA_OUTPUTS" && "$VISA_OUTPUTS" != "null" ]]; then
-    VISA_PROXY_URL=$(echo "$VISA_OUTPUTS" | jq -r '.[] | select(.OutputKey=="VisaProxyApiUrl") | .OutputValue // empty')
-    # Remove trailing slash if present
-    VISA_PROXY_URL=${VISA_PROXY_URL%/}
-fi
+# Use Gateway URL for Visa MCP (not Lambda API Gateway)
+# Gateway routes to VISA MCP REST API endpoints
+VISA_PROXY_URL=${GATEWAY_URL}
+echo "📊 Using Gateway URL for Visa MCP: ${VISA_PROXY_URL}"
 
 # Get Visa credentials from Secrets Manager
 echo "📊 Fetching Visa credentials from Secrets Manager..."
