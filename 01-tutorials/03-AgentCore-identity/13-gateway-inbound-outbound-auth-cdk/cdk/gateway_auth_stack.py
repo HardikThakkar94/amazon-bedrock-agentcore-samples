@@ -22,8 +22,6 @@ from aws_cdk import (
     aws_bedrockagentcore as bedrockagentcore,
     aws_iam as iam,
     aws_lambda as lambda_,
-    aws_apigatewayv2 as apigwv2,
-    aws_apigatewayv2_integrations as apigwv2_integrations,
     aws_ecr_assets as ecr_assets,
 )
 from constructs import Construct
@@ -157,23 +155,16 @@ class GatewayAuthStack(Stack):
             timeout=Duration.seconds(30),
         )
 
-        # HTTP API Gateway wrapping the Lambda
-        http_api = apigwv2.HttpApi(
-            self, "McpApi",
-            cors_preflight=apigwv2.CorsPreflightOptions(
-                allow_origins=["*"],
-                allow_methods=[apigwv2.CorsHttpMethod.POST, apigwv2.CorsHttpMethod.OPTIONS],
-                allow_headers=["Content-Type", "Authorization"],
+        # Lambda Function URL (simpler than API Gateway, no routing issues)
+        fn_url = mcp_fn.add_function_url(
+            auth_type=lambda_.FunctionUrlAuthType.NONE,
+            cors=lambda_.FunctionUrlCorsOptions(
+                allowed_origins=["*"],
+                allowed_methods=[lambda_.HttpMethod.POST],
+                allowed_headers=["Content-Type"],
             ),
         )
-        http_api.add_routes(
-            path="/mcp",
-            methods=[apigwv2.HttpMethod.POST],
-            integration=apigwv2_integrations.HttpLambdaIntegration(
-                "McpIntegration", mcp_fn
-            ),
-        )
-        mcp_endpoint = f"{http_api.api_endpoint}/mcp"
+        mcp_endpoint = fn_url.url
 
         # ── Gateway IAM role ───────────────────────────────────────
         gateway_role = iam.Role(
@@ -324,7 +315,7 @@ class GatewayAuthStack(Stack):
         CfnOutput(self, "RuntimeId", value=runtime.attr_agent_runtime_id)
         CfnOutput(self, "GatewayId", value=gateway.attr_gateway_identifier)
         CfnOutput(self, "GatewayUrl", value=gateway.attr_gateway_url)
-        CfnOutput(self, "McpEndpoint", value=mcp_endpoint)
+        CfnOutput(self, "McpEndpoint", value=fn_url.url)
         CfnOutput(self, "UserPoolId", value=user_pool.user_pool_id)
         CfnOutput(self, "UserClientId", value=user_client.user_pool_client_id)
         CfnOutput(self, "AgentClientId", value=agent_client.user_pool_client_id)
