@@ -23,7 +23,7 @@ from aws_cdk import (
     aws_bedrockagentcore as bedrockagentcore,
     aws_iam as iam,
     aws_kms as kms,
-    aws_s3_assets as s3_assets,
+    aws_ecr_assets as ecr_assets,
     custom_resources as cr,
 )
 from constructs import Construct
@@ -59,6 +59,7 @@ class M2MAuthStack(Stack):
         resource_server = user_pool.add_resource_server(
             "M2MResourceServer",
             identifier="https://api.m2m-demo.internal",
+            user_pool_resource_server_name="M2MDemoAPI",
             scopes=[
                 cognito.ResourceServerScope(
                     scope_name="read",
@@ -108,9 +109,9 @@ class M2MAuthStack(Stack):
         )
 
         # ── Agent code ─────────────────────────────────────────────
-        code_asset = s3_assets.Asset(
-            self, "AgentCode",
-            path=os.path.join(os.path.dirname(__file__), "..", "app"),
+        image_asset = ecr_assets.DockerImageAsset(
+            self, "AgentImage",
+            directory=os.path.join(os.path.dirname(__file__), "..", "app"),
         )
 
         # ── IAM role ───────────────────────────────────────────────
@@ -144,6 +145,15 @@ class M2MAuthStack(Stack):
                             f"arn:aws:logs:{region}:{account}:log-group:"
                             "/aws/bedrock-agentcore/runtimes/*:log-stream:*",
                         ],
+                    ),
+                    iam.PolicyStatement(
+                        sid="ECRAccess",
+                        actions=[
+                            "ecr:GetAuthorizationToken",
+                            "ecr:BatchGetImage",
+                            "ecr:GetDownloadUrlForLayer",
+                        ],
+                        resources=["*"],
                     ),
                     iam.PolicyStatement(
                         sid="WorkloadAccessToken",
@@ -193,22 +203,15 @@ class M2MAuthStack(Stack):
             },
         )
 
-        code_asset.grant_read(runtime_role)
+        image_asset.repository.grant_pull(runtime_role)
 
         # ── AgentCore Runtime ──────────────────────────────────────
         runtime = bedrockagentcore.CfnRuntime(
             self, "Runtime",
             agent_runtime_name=workload_identity.name,
             agent_runtime_artifact=bedrockagentcore.CfnRuntime.AgentRuntimeArtifactProperty(
-                code_configuration=bedrockagentcore.CfnRuntime.CodeConfigurationProperty(
-                    code=bedrockagentcore.CfnRuntime.CodeProperty(
-                        s3=bedrockagentcore.CfnRuntime.S3LocationProperty(
-                            bucket=code_asset.s3_bucket_name,
-                            prefix=code_asset.s3_object_key,
-                        )
-                    ),
-                    entry_point=["main.py"],
-                    runtime="PYTHON_3_12",
+                container_configuration=bedrockagentcore.CfnRuntime.ContainerConfigurationProperty(
+                    container_uri=image_asset.image_uri,
                 )
             ),
             role_arn=runtime_role.role_arn,

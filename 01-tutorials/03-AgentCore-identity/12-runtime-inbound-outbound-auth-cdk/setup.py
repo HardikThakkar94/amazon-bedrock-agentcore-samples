@@ -73,10 +73,10 @@ def main():
     identity = IdentityClient(region=region)
     print("Creating API key credential provider 'OutboundApiKey'...")
     try:
-        identity.create_api_key_credential_provider(
-            name="OutboundApiKey",
-            api_key_secret_string=args.api_key,
-        )
+        identity.create_api_key_credential_provider({
+            "name": "OutboundApiKey",
+            "apiKey": args.api_key,
+        })
         print("  OutboundApiKey created.")
     except Exception as e:
         if "already exists" in str(e).lower() or "conflict" in str(e).lower():

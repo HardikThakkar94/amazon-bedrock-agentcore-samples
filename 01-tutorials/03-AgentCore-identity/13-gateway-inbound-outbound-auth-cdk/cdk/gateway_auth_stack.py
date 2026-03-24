@@ -24,7 +24,7 @@ from aws_cdk import (
     aws_lambda as lambda_,
     aws_apigatewayv2 as apigwv2,
     aws_apigatewayv2_integrations as apigwv2_integrations,
-    aws_s3_assets as s3_assets,
+    aws_ecr_assets as ecr_assets,
 )
 from constructs import Construct
 
@@ -107,6 +107,23 @@ class GatewayAuthStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # Resource server for gateway scope (needed for client_credentials)
+        gateway_rs = user_pool.add_resource_server(
+            "GatewayResourceServer",
+            identifier="https://gateway.example.internal",
+            user_pool_resource_server_name="GatewayAPI",
+            scopes=[
+                cognito.ResourceServerScope(
+                    scope_name="invoke",
+                    scope_description="Permission to invoke the gateway",
+                )
+            ],
+        )
+        gateway_scope = cognito.OAuthScope.resource_server(
+            gateway_rs,
+            cognito.ResourceServerScope(scope_name="invoke", scope_description="Permission to invoke the gateway"),
+        )
+
         # User-facing client (callers use this to get tokens)
         user_client = user_pool.add_client(
             "UserClient",
@@ -115,14 +132,14 @@ class GatewayAuthStack(Stack):
             access_token_validity=Duration.hours(1),
         )
 
-        # Agent-facing client (agent uses this to call the gateway)
+        # Agent-facing client (agent uses this to call the gateway via client_credentials)
         agent_client = user_pool.add_client(
             "AgentClient",
             auth_flows=cognito.AuthFlow(user_password=False),
             generate_secret=True,
             o_auth=cognito.OAuthSettings(
                 flows=cognito.OAuthFlows(client_credentials=True),
-                scopes=[cognito.OAuthScope.OPENID],
+                scopes=[gateway_scope],
             ),
         )
 
@@ -186,11 +203,6 @@ class GatewayAuthStack(Stack):
             self, "GatewayTarget",
             name="McpTools",
             gateway_identifier=gateway.attr_gateway_identifier,
-            credential_provider_configurations=[
-                bedrockagentcore.CfnGatewayTarget.CredentialProviderConfigurationProperty(
-                    credential_provider_type="GATEWAY_IAM_ROLE"
-                )
-            ],
             target_configuration=bedrockagentcore.CfnGatewayTarget.TargetConfigurationProperty(
                 mcp=bedrockagentcore.CfnGatewayTarget.McpTargetConfigurationProperty(
                     mcp_server=bedrockagentcore.CfnGatewayTarget.McpServerTargetConfigurationProperty(
@@ -201,9 +213,9 @@ class GatewayAuthStack(Stack):
         )
 
         # ── Agent code ─────────────────────────────────────────────
-        code_asset = s3_assets.Asset(
-            self, "AgentCode",
-            path=os.path.join(os.path.dirname(__file__), "..", "app"),
+        image_asset = ecr_assets.DockerImageAsset(
+            self, "AgentImage",
+            directory=os.path.join(os.path.dirname(__file__), "..", "app"),
         )
 
         # ── Runtime IAM role ───────────────────────────────────────
@@ -239,6 +251,15 @@ class GatewayAuthStack(Stack):
                         ],
                     ),
                     iam.PolicyStatement(
+                        sid="ECRAccess",
+                        actions=[
+                            "ecr:GetAuthorizationToken",
+                            "ecr:BatchGetImage",
+                            "ecr:GetDownloadUrlForLayer",
+                        ],
+                        resources=["*"],
+                    ),
+                    iam.PolicyStatement(
                         sid="WorkloadAccessToken",
                         actions=[
                             "bedrock-agentcore:GetWorkloadAccessToken",
@@ -271,22 +292,15 @@ class GatewayAuthStack(Stack):
             },
         )
 
-        code_asset.grant_read(runtime_role)
+        image_asset.repository.grant_pull(runtime_role)
 
         # ── AgentCore Runtime ──────────────────────────────────────
         runtime = bedrockagentcore.CfnRuntime(
             self, "Runtime",
-            agent_runtime_name="GatewayAuthCdk-Agent",
+            agent_runtime_name="GatewayAuthCdk_Agent",
             agent_runtime_artifact=bedrockagentcore.CfnRuntime.AgentRuntimeArtifactProperty(
-                code_configuration=bedrockagentcore.CfnRuntime.CodeConfigurationProperty(
-                    code=bedrockagentcore.CfnRuntime.CodeProperty(
-                        s3=bedrockagentcore.CfnRuntime.S3LocationProperty(
-                            bucket=code_asset.s3_bucket_name,
-                            prefix=code_asset.s3_object_key,
-                        )
-                    ),
-                    entry_point=["main.py"],
-                    runtime="PYTHON_3_12",
+                container_configuration=bedrockagentcore.CfnRuntime.ContainerConfigurationProperty(
+                    container_uri=image_asset.image_uri,
                 )
             ),
             role_arn=runtime_role.role_arn,
