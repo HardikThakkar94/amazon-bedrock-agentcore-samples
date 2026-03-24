@@ -68,17 +68,17 @@ def main():
     identity = IdentityClient(region=region)
     print("Creating managed gateway credential 'GatewayManagedCredential'...")
     try:
-        identity.create_oauth2_credential_provider(
-            name="GatewayManagedCredential",
-            credentialProviderVendor="CustomOauth2",
-            oauth2ProviderConfigInput={
+        identity.create_oauth2_credential_provider({
+            "name": "GatewayManagedCredential",
+            "credentialProviderVendor": "CustomOauth2",
+            "oauth2ProviderConfigInput": {
                 "customOauth2ProviderConfig": {
                     "clientId": agent_client_id,
                     "clientSecret": agent_secret,
                     "oauthDiscovery": {"discoveryUrl": discovery_url},
                 }
             },
-        )
+        })
         print("  GatewayManagedCredential created.")
     except Exception as e:
         if "already exists" in str(e).lower() or "conflict" in str(e).lower():

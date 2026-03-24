@@ -104,7 +104,7 @@ class M2MAuthStack(Stack):
         # ── CfnWorkloadIdentity ────────────────────────────────────
         workload_identity = bedrockagentcore.CfnWorkloadIdentity(
             self, "WorkloadIdentity",
-            name="M2MAuthCdk-Agent",
+            name="M2MAuthCdk_Agent",
             allowed_resource_oauth2_return_urls=[callback_url],
         )
 

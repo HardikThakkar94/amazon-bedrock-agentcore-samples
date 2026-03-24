@@ -59,19 +59,25 @@ def create_m2m_provider(identity: IdentityClient, outputs: dict) -> dict:
     machine_secret = resp["UserPoolClient"].get("ClientSecret", "")
 
     print("Creating M2MProvider (Cognito client credentials)...")
-    provider = identity.create_oauth2_credential_provider(
-        name="M2MProvider",
-        credentialProviderVendor="CustomOauth2",
-        oauth2ProviderConfigInput={
-            "customOauth2ProviderConfig": {
-                "clientId": machine_client_id,
-                "clientSecret": machine_secret,
-                "oauthDiscovery": {"discoveryUrl": discovery_url},
-            }
-        },
-    )
-    print(f"  Created: {provider.get('name')}")
-    return {"name": "M2MProvider", "provider": provider}
+    try:
+        provider = identity.create_oauth2_credential_provider({
+            "name": "M2MProvider",
+            "credentialProviderVendor": "CustomOauth2",
+            "oauth2ProviderConfigInput": {
+                "customOauth2ProviderConfig": {
+                    "clientId": machine_client_id,
+                    "clientSecret": machine_secret,
+                    "oauthDiscovery": {"discoveryUrl": discovery_url},
+                }
+            },
+        })
+        print(f"  Created: {provider.get('name')}")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "conflict" in str(e).lower():
+            print("  M2MProvider already exists.")
+        else:
+            raise
+    return {"name": "M2MProvider"}
 
 
 def create_github_provider(identity: IdentityClient) -> dict:
@@ -82,20 +88,27 @@ def create_github_provider(identity: IdentityClient) -> dict:
         return {"name": "GitHub3LOProvider", "skipped": True}
 
     print("Creating GitHub3LOProvider...")
-    provider = identity.create_oauth2_credential_provider(
-        name="GitHub3LOProvider",
-        credentialProviderVendor="GithubOauth2",
-        oauth2ProviderConfigInput={
+    try:
+     provider = identity.create_oauth2_credential_provider({
+        "name": "GitHub3LOProvider",
+        "credentialProviderVendor": "GithubOauth2",
+        "oauth2ProviderConfigInput": {
             "githubOauth2ProviderConfig": {
                 "clientId": client_id,
                 "clientSecret": client_secret,
             }
         },
-    )
-    callback_url = provider.get("callbackUrl", "")
-    print(f"  Created: {provider.get('name')}")
-    print(f"\n  IMPORTANT: Add to your GitHub OAuth App -> Authorization callback URL:")
-    print(f"  {callback_url}")
+    })
+     callback_url = provider.get("callbackUrl", "")
+     print(f"  Created: {provider.get('name')}")
+     print(f"\n  IMPORTANT: Add to your GitHub OAuth App -> Authorization callback URL:")
+     print(f"  {callback_url}")
+    except Exception as e:
+     if "already exists" in str(e).lower():
+      print("  GitHub3LOProvider already exists.")
+      callback_url = ""
+     else:
+      raise
     return {"name": "GitHub3LOProvider", "callback_url": callback_url}
 
 
@@ -107,20 +120,27 @@ def create_google_provider(identity: IdentityClient) -> dict:
         return {"name": "Google3LOProvider", "skipped": True}
 
     print("Creating Google3LOProvider...")
-    provider = identity.create_oauth2_credential_provider(
-        name="Google3LOProvider",
-        credentialProviderVendor="GoogleOauth2",
-        oauth2ProviderConfigInput={
+    try:
+     provider = identity.create_oauth2_credential_provider({
+        "name": "Google3LOProvider",
+        "credentialProviderVendor": "GoogleOauth2",
+        "oauth2ProviderConfigInput": {
             "googleOauth2ProviderConfig": {
                 "clientId": client_id,
                 "clientSecret": client_secret,
             }
         },
-    )
-    callback_url = provider.get("callbackUrl", "")
-    print(f"  Created: {provider.get('name')}")
-    print(f"\n  IMPORTANT: Add to Google Cloud Console -> Authorised redirect URIs:")
-    print(f"  {callback_url}")
+    })
+     callback_url = provider.get("callbackUrl", "")
+     print(f"  Created: {provider.get('name')}")
+     print(f"\n  IMPORTANT: Add to Google Cloud Console -> Authorised redirect URIs:")
+     print(f"  {callback_url}")
+    except Exception as e:
+     if "already exists" in str(e).lower():
+      print("  Google3LOProvider already exists.")
+      callback_url = ""
+     else:
+      raise
     return {"name": "Google3LOProvider", "callback_url": callback_url}
 
 
