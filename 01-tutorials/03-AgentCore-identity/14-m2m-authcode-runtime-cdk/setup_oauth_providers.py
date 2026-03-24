@@ -106,7 +106,15 @@ def create_github_provider(identity: IdentityClient) -> dict:
     except Exception as e:
      if "already exists" in str(e).lower():
       print("  GitHub3LOProvider already exists.")
-      callback_url = ""
+      # Fetch callback URL from existing provider
+      try:
+       existing = identity.cp_client.get_oauth2_credential_provider(name="GitHub3LOProvider")
+       callback_url = existing.get("callbackUrl", "")
+       if callback_url:
+        print(f"  Callback URL: {callback_url}")
+        print(f"  Ensure this is registered in your GitHub OAuth App settings.")
+      except Exception:
+       callback_url = ""
      else:
       raise
     return {"name": "GitHub3LOProvider", "callback_url": callback_url}
@@ -138,7 +146,14 @@ def create_google_provider(identity: IdentityClient) -> dict:
     except Exception as e:
      if "already exists" in str(e).lower():
       print("  Google3LOProvider already exists.")
-      callback_url = ""
+      try:
+       existing = identity.cp_client.get_oauth2_credential_provider(name="Google3LOProvider")
+       callback_url = existing.get("callbackUrl", "")
+       if callback_url:
+        print(f"  Callback URL: {callback_url}")
+        print(f"  Ensure this is registered in Google Cloud Console -> Authorised redirect URIs.")
+      except Exception:
+       callback_url = ""
      else:
       raise
     return {"name": "Google3LOProvider", "callback_url": callback_url}
