@@ -193,11 +193,6 @@ class M2MAuthStack(Stack):
                             "kms:DescribeKey",
                         ],
                         resources=["*"],
-                        conditions={
-                            "StringLike": {
-                                "kms:ViaService": f"secretsmanager.{region}.amazonaws.com"
-                            }
-                        },
                     ),
                 ]),
             },

@@ -127,7 +127,7 @@ def test_authcode(client, runtime_arn: str, token: str, outputs: dict, provider:
 
         result_lower = result.lower()
         if "http" in result_lower and any(k in result_lower for k in cfg["keywords"]):
-            urls = re.findall(r"https?://[^\s'\")\]]+", result)
+            urls = re.findall(r"https?://[^\s'\")*\]]+", result)
             if urls:
                 consent_url = urls[0]
                 print(f"\nConsent URL: {consent_url}")

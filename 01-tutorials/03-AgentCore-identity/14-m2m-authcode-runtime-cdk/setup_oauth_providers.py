@@ -183,6 +183,22 @@ def create_test_user(outputs: dict):
     )
     print("  Authentication verified.")
 
+    # Register callback URL in the runtime's actual workload identity
+    # (CDK creates a separate CfnWorkloadIdentity but the runtime gets its own)
+    callback_url = os.environ.get("CALLBACK_URL", "http://localhost:9090/oauth2/callback")
+    runtime_id = outputs.get("RuntimeId", "")
+    if runtime_id:
+        ctrl = boto3.client("bedrock-agentcore-control", region_name=region)
+        runtime = ctrl.get_agent_runtime(agentRuntimeId=runtime_id)
+        wi_arn = runtime.get("workloadIdentityDetails", {}).get("workloadIdentityArn", "")
+        wi_name = wi_arn.split("/")[-1] if wi_arn else ""
+        if wi_name:
+            ctrl.update_workload_identity(
+                name=wi_name,
+                allowedResourceOauth2ReturnUrls=[callback_url],
+            )
+            print(f"  Workload identity '{wi_name}' updated with callback URL: {callback_url}")
+
 
 def main():
     outputs = load_outputs()
