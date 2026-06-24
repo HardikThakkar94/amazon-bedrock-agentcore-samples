@@ -125,6 +125,9 @@ def home():
                 "POST /api/visa/vic/enroll-card",
                 "POST /api/visa/vic/initiate-purchase",
                 "POST /api/visa/vic/payment-credentials",
+                "POST /api/visa/vic/publish-transaction",
+                "POST /api/visa/vic/cancel-purchase",
+                "POST /api/visa/vic/update-purchase",
             ],
         }
     )
@@ -952,6 +955,298 @@ def vic_payment_credentials_endpoint():
                 "success": True,
                 "signedPayload": result.get("signedPayload"),
                 "instructionId": result.get("instructionId"),
+                "status": result.get("status"),
+                "raw": result.get("raw"),
+            }
+        )
+
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/vic/publish-transaction", methods=["POST"])
+def vic_publish_transaction_endpoint():
+    """
+    Step 17: Publish Transaction Confirmation
+
+    Called after successful payment authorization to confirm the transaction.
+
+    Request body:
+        {
+            "clientReferenceId": "...",
+            "instructionId": "...",
+            "timestamp": 1234567890  // Unix timestamp (optional, will generate if not provided)
+        }
+
+    Returns:
+        {
+            "success": true,
+            "clientReferenceId": "...",
+            "status": "...",
+            "raw": {...}
+        }
+    """
+    try:
+        print("\n=== POST /api/visa/vic/publish-transaction ===")
+
+        # Import flow functions
+        flow = lazy_import_flow()
+
+        data = get_request_json()
+        client_reference_id = data.get("clientReferenceId")
+        instruction_id = data.get("instructionId")
+        timestamp = data.get("timestamp")
+
+        # Generate timestamp if not provided
+        if not timestamp:
+            import time
+
+            timestamp = int(time.time())
+
+        print(f"ClientReferenceId: {client_reference_id}")
+        print(f"InstructionId: {instruction_id}")
+        print(f"Timestamp: {timestamp}")
+
+        # Validate required fields
+        if not client_reference_id:
+            raise ValueError("clientReferenceId is required")
+        if not instruction_id:
+            raise ValueError("instructionId is required")
+
+        # Call publish_transaction from flow.py
+        result = flow.publish_transaction(
+            client_reference_id, timestamp, instruction_id
+        )
+
+        print("✅ Transaction published successfully")
+
+        return jsonify(
+            {
+                "success": True,
+                "clientReferenceId": result.get("clientReferenceId"),
+                "status": result.get("status"),
+                "raw": result.get("raw"),
+            }
+        )
+
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/vic/cancel-purchase", methods=["POST"])
+def vic_cancel_purchase_endpoint():
+    """
+    Cancel Purchase Intent
+
+    Cancels a previously initiated purchase instruction.
+
+    Request body:
+        {
+            "consumerId": "...",
+            "clientReferenceId": "...",
+            "clientDeviceId": "...",
+            "authIdentifier": "...",
+            "dfpSessionId": "...",
+            "fidoBlob": "...",
+            "instructionId": "...",
+            "timestamp": 1234567890  // Unix timestamp (optional, will generate if not provided)
+        }
+
+    Returns:
+        {
+            "success": true,
+            "clientReferenceId": "...",
+            "status": "...",
+            "raw": {...}
+        }
+    """
+    try:
+        print("\n=== POST /api/visa/vic/cancel-purchase ===")
+
+        # Import flow functions
+        flow = lazy_import_flow()
+
+        data = get_request_json()
+        consumer_id = data.get("consumerId")
+        client_reference_id = data.get("clientReferenceId")
+        client_device_id = data.get("clientDeviceId")
+        auth_identifier = data.get("authIdentifier", "")
+        dfp_session_id = data.get("dfpSessionId", "")
+        iframe_auth_fido_blob = data.get("fidoBlob", "")
+        instruction_id = data.get("instructionId")  # Required for cancel endpoint
+        timestamp = data.get("timestamp")
+
+        # Generate timestamp if not provided
+        if not timestamp:
+            import time
+
+            timestamp = int(time.time())
+
+        print(f"ConsumerId: {consumer_id}")
+        print(f"ClientReferenceId: {client_reference_id}")
+        print(f"ClientDeviceId: {client_device_id}")
+        print(f"InstructionId: {instruction_id}")
+        print(f"Timestamp: {timestamp}")
+
+        # Validate required fields
+        if not consumer_id:
+            raise ValueError("consumerId is required")
+        if not client_reference_id:
+            raise ValueError("clientReferenceId is required")
+        if not client_device_id:
+            raise ValueError("clientDeviceId is required")
+        if not instruction_id:
+            raise ValueError("instructionId is required")
+
+        # Call cancel_purchase from flow.py
+        result = flow.cancel_purchase(
+            consumer_id,
+            client_reference_id,
+            client_device_id,
+            auth_identifier,
+            dfp_session_id,
+            iframe_auth_fido_blob,
+            timestamp,
+            instruction_id,
+        )
+
+        print("✅ Purchase cancelled successfully")
+
+        return jsonify(
+            {
+                "success": True,
+                "clientReferenceId": result.get("clientReferenceId"),
+                "status": result.get("status"),
+                "raw": result.get("raw"),
+            }
+        )
+
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# codeql[py/information-exposure-through-exception] Development server error handling - provides debugging context for API integration
+
+
+@app.route("/api/visa/vic/update-purchase", methods=["POST"])
+def vic_update_purchase_endpoint():
+    """
+    Update Purchase Intent
+
+    Updates a previously initiated purchase instruction with new mandate details.
+
+    Request body:
+        {
+            "consumerId": "...",
+            "vProvisionedTokenId": "...",
+            "instructionId": "...",
+            "clientReferenceId": "...",
+            "clientDeviceId": "...",
+            "consumerRequest": "Updated purchase description",
+            "authIdentifier": "...",
+            "dfpSessionId": "...",
+            "fidoBlob": "...",
+            "mandateId": "...",
+            "effectiveUntil": 1234567890,  // Unix timestamp (optional, will generate if not provided)
+            "timestamp": 1234567890  // Unix timestamp (optional, will generate if not provided)
+        }
+
+    Returns:
+        {
+            "success": true,
+            "clientReferenceId": "...",
+            "status": "...",
+            "raw": {...}
+        }
+    """
+    try:
+        print("\n=== POST /api/visa/vic/update-purchase ===")
+
+        # Import flow functions
+        flow = lazy_import_flow()
+
+        data = get_request_json()
+        consumer_id = data.get("consumerId")
+        v_provisioned_token_id = data.get("vProvisionedTokenId")
+        instruction_id = data.get("instructionId")
+        client_reference_id = data.get("clientReferenceId")
+        client_device_id = data.get("clientDeviceId")
+        consumer_request = data.get("consumerRequest", "Updated purchase")
+        auth_identifier = data.get("authIdentifier", "")
+        dfp_session_id = data.get("dfpSessionId", "")
+        iframe_auth_fido_blob = data.get("fidoBlob", "")
+        mandate_id = data.get("mandateId")
+        effective_until = data.get("effectiveUntil")
+        timestamp = data.get("timestamp")
+
+        # Generate timestamps if not provided
+        import time
+
+        if not timestamp:
+            timestamp = int(time.time())
+        if not effective_until:
+            effective_until = timestamp + 864000  # 10 days from now
+
+        # Generate mandate_id if not provided
+        if not mandate_id:
+            mandate_id = str(uuid.uuid4())
+
+        print(f"ConsumerId: {consumer_id}")
+        print(f"TokenId: {v_provisioned_token_id}")
+        print(f"InstructionId: {instruction_id}")
+        print(f"ClientReferenceId: {client_reference_id}")
+        print(f"ClientDeviceId: {client_device_id}")
+        print(f"ConsumerRequest: {consumer_request}")
+        print(f"MandateId: {mandate_id}")
+        print(f"Timestamp: {timestamp}")
+
+        # Validate required fields
+        if not consumer_id:
+            raise ValueError("consumerId is required")
+        if not v_provisioned_token_id:
+            raise ValueError("vProvisionedTokenId is required")
+        if not instruction_id:
+            raise ValueError("instructionId is required")
+        if not client_reference_id:
+            raise ValueError("clientReferenceId is required")
+        if not client_device_id:
+            raise ValueError("clientDeviceId is required")
+
+        # Call update_purchase from flow.py
+        result = flow.update_purchase(
+            consumer_id,
+            v_provisioned_token_id,
+            CLIENT_APP_ID,
+            effective_until,
+            mandate_id,
+            client_reference_id,
+            client_device_id,
+            consumer_request,
+            auth_identifier,
+            dfp_session_id,
+            iframe_auth_fido_blob,
+            timestamp,
+            instruction_id,
+        )
+
+        print("✅ Purchase updated successfully")
+
+        return jsonify(
+            {
+                "success": True,
+                "clientReferenceId": result.get("clientReferenceId"),
                 "status": result.get("status"),
                 "raw": result.get("raw"),
             }

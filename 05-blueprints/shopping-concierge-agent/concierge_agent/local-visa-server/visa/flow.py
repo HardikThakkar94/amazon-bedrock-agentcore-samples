@@ -1576,3 +1576,425 @@ def vic_get_payment_credentials(
         logger.error("=" * 80)
         logger.error(f"Error: {str(e)}")
         raise
+
+
+def publish_transaction(client_reference_id, timestamp, instruction_id):
+    """
+    Publish Transaction Confirmation
+
+    Confirms a completed purchase transaction to Visa
+
+    Args:
+        client_reference_id: Client reference ID
+        timestamp: Transaction timestamp
+        instruction_id: Instruction ID from purchase instructions
+
+    Returns:
+        Dictionary containing confirmation status
+    """
+    _ensure_vts_secrets()
+
+    logger.info("=" * 80)
+    logger.info("Publish Transaction")
+    logger.info("=" * 80)
+
+    # externalClientId is from Visa Developer Portal
+    to_be_encrypted = {
+        "clientReferenceId": client_reference_id,
+        "confirmationData": [
+            {
+                "paymentConfirmationData": {
+                    "transactionType": "PURCHASE",
+                    "transactionStatus": "APPROVED",
+                    "transactionTimestamp": timestamp,
+                },
+                "transactionReferenceId": instruction_id,
+            }
+        ],
+    }
+
+    # Encrypt the payload using RSA encryption with VIC certificate
+    enc_data = encrypt_payload(to_be_encrypted)
+    enc_data_str = json.dumps(enc_data, separators=(",", ":"))
+
+    # Build URL
+    url = f"https://cert.api.visa.com/vacp/v1/instructions/{instruction_id}/confirmations?apikey={api_key}"
+
+    # Generate X-PAY-TOKEN
+    resource_path = f"v1/instructions/{instruction_id}/confirmations"
+    query_string = f"apikey={api_key}"
+    x_pay_token = generate_x_pay_token(
+        shared_secret, resource_path, query_string, enc_data_str
+    )
+
+    # Get keyId from secrets
+    vic_key_id = get_secret("visa/vic_key_id", region)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "keyId": vic_key_id,
+        "x-pay-token": x_pay_token,
+        "x-request-id": client_reference_id,
+    }
+
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
+    logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
+    logger.info(f"Request Body (truncated): {enc_data_str[:100]}...")
+
+    try:
+        response = requests.post(url, headers=headers, data=enc_data_str)
+
+        logger.info(f"\nResponse Status Code: {response.status_code}")
+        response.raise_for_status()
+
+        response_json = response.json()
+        logger.info("\nResponse Body (Parsed JSON):")
+        logger.info("[Response data redacted for security]")
+
+        # Decrypt response using RSA decryption
+        enc_response_data = response_json.get("encData")
+        if enc_response_data:
+            decrypted_response = decrypt_rsa(enc_response_data)
+
+            logger.info("\n" + "=" * 80)
+            logger.info("VIC Publish instructions completed successfully")
+            logger.info("=" * 80)
+
+            return {
+                "clientReferenceId": decrypted_response.get("clientReferenceId"),
+                "status": decrypted_response.get("status"),
+                "raw": decrypted_response,
+            }
+        else:
+            raise KeyError("Response missing 'encData' field")
+
+    except requests.exceptions.HTTPError as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC PUBLISH INSTRUCTIONS FAILED - HTTP ERROR")
+        logger.error("=" * 80)
+        logger.error(f"Status Code: {e.response.status_code}")
+        logger.error(f"Error: {str(e)}")
+        logger.error("\nResponse Headers:")
+        for key, value in e.response.headers.items():
+            logger.error(f"  {key}: {value}")
+        logger.error("\nResponse Body:")
+        logger.error(e.response.text)
+        raise
+    except Exception as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC PUBLISH INSTRUCTIONS FAILED")
+        logger.error("=" * 80)
+        logger.error(f"Error: {str(e)}")
+        raise
+
+
+def cancel_purchase(
+    consumer_id,
+    client_reference_id,
+    client_device_id,
+    auth_identifier,
+    dfp_session_id,
+    iframe_auth_fido_blob,
+    timestamp,
+    instruction_id,
+):
+    """
+    Cancel Purchase Intent
+
+    Cancels a previously created purchase instruction
+
+    Args:
+        consumer_id: Consumer ID
+        client_reference_id: Client reference ID
+        client_device_id: Client device ID
+        auth_identifier: Authentication identifier
+        dfp_session_id: DFP session ID
+        iframe_auth_fido_blob: FIDO assertion data
+        timestamp: Cancellation timestamp
+        instruction_id: Instruction ID to cancel
+
+    Returns:
+        Dictionary containing cancellation status
+    """
+    _ensure_vts_secrets()
+
+    logger.info("=" * 80)
+    logger.info("Cancel a purchase intent")
+    logger.info("=" * 80)
+
+    to_be_encrypted = {
+        "consumerId": consumer_id,
+        "clientReferenceId": client_reference_id,
+        "appInstance": {
+            "ipAddress": "192.168.1.1",
+            "userAgent": "Mozilla/5.0",
+            "deviceData": {
+                "type": "Mobile",
+                "brand": "Apple",
+                "model": "iPhone 16 Pro Max",
+                "manufacturer": "Apple",
+            },
+            "countryCode": "US",
+            "clientDeviceId": client_device_id,
+            "applicationName": "My Magic App ",
+        },
+        "assuranceData": [
+            {
+                "methodResults": {
+                    "identifier": auth_identifier,
+                    "dfpSessionId": dfp_session_id,
+                    "fidoAssertionData": {"code": iframe_auth_fido_blob},
+                },
+                "verificationType": "DEVICE",
+                "verificationEntity": "10",
+                "verificationMethod": "23",
+                "verificationResults": "01",
+                "verificationTimestamp": timestamp,
+            }
+        ],
+    }
+
+    # Encrypt the payload using RSA encryption with VIC certificate
+    enc_data = encrypt_payload(to_be_encrypted)
+    enc_data_str = json.dumps(enc_data, separators=(",", ":"))
+
+    # Build URL
+    url = f"https://cert.api.visa.com/vacp/v1/instructions/{instruction_id}/cancel?apikey={api_key}"
+
+    # Generate X-PAY-TOKEN
+    resource_path = f"v1/instructions/{instruction_id}/cancel"
+    query_string = f"apikey={api_key}"
+    x_pay_token = generate_x_pay_token(
+        shared_secret, resource_path, query_string, enc_data_str
+    )
+
+    # Get keyId from secrets
+    vic_key_id = get_secret("visa/vic_key_id", region)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "keyId": vic_key_id,
+        "x-pay-token": x_pay_token,
+        "x-request-id": client_reference_id,
+    }
+
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
+    logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
+    logger.info(f"Request Body (truncated): {enc_data_str[:100]}...")
+
+    try:
+        response = requests.put(url, headers=headers, data=enc_data_str)
+
+        logger.info(f"\nResponse Status Code: {response.status_code}")
+        response.raise_for_status()
+
+        response_json = response.json()
+        logger.info("\nResponse Body (Parsed JSON):")
+        logger.info("[Response data redacted for security]")
+
+        # Decrypt response using RSA decryption
+        enc_response_data = response_json.get("encData")
+        if enc_response_data:
+            decrypted_response = decrypt_rsa(enc_response_data)
+
+            logger.info("\n" + "=" * 80)
+            logger.info("VIC Cancel Purchase completed successfully")
+            logger.info("=" * 80)
+
+            return {
+                "clientReferenceId": decrypted_response.get("clientReferenceId"),
+                "status": decrypted_response.get("status"),
+                "raw": decrypted_response,
+            }
+        else:
+            raise KeyError("Response missing 'encData' field")
+
+    except requests.exceptions.HTTPError as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC CANCEL PURCHASE FAILED - HTTP ERROR")
+        logger.error("=" * 80)
+        logger.error(f"Status Code: {e.response.status_code}")
+        logger.error(f"Error: {str(e)}")
+        logger.error("\nResponse Headers:")
+        for key, value in e.response.headers.items():
+            logger.error(f"  {key}: {value}")
+        logger.error("\nResponse Body:")
+        logger.error(e.response.text)
+        raise
+    except Exception as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC CANCEL PURCHASE FAILED")
+        logger.error("=" * 80)
+        logger.error(f"Error: {str(e)}")
+        raise
+
+
+def update_purchase(
+    consumer_id,
+    provisioned_token_id,
+    client_app_id,
+    effective_until,
+    mandate_id,
+    client_reference_id,
+    client_device_id,
+    consumer_request,
+    auth_identifier,
+    dfp_session_id,
+    iframe_auth_fido_blob,
+    timestamp,
+    instruction_id,
+):
+    """
+    Update Purchase Intent
+
+    Updates an existing purchase instruction with new mandate details
+
+    Args:
+        consumer_id: Consumer ID
+        provisioned_token_id: Provisioned token ID
+        client_app_id: Client application ID
+        effective_until: Mandate expiration timestamp
+        mandate_id: Mandate ID
+        client_reference_id: Client reference ID
+        client_device_id: Client device ID
+        consumer_request: Consumer request description
+        auth_identifier: Authentication identifier
+        dfp_session_id: DFP session ID
+        iframe_auth_fido_blob: FIDO assertion data
+        timestamp: Update timestamp
+        instruction_id: Instruction ID to update
+
+    Returns:
+        Dictionary containing update status
+    """
+    _ensure_vts_secrets()
+
+    logger.info("=" * 80)
+    logger.info("Update a Purchase intent")
+    logger.info("=" * 80)
+
+    to_be_encrypted = {
+        "consumerId": consumer_id,
+        "tokenId": provisioned_token_id,
+        "client": {
+            "externalClientId": "3aa9e2b8-c5c1-612d-32c3-1cb11b85a702",
+            "externalAppId": client_app_id,
+        },
+        "mandates": [
+            {
+                "effectiveUntilTime": effective_until,
+                "declineThreshold": {"amount": "333.33", "currencyCode": "USD"},
+                "quantity": 1,
+                "mandateId": mandate_id,
+                "merchantCategoryCode": "1234",
+                "description": "My description",
+                "merchantCategory": "Electronics",
+                "preferredMerchantName": "Best Buy",
+            }
+        ],
+        "clientReferenceId": client_reference_id,
+        "appInstance": {
+            "countryCode": "US",
+            "clientDeviceId": client_device_id,
+            "ipAddress": "192.168.1.1",
+            "deviceData": {
+                "model": "iPhone 16 Pro Max",
+                "type": "Mobile",
+                "brand": "Apple",
+                "manufacturer": "Apple",
+            },
+            "userAgent": "Mozilla/5.0",
+            "applicationName": "My Magic App",
+        },
+        "consumerPrompt": consumer_request,
+        "assuranceData": [
+            {
+                "methodResults": {
+                    "identifier": auth_identifier,
+                    "dfpSessionId": dfp_session_id,
+                    "fidoAssertionData": {"code": iframe_auth_fido_blob},
+                },
+                "verificationType": "DEVICE",
+                "verificationResults": "01",
+                "verificationMethod": "23",
+                "verificationTimestamp": timestamp,
+            }
+        ],
+    }
+
+    # Encrypt the payload using RSA encryption with VIC certificate
+    enc_data = encrypt_payload(to_be_encrypted)
+    enc_data_str = json.dumps(enc_data, separators=(",", ":"))
+
+    # Build URL
+    url = f"https://cert.api.visa.com/vacp/v1/instructions/{instruction_id}?apikey={api_key}"
+
+    # Generate X-PAY-TOKEN
+    resource_path = f"v1/instructions/{instruction_id}"
+    query_string = f"apikey={api_key}"
+    x_pay_token = generate_x_pay_token(
+        shared_secret, resource_path, query_string, enc_data_str
+    )
+
+    # Get keyId from secrets
+    vic_key_id = get_secret("visa/vic_key_id", region)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "keyId": vic_key_id,
+        "x-pay-token": x_pay_token,
+        "x-request-id": client_reference_id,
+    }
+
+    # codeql[py/clear-text-logging-sensitive-data] Debug logging for API integration - logs metadata only, sensitive data is redacted
+    logger.info(f"Target URL: {url.split('?')[0]}...")  # API key redacted
+    logger.info(f"Request Body (truncated): {enc_data_str[:100]}...")
+
+    try:
+        response = requests.put(url, headers=headers, data=enc_data_str)
+
+        logger.info(f"\nResponse Status Code: {response.status_code}")
+        response.raise_for_status()
+
+        response_json = response.json()
+        logger.info("\nResponse Body (Parsed JSON):")
+        logger.info("[Response data redacted for security]")
+
+        # Decrypt response using RSA decryption
+        enc_response_data = response_json.get("encData")
+        if enc_response_data:
+            decrypted_response = decrypt_rsa(enc_response_data)
+
+            logger.info("\n" + "=" * 80)
+            logger.info("VIC Update Purchase completed successfully")
+            logger.info("=" * 80)
+
+            return {
+                "clientReferenceId": decrypted_response.get("clientReferenceId"),
+                "status": decrypted_response.get("status"),
+                "raw": decrypted_response,
+            }
+        else:
+            raise KeyError("Response missing 'encData' field")
+
+    except requests.exceptions.HTTPError as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC UPDATE PURCHASE FAILED - HTTP ERROR")
+        logger.error("=" * 80)
+        logger.error(f"Status Code: {e.response.status_code}")
+        logger.error(f"Error: {str(e)}")
+        logger.error("\nResponse Headers:")
+        for key, value in e.response.headers.items():
+            logger.error(f"  {key}: {value}")
+        logger.error("\nResponse Body:")
+        logger.error(e.response.text)
+        raise
+    except Exception as e:
+        logger.error("\n" + "=" * 80)
+        logger.error("VIC UPDATE PURCHASE FAILED")
+        logger.error("=" * 80)
+        logger.error(f"Error: {str(e)}")
+        raise
