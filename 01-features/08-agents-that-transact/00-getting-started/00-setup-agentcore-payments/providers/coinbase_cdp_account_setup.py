@@ -27,13 +27,12 @@ import sys
 
 from dotenv import load_dotenv
 
-sys.path.append(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utils import update_env_file
 
 ENV_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    ".env",
 )
 load_dotenv(ENV_FILE, override=True)
 
@@ -43,7 +42,7 @@ print("""
 ║         Provider Setup: Coinbase Developer Platform (CDP)                  ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-MANUAL STEPS (complete in your browser before running the credential cells):
+MANUAL STEPS (complete in your browser before running the credential prompts):
 
 Step 1 — Create a Coinbase Account (skip if you have one)
 ──────────────────────────────────────────────────────────
@@ -58,30 +57,30 @@ Step 2 — Enable Coinbase Developer Platform
 ────────────────────────────────────────────
   1. Go to https://portal.cdp.coinbase.com/
   2. Sign in with your Coinbase account.
-  3. Create a Project (or select an existing one).
+  3. A default project is created on first sign-in (use it, or create a new one).
 
-Step 3a — Create an API Key
-────────────────────────────
-  1. In the CDP Portal, navigate to your project.
-  2. Choose Create API key (or New key).
-  3. Enter a descriptive name (e.g. agentcore-payments-tutorial).
-  4. Choose Create or Save.
-  5. Download the keys when prompted.
+Step 3a — Create a Secret API Key
+──────────────────────────────────
+  1. In the CDP Portal, go to Settings (bottom-left) → API Keys.
+  2. Select the **Secret API keys** tab (not Client API key).
+  3. Choose "Create secret API key".
+  4. Enter a descriptive name (e.g. agentcore-payments-tutorial).
+  5. Check "Opt-out of IP allowlisting" (required to enable the Create button).
+  6. Leave Advanced settings at defaults (View read-only is sufficient).
+  7. Choose Create.
   → Gives you: API Key ID  →  COINBASE_API_KEY_ID
                 API Key Secret  →  COINBASE_API_KEY_SECRET
 
-Step 3b — Get the Wallet Secret
-────────────────────────────────
-  1. In the CDP Portal, go to Wallets → ServerWallet.
-  2. Copy the Wallet Secret (sometimes called "wallet passphrase").
+Step 3b — Wallet Secret + Delegated Signing
+────────────────────────────────────────────
+  Both are on the same page:
+  1. In the CDP Portal sidebar, go to Wallets → Non-custodial Wallet → Security tab.
+     (Direct link: https://portal.cdp.coinbase.com/wallets/non-custodial/security)
+  2. Under "Generate Wallet Secret": click Generate new and save the secret immediately.
   → Gives you: Wallet Secret  →  COINBASE_WALLET_SECRET
   ⚠️  The Wallet Secret is shown only ONCE. Save it immediately.
-
-Step 6 — Enable Delegated Signing (REQUIRED before Tutorial 00)
-────────────────────────────────────────────────────────────────
-  1. In CDP Portal → Wallets → Embedded Wallet → Policies tab.
-  2. Enable Delegated Signing.
-  Once enabled, all embedded wallets in this project support delegated signing.
+  3. Under "Delegated signing": toggle it ON (same page, below the Wallet Secret).
+     This allows embedded wallets in this project to sign transactions on the user's behalf.
 """)
 
 # ── Step 4: Paste credentials and save to .env ────────────────────────────────
@@ -104,10 +103,8 @@ for name, val in [
         missing.append(name)
 
 if missing:
-    print(
-        f"\n❌ Missing values: {missing}"
-    )  # codeql[py/clear-text-logging-sensitive-data]
-    print("   Paste your values and re-run.")
+    print(f"\n❌ {len(missing)} of 3 required value(s) are missing or still set to a placeholder.")
+    print("   Re-run the script and paste real values when prompted.")
     sys.exit(1)
 
 result = update_env_file(
@@ -127,9 +124,7 @@ print("\n  Never commit .env to git.")
 print("\n── Step 5 (Optional): Verify Credentials ──")
 print("To verify CDP connectivity, install the Coinbase CDP SDK and run:")
 print("  pip install cdp-sdk")
-print(
-    "  python -c \"from cdp import Cdp; Cdp.configure('<KEY_ID>', '<KEY_SECRET>'); print('CDP configured')\""
-)
+print("  python -c \"from cdp import Cdp; Cdp.configure('<KEY_ID>', '<KEY_SECRET>'); print('CDP configured')\"")
 print()
 print("This step is optional — AgentCore payments validates credentials during")
 print("CreatePaymentCredentialProvider (Tutorial 00 Step 4).")

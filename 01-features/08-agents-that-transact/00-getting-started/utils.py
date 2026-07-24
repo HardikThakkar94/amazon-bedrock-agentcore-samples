@@ -11,6 +11,11 @@ Only contains what the AgentCore SDK does NOT provide:
 - Observability setup (vended logs + X-Ray)
 - Privy-specific helpers
 - Display helpers
+
+Note on boto3 usage: payment and Memory *data-plane* operations use the AgentCore SDK
+(PaymentManager / MemoryClient) in the tutorial scripts. The boto3 calls in THIS module are
+deliberately not payments — they cover IAM role provisioning, Cognito (Gateway auth), CloudWatch/
+X-Ray observability, STS identity, and Privy REST — none of which have a PaymentManager equivalent.
 """
 
 import json
@@ -33,29 +38,6 @@ RESOURCE_RETRIEVAL_ROLE = "AgentCorePaymentsResourceRetrievalRole"
 # ═════════════════════════════════════════════════════════════════
 # Environment
 # ═════════════════════════════════════════════════════════════════
-
-
-def load_payment_env(env_file=".env"):
-    """Load .env file and return config dict."""
-    load_dotenv(env_file, override=True)
-    return {
-        "region": os.environ.get("AWS_REGION", "us-west-2"),
-        "cp_endpoint": os.environ.get(
-            "PAYMENTS_CP_ENDPOINT",
-            f"https://bedrock-agentcore-control.{os.environ.get('AWS_REGION', 'us-west-2')}.amazonaws.com",
-        ),
-        "dp_endpoint": os.environ.get(
-            "PAYMENTS_DP_ENDPOINT",
-            f"https://bedrock-agentcore.{os.environ.get('AWS_REGION', 'us-west-2')}.amazonaws.com",
-        ),
-        "cred_endpoint": os.environ.get(
-            "CREDENTIAL_PROVIDER_ENDPOINT",
-            os.environ.get(
-                "PAYMENTS_CP_ENDPOINT",
-                f"https://bedrock-agentcore-control.{os.environ.get('AWS_REGION', 'us-west-2')}.amazonaws.com",
-            ),
-        ),
-    }
 
 
 def require_env(key):
@@ -85,9 +67,7 @@ def assume_role(session, role_arn, session_name="tutorial-session"):
         boto3.Session with temporary credentials.
     """
     sts = session.client("sts")
-    creds = sts.assume_role(RoleArn=role_arn, RoleSessionName=session_name)[
-        "Credentials"
-    ]
+    creds = sts.assume_role(RoleArn=role_arn, RoleSessionName=session_name)["Credentials"]
 
     new_session = boto3.Session(
         aws_access_key_id=creds["AccessKeyId"],
@@ -111,7 +91,7 @@ def assume_role(session, role_arn, session_name="tutorial-session"):
 # These roles cover AgentCore payments operations only.
 # Infrastructure actions (CloudWatch, X-Ray, Cognito, Gateway) run under
 # the caller's default AWS credentials — not these roles.
-# See Tutorial 00 Step 8b and Tutorial 04 prerequisites for details.
+# See Tutorial 00 setup and Tutorial 04 prerequisites for details.
 PAYMENT_ROLE_DEFINITIONS = {
     CONTROL_PLANE_ROLE: {
         "description": "AgentCore payments: control plane operations",
@@ -183,8 +163,8 @@ def setup_payment_roles(region=None):
     Checks if each role exists first. Creates only what's missing.
     Idempotent — safe to run multiple times.
 
-    Note: Creates IAM roles that persist until explicitly deleted. Run the
-    cleanup cell in Tutorial 00 to remove them when no longer needed.
+    Note: Creates IAM roles that persist until explicitly deleted. Run
+    Tutorial 00's Clean Up to remove them when no longer needed.
 
     Args:
         region: AWS region. Defaults to AWS_REGION env var or us-west-2.
@@ -369,9 +349,7 @@ def setup_payment_roles(region=None):
                                 "Action": "iam:PassRole",
                                 "Resource": rr_arn,
                                 "Condition": {
-                                    "StringEquals": {
-                                        "iam:PassedToService": "bedrock-agentcore.amazonaws.com"
-                                    }
+                                    "StringEquals": {"iam:PassedToService": "bedrock-agentcore.amazonaws.com"}
                                 },
                             }
                         ],
@@ -554,10 +532,19 @@ def load_tutorial_env(env_path=None):
 
     Returns:
         Dict with: payment_manager_arn, user_id, instrument_id, session_id,
-        connector_id, region, provider_type, wallet_address.
-        For multi-provider setups (Tutorial 06), also includes
-        multi_provider=True and instruments/connectors dicts.
+        connector_id, region, provider_type, active_provider, wallet_address.
+        For multi-provider setups (Tutorial 07), also includes
+        multi_provider=True and an instruments dict keyed by provider.
         Missing keys are None (not raised).
+
+        Provider selection: when both a Coinbase and a Privy wallet are present
+        (multi-provider), the top-level instrument_id / connector_id /
+        wallet_address resolve to the provider named by CREDENTIAL_PROVIDER_TYPE
+        (StripePrivy -> stripe_privy, CoinbaseCDP -> coinbase). This means
+        single-provider tutorials (01/03/04/05/06) can read cfg["instrument_id"]
+        directly and get the wallet the user actually configured — no need to
+        branch on multi_provider or guess by ordering. Tutorial 07, which uses
+        both wallets at once, still reads cfg["instruments"][<provider>].
 
     Example:
         cfg = load_tutorial_env()
@@ -571,11 +558,10 @@ def load_tutorial_env(env_path=None):
     """
     path = env_path or TUTORIAL_ENV_FILE
     if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"{os.path.basename(path)} not found. Run Tutorial 00 first.\n"
-            f"  Expected at: {path}"
-        )
+        raise FileNotFoundError(f"{os.path.basename(path)} not found. Run Tutorial 00 first.\n  Expected at: {path}")
     load_dotenv(path, override=True)
+
+    provider_type = os.environ.get("CREDENTIAL_PROVIDER_TYPE")
 
     result = {
         "payment_manager_arn": os.environ.get("PAYMENT_MANAGER_ARN"),
@@ -587,10 +573,11 @@ def load_tutorial_env(env_path=None):
         "wallet_address": os.environ.get("WALLET_ADDRESS"),
         "session_id": os.environ.get("SESSION_ID"),
         "region": os.environ.get("AWS_REGION", "us-west-2"),
-        "provider_type": os.environ.get("CREDENTIAL_PROVIDER_TYPE"),
+        "provider_type": provider_type,
+        "active_provider": None,
     }
 
-    # Multi-provider support (Tutorial 06)
+    # Multi-provider support (Tutorial 07)
     coinbase_instr = os.environ.get("COINBASE_INSTRUMENT_ID")
     privy_instr = os.environ.get("PRIVY_INSTRUMENT_ID")
 
@@ -608,8 +595,20 @@ def load_tutorial_env(env_path=None):
                 "wallet_address": os.environ.get("PRIVY_WALLET_ADDRESS"),
             },
         }
+        # Resolve the single active wallet from the provider the user configured,
+        # so single-provider tutorials get the right one instead of alphabetical order.
+        provider_key_map = {"stripeprivy": "stripe_privy", "coinbasecdp": "coinbase"}
+        active = provider_key_map.get((provider_type or "").strip().lower())
+        if active not in result["instruments"]:
+            active = "coinbase"  # deterministic default when CREDENTIAL_PROVIDER_TYPE is unset/unknown
+        result["active_provider"] = active
+        result["instrument_id"] = result["instruments"][active]["instrument_id"]
+        result["connector_id"] = result["instruments"][active]["connector_id"]
+        result["wallet_address"] = result["instruments"][active]["wallet_address"]
     else:
         result["multi_provider"] = False
+        # Single-provider: the active provider is whatever CREDENTIAL_PROVIDER_TYPE says.
+        result["active_provider"] = provider_type
 
     return result
 
@@ -629,7 +628,7 @@ def pp(label, response):
 
 
 def print_summary(title, **kwargs):
-    """Pretty-print a summary block for notebook output."""
+    """Pretty-print a summary block for console output."""
     print(f"\n{'=' * 60}")
     print(f"  {title}")
     print(f"{'=' * 60}")
@@ -649,9 +648,7 @@ def client_token():
 # ═════════════════════════════════════════════════════════════════
 
 
-def enable_observability(
-    resource_arn, resource_id, account_id, region="us-west-2", enable_xray_spans=False
-):
+def enable_observability(resource_arn, resource_id, account_id, region="us-west-2", enable_xray_spans=False):
     """Enable CloudWatch vended logs and X-Ray traces for an AgentCore payments resource.
 
     Creates delivery sources, destinations, and deliveries for both APPLICATION_LOGS
@@ -694,9 +691,7 @@ def enable_observability(
     # Must be called before creating delivery sources/destinations.
     agentcore_client = boto3.client("bedrock-agentcore-control", region_name=region)
     try:
-        agentcore_client.allow_vended_log_delivery_for_resource(
-            resourceArn=resource_arn
-        )
+        agentcore_client.allow_vended_log_delivery_for_resource(resourceArn=resource_arn)
         print(f"  Allowed vended log delivery for {resource_arn}")
     except agentcore_client.exceptions.ConflictException:
         print(f"  Vended log delivery already allowed for {resource_arn}")
@@ -900,7 +895,7 @@ def render_frontend_env_local(app_id, app_secret, signer_id, network_mode="testn
     """Build the contents of the Privy reference frontend's ``.env.local`` file.
 
     Pure string builder — no filesystem access, no shell instructions. The
-    notebook prints the returned string for the developer to paste into the
+    script prints the returned string for the developer to paste into the
     Privy reference frontend's ``.env.local`` on their local machine.
 
     Args:
@@ -939,11 +934,15 @@ def save_privy_authorization_key(env_path, authorization_id, authorization_priva
     Returns:
         The result of :func:`update_env_file`.
     """
-    prefix = "wallet-auth:"
     key = authorization_private_key.strip()
-    if key.startswith(prefix):
-        key = key[len(prefix) :].strip()
-        print("  ℹ️  Stripped 'wallet-auth:' prefix from the private key.")
+    # Strip known prefixes — Privy displays the key with 'wallet-auth:' but some
+    # clipboard/copy paths produce just 'auth:'. The AWS API rejects both; it wants
+    # either the full 'wallet-auth:' prefix or raw base64.
+    for prefix in ("wallet-auth:", "auth:"):
+        if key.startswith(prefix):
+            key = key[len(prefix) :].strip()
+            print(f"  ℹ️  Stripped '{prefix}' prefix from the private key.")
+            break
 
     return update_env_file(
         env_path,
@@ -957,8 +956,8 @@ def save_privy_authorization_key(env_path, authorization_id, authorization_priva
 def verify_privy_signer_on_wallet(app_id, app_secret, wallet_address_or_id, quorum_id):
     """Check whether a key quorum is registered as a signer on a Privy wallet.
 
-    After the end user grants signer access in the Privy reference frontend (Step 7b of the
-    main setup notebook), Privy adds the key quorum to the wallet's
+    After the end user grants signer access in the Privy reference frontend,
+    Privy adds the key quorum to the wallet's
     ``additional_signers``. Call this to confirm consent landed before
     attempting ``ProcessPayment`` — missing delegation is the single most
     common cause of ProcessPayment failures with the StripePrivy provider.
@@ -1014,20 +1013,15 @@ def verify_privy_signer_on_wallet(app_id, app_secret, wallet_address_or_id, quor
         raise RuntimeError(
             f"Privy wallet not found for {wallet_address_or_id!r}. "
             "Check that PRIVY_APP_ID matches the app the wallet was created in, "
-            "and that the wallet has been provisioned (Step 7 in the main notebook)."
+            "and that the wallet has been provisioned (Tutorial 00 setup)."
         )
     if not resp.ok:
-        raise RuntimeError(
-            f"Privy wallet fetch failed ({resp.status_code}): {resp.text}"
-        )
+        raise RuntimeError(f"Privy wallet fetch failed ({resp.status_code}): {resp.text}")
 
     wallet = resp.json()
     signers = wallet.get("additional_signers") or wallet.get("additionalSigners") or []
     # Entries can be dicts ({"signer_id": "..."}) or bare strings; handle both.
     signer_ids = {
-        (s.get("signer_id") or s.get("id") or s.get("key_quorum_id"))
-        if isinstance(s, dict)
-        else s
-        for s in signers
+        (s.get("signer_id") or s.get("id") or s.get("key_quorum_id")) if isinstance(s, dict) else s for s in signers
     }
     return quorum_id in signer_ids

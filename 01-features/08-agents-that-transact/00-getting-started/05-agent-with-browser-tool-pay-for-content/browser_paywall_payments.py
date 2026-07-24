@@ -32,14 +32,13 @@ Usage:
     python browser_paywall_payments.py
 
 Prerequisites:
-    - Tutorials 00 and 01 completed (.env exists)
+    - Tutorial 00 completed (.env exists with the payment manager + instrument)
     - Wallet funded with testnet USDC
     - pip install -r requirements.txt
     - python -m playwright install chromium
 """
 
 import asyncio
-import json
 import os
 import sys
 import time
@@ -49,9 +48,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import load_tutorial_env, print_summary
 
-ENV_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
-)
+ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 load_dotenv(ENV_FILE, override=True)
 
 # ── Step 1: Load Config ───────────────────────────────────────────────────────
@@ -60,16 +57,16 @@ PAYMENT_MANAGER_ARN = config["payment_manager_arn"]
 REGION = config["region"]
 USER_ID = config["user_id"]
 
-if config.get("multi_provider"):
-    PROVIDER = list(config["instruments"].keys())[0]
-    INSTRUMENT_ID = config["instruments"][PROVIDER]["instrument_id"]
-    CONNECTOR_ID = config["instruments"][PROVIDER]["connector_id"]
-else:
-    INSTRUMENT_ID = config["instrument_id"]
-    CONNECTOR_ID = config.get("connector_id")
-    PROVIDER = config.get("provider_type", "unknown")
+# load_tutorial_env resolves instrument_id to the configured provider
+# (CREDENTIAL_PROVIDER_TYPE), so single- and multi-provider .env files both work.
+INSTRUMENT_ID = config["instrument_id"]
+PROVIDER = config.get("active_provider") or config.get("provider_type", "unknown")
 
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+
+# Per-user spending budget for the browser tool's payment session.
+SESSION_BUDGET_USD = "1.00"
+SESSION_EXPIRY_MINUTES = 60
 
 print_summary(
     "Config",
@@ -84,37 +81,26 @@ from bedrock_agentcore.payments import PaymentManager  # noqa: E402
 manager = PaymentManager(payment_manager_arn=PAYMENT_MANAGER_ARN, region_name=REGION)
 
 # Verify instrument is ACTIVE
-instr = manager.get_payment_instrument(
-    user_id=USER_ID, payment_instrument_id=INSTRUMENT_ID
-)
+instr = manager.get_payment_instrument(user_id=USER_ID, payment_instrument_id=INSTRUMENT_ID)
 instr_status = instr.get("status", "UNKNOWN")
-assert instr_status == "ACTIVE", (
-    f"Instrument is {instr_status} — fund and delegate in Tutorial 00/03 first"
-)
-
-session_resp = manager.create_payment_session(
-    user_id=USER_ID,
-    limits={"maxSpendAmount": {"value": "1.00", "currency": "USD"}},
-    expiry_time_in_minutes=60,
-)
-SESSION_ID = session_resp["paymentSessionId"]
+assert instr_status == "ACTIVE", f"Instrument is {instr_status} — fund and delegate in Tutorial 00/03 first"
 print(f"Instrument {INSTRUMENT_ID} is {instr_status}")
-print(f"Session: {SESSION_ID} (budget: $1.00, expiry: 60 min)")
+
+# A spending session is per-user, so the SDK mints one here in application code,
+# scoped to the user we serve and capped at SESSION_BUDGET_USD for SESSION_EXPIRY_MINUTES.
+session = manager.create_payment_session(
+    user_id=USER_ID,
+    limits={"maxSpendAmount": {"value": SESSION_BUDGET_USD, "currency": "USD"}},
+    expiry_time_in_minutes=SESSION_EXPIRY_MINUTES,
+)
+SESSION_ID = session["paymentSessionId"]
+print(f"Created payment session {SESSION_ID} (budget ${SESSION_BUDGET_USD}, {SESSION_EXPIRY_MINUTES} min)")
 
 # ── Step 3-4: Build the browse_with_payment Tool ──────────────────────────────
 from playwright.async_api import async_playwright  # noqa: E402
 from strands import tool  # noqa: E402
 
 from bedrock_agentcore.tools.browser_client import BrowserClient  # noqa: E402
-
-
-def extract_x402_requirements(headers, body):
-    """Parse x402 payment requirements from a 402 response."""
-    try:
-        return json.loads(body)
-    except (json.JSONDecodeError, TypeError):
-        pass
-    return {"headers": headers, "body": body}
 
 
 def _format_result(status: int, content: str, paid: bool, url: str) -> str:
@@ -151,17 +137,11 @@ def browse_with_payment(url: str) -> str:
                     headers=ws_headers,
                     timeout=30000,
                 )
-                context = (
-                    browser.contexts[0]
-                    if browser.contexts
-                    else await browser.new_context()
-                )
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
                 page = context.pages[0] if context.pages else await context.new_page()
 
                 # First navigation
-                response = await page.goto(
-                    url, wait_until="domcontentloaded", timeout=30000
-                )
+                response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 status = response.status if response else 0
                 print(f"  HTTP {status}")
 
@@ -193,9 +173,7 @@ def browse_with_payment(url: str) -> str:
                             await route.continue_()
 
                     await page.route("**/*", add_payment_headers)
-                    response = await page.goto(
-                        url, wait_until="domcontentloaded", timeout=30000
-                    )
+                    response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                     status = response.status if response else 0
                     print(f"  Retry: HTTP {status}")
 
@@ -247,20 +225,14 @@ print("Agent created with browse_with_payment tool")
 
 # ── Step 6: Agent Browses a Paid Endpoint ────────────────────────────────────
 print("\n── Step 6: Agent Browses Paid Endpoint ──")
-TARGET_URL = (
-    "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search"
-    "?query=technology+trends&limit=3"
-)
+TARGET_URL = "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?query=technology+trends&limit=3"
 
 print(f"Target: {TARGET_URL}")
 print("Budget: $1.00 USD")
 print("Browser: AgentCore managed Chromium\n")
 
 start = time.time()
-result = agent(
-    f"Browse to this URL and retrieve the content: {TARGET_URL}\n"
-    f"Summarize what you find."
-)
+result = agent(f"Browse to this URL and retrieve the content: {TARGET_URL}\nSummarize what you find.")
 elapsed = time.time() - start
 
 print(f"\nCompleted in {elapsed:.1f}s")
@@ -275,9 +247,7 @@ session_info = manager.get_payment_session(
 print_summary(
     "Session Spend",
     session_id=SESSION_ID,
-    available=session_info.get("availableLimits", {}).get(
-        "availableSpendAmount", "N/A"
-    ),
+    available=session_info.get("availableLimits", {}).get("availableSpendAmount", "N/A"),
     budget_limit=session_info.get("limits", {}).get("maxSpendAmount", "N/A"),
 )
 
@@ -286,4 +256,4 @@ print(
     f"region={REGION}#gen-ai-observability/agent-core"
 )
 print("\nDone. Sessions expire automatically.")
-print("Next: python ../06-multi-agent-payment-orchestrator/multi_agent_payments.py")
+print("Next: python ../06-research-agent-with-payment-memory/research_agent_with_memory.py")

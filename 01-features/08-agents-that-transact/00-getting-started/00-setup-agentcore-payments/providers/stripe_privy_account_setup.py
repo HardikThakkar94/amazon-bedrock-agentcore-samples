@@ -27,13 +27,12 @@ import sys
 
 from dotenv import load_dotenv
 
-sys.path.append(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utils import update_env_file, save_privy_authorization_key
 
 ENV_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    ".env",
 )
 load_dotenv(ENV_FILE, override=True)
 
@@ -43,7 +42,7 @@ print("""
 ║         Provider Setup: Stripe (Privy)                                     ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-MANUAL STEPS (complete in your browser before running the credential cells):
+MANUAL STEPS (complete in your browser before running the credential prompts):
 
 Step 1 — Create a Privy App
 ────────────────────────────
@@ -87,9 +86,9 @@ print("""
 
 MANUAL STEPS in the Privy dashboard:
   1. In the Privy dashboard, make sure your app is selected in the left sidebar.
-  2. Go to Wallet Infrastructure → Authorization.
-  3. Choose New key.
-  4. Enter a name (e.g. Demo app key).
+  2. Go to Wallet infrastructure → Keys and quorums.
+  3. Choose New key (or "Create key").
+  4. Enter a name (e.g. agentcore-payment-key).
   5. Choose Continue. Privy generates a P-256 keypair and displays the ID + Private Key.
   6. Copy BOTH values.
   7. Choose Save and close.
@@ -134,10 +133,15 @@ The Privy reference frontend is a Next.js app that must serve from http://localh
 
 3b. Create .env.local with your credentials:
 ────────────────────────────────────────────
-  Copy the .env.local content printed below into aws-agentcore-sdk/.env.local
+  The script will write the .env.local body to a 0600-permission file in
+  your home directory. Copy that file into the Privy reference frontend
+  project (path printed below).
 """)
 
-# Print the .env.local content
+# Write the .env.local body to a 0600-permission file in the user's home dir.
+# This avoids printing the Privy app secret to stdout (where it could end up
+# in screenshots, scrollback, terminal logs, or shared screen recordings).
+ENV_LOCAL_PATH = os.path.join(os.path.expanduser("~"), ".privy-frontend-env.local")
 try:
     from utils import render_frontend_env_local
 
@@ -147,19 +151,28 @@ try:
         signer_id=auth_id,
         network_mode="testnet",
     )
-    print("─" * 72)
-    print("  Copy everything between the lines into aws-agentcore-sdk/.env.local")
-    print("─" * 72)
-    print(env_local_body)
-    print("─" * 72)
 except Exception as exc:
     print(f"  (Could not render .env.local template: {exc})")
-    print("  Manually create aws-agentcore-sdk/.env.local with:")
-    print(f"    NEXT_PUBLIC_PRIVY_APP_ID={app_id}")
-    print(
-        f"    PRIVY_APP_SECRET={app_secret}"
-    )  # codeql[py/clear-text-logging-sensitive-data]
-    print(f"    PRIVY_AUTHORIZATION_ID={auth_id}")
+    print("  Falling back to a hand-built body.")
+    env_local_body = (
+        f"NEXT_PUBLIC_PRIVY_APP_ID={app_id}\n"
+        f"PRIVY_APP_SECRET={app_secret}\n"
+        f"NEXT_PUBLIC_PRIVY_SIGNER_ID={auth_id}\n"
+        f"NEXT_PUBLIC_NETWORK_MODE=testnet\n"
+    )
+
+# Write with restrictive permissions before any content is generated, so the
+# file's contents are never exposed via the world-readable default umask.
+fd = os.open(ENV_LOCAL_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as fh:
+    fh.write(env_local_body)
+
+print(f"  ✅ Wrote .env.local body to {ENV_LOCAL_PATH} (mode 0600)")
+print("     Move it into the Privy reference frontend project on your local machine:")
+print(f"       cp {ENV_LOCAL_PATH} aws-agentcore-sdk/.env.local")
+print("     Or inspect the values manually with:")
+print(f"       cat {ENV_LOCAL_PATH}")
+print("     Delete it after copying — it contains the Privy app secret.")
 
 print("""
 3c. Install dependencies and start the dev server:
@@ -180,7 +193,7 @@ print("""
   3. Enter http://localhost:3000
   4. Choose Save.
 
-  PRODUCTION NOTE: Use HTTPS for production origins. Never reuse dev apps for prod.
+  NOTE: For a deployed app, use HTTPS origins and a separate Privy app from your dev one.
 
 3e. Log in to verify the Privy reference frontend works:
 ─────────────────────────────────────────────────────────
