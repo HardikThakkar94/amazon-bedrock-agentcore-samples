@@ -1,0 +1,44 @@
+{
+  "description": "Synthetic evidence store. Two tenants, two accounts, two detection rules. No real identifiers.",
+  "tenants": {
+    "tenant-a": ["acct-a"],
+    "tenant-b": ["acct-b"]
+  },
+  "accounts": {
+    "acct-a": {
+      "rules": {
+        "rule-42": {"name": "root-activity", "enabled": false, "version": 3}
+      },
+      "findings": [
+        {
+          "id": "finding-101",
+          "account_id": "acct-a",
+          "severity": "high",
+          "title": "Console sign-in without MFA",
+          "description": "IAM user ops-automation signed in from an unfamiliar network at 02:14 UTC."
+        },
+        {
+          "id": "finding-102",
+          "account_id": "acct-a",
+          "severity": "medium",
+          "title": "Detection rule disabled",
+          "description": "rule-42 (root-activity) was disabled three minutes before the sign-in."
+        }
+      ]
+    },
+    "acct-b": {
+      "rules": {
+        "rule-77": {"name": "s3-public-acl", "enabled": true, "version": 9}
+      },
+      "findings": [
+        {
+          "id": "finding-201",
+          "account_id": "acct-b",
+          "severity": "low",
+          "title": "Unused access key",
+          "description": "Access key for user reporting-bot unused for 120 days."
+        }
+      ]
+    }
+  }
+}
