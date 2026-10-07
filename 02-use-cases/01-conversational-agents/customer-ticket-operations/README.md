@@ -93,6 +93,31 @@ The live model only produces *proposals*. The gateway, the fixtures, and the wri
 are unchanged and local. If the network is down, run without `--live`; the outcomes are
 the same, which is rather the point.
 
+### The `live` stage: the same controls against real services
+
+```bash
+uv pip install -e '.[aws]'            # boto3 with the agentic guardrail and policy APIs
+export SEC310_AR_GUARDRAIL_ID=<id>    # optional: a guardrail with an Automated Reasoning policy
+uv run python -m sec310_sample.demo live
+```
+
+`live` is not part of `all`. It needs credentials in the default AWS SDK chain plus the
+variables above, stops with an explicit message (exit 2) when they are missing, and makes
+these calls, in order:
+
+| Call | Control it proves | Code |
+|---|---|---|
+| `bedrock-runtime:Converse` | the model proposes; it does not act | `model.BedrockModel` |
+| `bedrock-runtime:ApplyGuardrail` | guardrail on model I/O with three outcomes | `guardrails.BedrockGuardrail` |
+| `bedrock-runtime:InvokeGuardrailChecks` | prompt-attack screen of a *proposed tool call* before it runs | `live.GuardrailChecks` |
+| `bedrock-runtime:ApplyGuardrail` (AR policy) | formal-logic findings over the answer text, detect mode | stage code |
+| `bedrock-agentcore-control:CreatePolicyEngine` / `CreatePolicy` | Cedar policy machine-checked (`FAIL_ON_ANY_FINDINGS`) before anything enforces it | `live.CedarPolicyGate` |
+
+The stage creates a throwaway policy engine and deletes it in a `finally`. Every detection
+is a signal the application acts on; none of these calls is a permission. Unit tests use
+`botocore.stub.Stubber` and run offline; `SEC310_LIVE=1 uv run pytest tests/test_live_services.py`
+adds two real-service tests for a throwaway account.
+
 ## What this sample is not
 
 It is not a framework, not a reference architecture, and not a claim about any specific

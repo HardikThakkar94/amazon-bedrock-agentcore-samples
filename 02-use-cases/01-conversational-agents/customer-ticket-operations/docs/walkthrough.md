@@ -1,6 +1,6 @@
 # Presenter walkthrough — 60-minute code talk
 
-Target: **52 minutes of content + 8 minutes Q&A.** Two speakers. Terminal font ≥ 18pt.
+Target: **~48-52 minutes of content, questions interleaved throughout** (code talks have no reserved end Q&A). Two speakers. Terminal font ≥ 18pt (assume the session may be recorded for YouTube).
 Every command below is offline and deterministic; rehearse it with Wi-Fi off.
 
 Before going on stage:
@@ -124,9 +124,27 @@ Show `telemetry.py::Tracer.__call__` (hash, drop `detail`), `Tracer.assert_redac
 (redaction is a test), `corpus/regression.json` (expectations are tokens). Say: this is
 recommended practice; present it as the gate you *should* have, not one you already had.
 
-## 52:00–60:00 · Close and Q&A
+## Optional · `live`: the same controls against real services (2–3 min, if time and network allow)
 
-Slide: the five rules + official references. Keep it up during Q&A.
+```bash
+uv run python -m sec310_sample.demo live
+```
+
+Needs credentials plus `SEC310_MODEL_ID` / `SEC310_GUARDRAIL_ID` (optional
+`SEC310_AR_GUARDRAIL_ID`); stops with an explicit message otherwise. Five real calls, each
+mapped to a control the offline stages already proved: `Converse` (proposals only),
+`ApplyGuardrail` (three outcomes), `InvokeGuardrailChecks` on a *proposed tool call*
+(prompt-attack screen before execution), `ApplyGuardrail` with an Automated Reasoning
+policy (formal-logic findings over the answer text; detect mode), and AgentCore Policy
+`CreatePolicy` under `FAIL_ON_ANY_FINDINGS` (Cedar machine-checked before enforcement; the
+permit-all policy is rejected, the scoped one accepted). Say: every one of these is a signal
+the application acts on; none is a permission. Have the offline recording ready if the
+network fails; the outcomes are the same, which is the point. Slot it after Patch 3 or
+after Patch 5, never in the cold open.
+
+## ~48:00–52:00 · Close, then stay for questions
+
+Slides: the five rules, then Get the code (QR), then Thank you. Questions were taken throughout; close by inviting any remaining ones and staying by the stage.
 
 ---
 

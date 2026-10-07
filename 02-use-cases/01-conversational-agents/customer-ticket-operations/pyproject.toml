@@ -10,8 +10,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Only needed for the optional live-model / live-guardrail path. The default demo is fully offline.
-aws = ["boto3>=1.34"]
+# Only needed for the optional live paths (`--live`, the `live` stage). The default demo is
+# fully offline. 1.43 is the floor for InvokeGuardrailChecks and the AgentCore Policy APIs.
+aws = ["boto3>=1.43"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
