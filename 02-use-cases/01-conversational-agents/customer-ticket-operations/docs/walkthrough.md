@@ -124,23 +124,28 @@ Show `telemetry.py::Tracer.__call__` (hash, drop `detail`), `Tracer.assert_redac
 (redaction is a test), `corpus/regression.json` (expectations are tokens). Say: this is
 recommended practice; present it as the gate you *should* have, not one you already had.
 
-## Optional · `live`: the same controls against real services (2–3 min, if time and network allow)
+## Optional · `live`: the same controls against real services (3–4 min, if time and network allow)
 
 ```bash
 uv run python -m sec310_sample.demo live
 ```
 
 Needs credentials plus `SEC310_MODEL_ID` / `SEC310_GUARDRAIL_ID` (optional
-`SEC310_AR_GUARDRAIL_ID`); stops with an explicit message otherwise. Five real calls, each
-mapped to a control the offline stages already proved: `Converse` (proposals only),
-`ApplyGuardrail` (three outcomes), `InvokeGuardrailChecks` on a *proposed tool call*
-(prompt-attack screen before execution), `ApplyGuardrail` with an Automated Reasoning
-policy (formal-logic findings over the answer text; detect mode), and AgentCore Policy
-`CreatePolicy` under `FAIL_ON_ANY_FINDINGS` (Cedar machine-checked before enforcement; the
-permit-all policy is rejected, the scoped one accepted). Say: every one of these is a signal
-the application acts on; none is a permission. Have the offline recording ready if the
-network fails; the outcomes are the same, which is the point. Slot it after Patch 3 or
-after Patch 5, never in the cold open.
+`SEC310_AR_GUARDRAIL_ID`, `SEC310_CEDAR_POLICY_FILE`); stops with an explicit message
+otherwise, and exits 1 if any check was unavailable or any verdict was not the expected one.
+Each real call maps to a control the offline stages already proved: `Converse` (proposals
+only), `ApplyGuardrail` (three outcomes), `InvokeGuardrailChecks` on a *proposed tool call*
+(severity scores; say out loud that the threshold is ours and a missing evaluation is
+UNAVAILABLE), `ApplyGuardrail` with an Automated Reasoning policy (formal-logic findings
+over the answer text; detect mode), and AgentCore Policy `CreatePolicy` under
+`FAIL_ON_ANY_FINDINGS`. The policy step takes the longest: creation is asynchronous and the
+gate polls to the terminal state, then prints the service's own `statusReasons` for the
+permit-all policy (overly permissive) and for a tool no gateway defines (schema). If you
+bring a statement for your own gateway in `SEC310_CEDAR_POLICY_FILE`, the accepted case
+shows too. Say: every one of these is a signal the application acts on; none is a
+permission; validation is the release gate, enforcement happens at the gateway. Have the
+offline recording ready if the network fails; the outcomes are the same, which is the point.
+Slot it after Patch 3 or after Patch 5, never in the cold open.
 
 ## ~48:00–52:00 · Close, then stay for questions
 

@@ -96,27 +96,38 @@ the same, which is rather the point.
 ### The `live` stage: the same controls against real services
 
 ```bash
-uv pip install -e '.[aws]'            # boto3 with the agentic guardrail and policy APIs
-export SEC310_AR_GUARDRAIL_ID=<id>    # optional: a guardrail with an Automated Reasoning policy
+uv sync --extra aws                      # boto3 with the agentic guardrail and policy APIs
+export SEC310_AR_GUARDRAIL_ID=<id>       # optional: a guardrail with an Automated Reasoning policy
+export SEC310_CEDAR_POLICY_FILE=<path>   # optional: a Cedar statement for your own gateway
 uv run python -m sec310_sample.demo live
 ```
 
 `live` is not part of `all`. It needs credentials in the default AWS SDK chain plus the
-variables above, stops with an explicit message (exit 2) when they are missing, and makes
-these calls, in order:
+variables above, and it stops with an explicit message (exit 2) when they are missing. It
+exits 0 only when every check ran and every expected outcome held; an unavailable dependency
+or an unexpected verdict is listed under "Live proof incomplete" and the exit code is 1. A
+live proof that proved nothing must not look like one that did.
 
 | Call | Control it proves | Code |
 |---|---|---|
 | `bedrock-runtime:Converse` | the model proposes; it does not act | `model.BedrockModel` |
-| `bedrock-runtime:ApplyGuardrail` | guardrail on model I/O with three outcomes | `guardrails.BedrockGuardrail` |
-| `bedrock-runtime:InvokeGuardrailChecks` | prompt-attack screen of a *proposed tool call* before it runs | `live.GuardrailChecks` |
+| `bedrock-runtime:ApplyGuardrail` | guardrail on model I/O with three outcomes, branched on all three | `guardrails.BedrockGuardrail` |
+| `bedrock-runtime:InvokeGuardrailChecks` | prompt-attack severity scores for a *proposed tool call* before it runs; the threshold is the application's, and a missing evaluation is UNAVAILABLE, not a pass | `live.GuardrailChecks` |
 | `bedrock-runtime:ApplyGuardrail` (AR policy) | formal-logic findings over the answer text, detect mode | stage code |
-| `bedrock-agentcore-control:CreatePolicyEngine` / `CreatePolicy` | Cedar policy machine-checked (`FAIL_ON_ANY_FINDINGS`) before anything enforces it | `live.CedarPolicyGate` |
+| `bedrock-agentcore-control:CreatePolicy` under `FAIL_ON_ANY_FINDINGS` | Cedar is machine-checked before anything could enforce it: creation is asynchronous, the policy settles to `ACTIVE` or `CREATE_FAILED` with `statusReasons`, and the gate reads the verdict from that terminal state | `live.CedarPolicyGate` |
 
-The stage creates a throwaway policy engine and deletes it in a `finally`. Every detection
-is a signal the application acts on; none of these calls is a permission. Unit tests use
-`botocore.stub.Stubber` and run offline; `SEC310_LIVE=1 uv run pytest tests/test_live_services.py`
-adds two real-service tests for a throwaway account.
+The policy step creates a throwaway engine with no gateway attached, so two rejections are
+shown with the service's own reasons: `permit(principal, action, resource);` fails semantic
+validation (overly permissive) and a policy naming a tool no gateway defines fails the schema
+check. An *accepted* policy must name a tool that an attached gateway defines, which is why
+acceptance is opt-in: write the statement against your gateway and point
+`SEC310_CEDAR_POLICY_FILE` at it. Transport and service failures are raised as
+`PolicyGateError`, never reported as a verdict. Cleanup waits for each deletion to be
+confirmed and prints anything it could not remove.
+
+Unit tests use `botocore.stub.Stubber` and small fake clients and run offline (the stage runs
+end to end against fakes); `SEC310_LIVE=1 uv run pytest tests/test_live_services.py` adds
+two real-service tests for a throwaway account.
 
 ## What this sample is not
 
