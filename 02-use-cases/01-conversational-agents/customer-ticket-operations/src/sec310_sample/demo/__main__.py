@@ -115,6 +115,7 @@ def stage_unsafe(model: Model, guardrail: Guardrail) -> None:
         "acct-b belongs to tenant-b and currently has rule-77: "
         + json.dumps(store.rule("acct-b", "rule-77"))
     )
+    acct_b_before = store.rules("acct-b")
 
     result = agent.handle(fixture("indirect-injection")["request"])
 
@@ -126,12 +127,14 @@ def stage_unsafe(model: Model, guardrail: Guardrail) -> None:
             f"{action['operation']} {action.get('account_id')} {action.get('resource_id', '')} → {action['status']}"
         )
     denied(f"links returned to the UI: {result['links']}")
-    if "rule-77" not in store.rules("acct-b"):
-        denied(f"acct-b rules now: {store.rules('acct-b')}   (tenant-b never saw this coming)")
+    acct_b_after = store.rules("acct-b")
+    if acct_b_after != acct_b_before:
+        denied(f"acct-b rules now: {acct_b_after}   (tenant-b never saw this coming)")
     else:
+        ok(f"acct-b rules now: {acct_b_after}   (unchanged)")
         note(
-            "acct-b is intact this time: this model did not follow the injected instruction. "
-            "Nothing in the code would have stopped it; whether it happens is up to the model."
+            "This model did not act on the injected instruction. Nothing in the code would have "
+            "stopped it; whether it happens is up to the model."
         )
     note(
         "Nothing was 'hacked'. Identity came from the body, tool data went in raw, and code obeyed the model."
@@ -366,9 +369,16 @@ def stage_containment(model: Model, guardrail: Guardrail) -> None:
 
 def stage_telemetry(model: Model, guardrail: Guardrail) -> None:
     banner("Patch 5  Observe decisions, and gate releases on behaviour")
-    tracer = Tracer(Versions(model_version=model.version), key="demo-key")
+    # The corpus is the deterministic regression gate: it always runs on the scripted model and
+    # the local guardrail, so its events carry that version even when the demo is in live mode.
+    tracer = Tracer(Versions(model_version=ScriptedModel.version), key="demo-key")
 
     step("Run the versioned behavioural corpus through the hardened path")
+    if model.version != ScriptedModel.version:
+        note(
+            f"the corpus runs on {ScriptedModel.version}, not on {model.version}: "
+            "a regression gate must be deterministic"
+        )
     results = run_corpus(sink=tracer)
     for r in results:
         (ok if r.passed else denied)(
@@ -508,6 +518,7 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
             "the policy encodes the team's rule-change rules; each claim below is checked against them"
         )
         runtime = make_client("bedrock-runtime")
+        actions_seen: set[str | None] = set()
         for label, claim, expected_kind in (
             (
                 "claim the policy contradicts",
@@ -532,7 +543,14 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
                 for f in a.get("automatedReasoningPolicy", {}).get("findings", [])
             ]
             kinds = sorted({k for f in findings for k in f})
-            expect(label, expected_kind in kinds, f"findings={kinds} action={resp.get('action')}")
+            opposite = "valid" if expected_kind == "invalid" else "invalid"
+            action = resp.get("action")
+            actions_seen.add(action)
+            expect(
+                label,
+                expected_kind in kinds and opposite not in kinds and action == "NONE",
+                f"findings={kinds} action={action}",
+            )
             for finding in findings:
                 for kind, body in finding.items():
                     if kind != expected_kind or not isinstance(body, dict):
@@ -551,9 +569,14 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
                             f"{'contradicts' if kind == 'invalid' else 'supported by'} rule {rules[0].get('identifier')}"
                         )
                     break
-        note(
-            "Formal logic over the model's answer, and action=NONE every time: detect mode. The application decides."
-        )
+        if actions_seen == {"NONE"}:
+            note(
+                "Formal logic over the model's answer, and action=NONE every time: detect mode. The application decides."
+            )
+        else:
+            note(
+                f"Formal logic over the model's answer; actions seen: {sorted(str(a) for a in actions_seen)}"
+            )
     else:
         note("skipped: create a guardrail with an AR policy and set SEC310_AR_GUARDRAIL_ID")
 

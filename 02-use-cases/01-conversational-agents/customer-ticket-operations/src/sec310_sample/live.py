@@ -163,12 +163,13 @@ SCOPED_WITHOUT_GATEWAY_CEDAR = (
 
 _TERMINAL = {"ACTIVE", "CREATE_FAILED", "UPDATE_FAILED", "DELETE_FAILED"}
 # Engine and policy names: letters, digits, underscores; no hyphens (service constraint).
-_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,47}$")
+_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}")
 
 
 def _valid_name(name: str, what: str) -> str:
-    if not _NAME.match(name):
-        raise PolicyGateError(f"{what} name {name!r} must match {_NAME.pattern}")
+    # fullmatch: a `$` anchor would accept a trailing newline, and that would reach the service.
+    if not _NAME.fullmatch(name):
+        raise PolicyGateError(f"{what} name {name!r} must match ^{_NAME.pattern}$")
     return name
 
 

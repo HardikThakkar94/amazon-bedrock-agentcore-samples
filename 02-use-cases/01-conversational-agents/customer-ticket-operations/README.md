@@ -143,7 +143,7 @@ for each deletion to be confirmed and prints anything it could not remove.
 `--live` on the other stages uses the real model for proposals while the write path stays
 local. A real model is not the scripted gullible one: it may decline the injected instruction,
 so those stages say what actually happened instead of narrating the scripted outcome, and
-the behavioural corpus (`telemetry` stage) passes 12/12 against it.
+the behavioural corpus (`telemetry` stage) is the deterministic regression gate and always runs on the scripted model, which its events say.
 
 Unit tests use `botocore.stub.Stubber` and small fake clients and run offline (the stage runs
 end to end against fakes); `SEC310_LIVE=1 uv run pytest tests/test_live_services.py` adds

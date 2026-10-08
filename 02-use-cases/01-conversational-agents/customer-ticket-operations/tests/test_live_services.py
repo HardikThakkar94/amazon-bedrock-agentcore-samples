@@ -477,8 +477,25 @@ class TestCedarPolicyGate:
         with pytest.raises(PolicyGateError, match="provision"):
             _gate(_control_client()).verify("x", PERMIT_ALL_CEDAR)
 
+    @pytest.mark.parametrize(
+        "bad", ["sec310-demo", "permit_all\n", "a" * 49, "1abc", "", "ok name"]
+    )
+    def test_invalid_names_never_reach_the_service(self, bad):
+        # Service constraint observed live: ^[A-Za-z][A-Za-z0-9_]*$ (no hyphens), max 48. A `$`
+        # anchor would let a trailing newline through, so the check is a full match.
+        with pytest.raises(PolicyGateError, match="policy engine name"):
+            _gate(_control_client(), engine_name=bad)
+        client = _control_client()
+        with Stubber(client) as stub:
+            stub.add_response("create_policy_engine", _engine())
+            stub.add_response("get_policy_engine", _engine())
+            gate = _gate(client)
+            gate.provision()
+            with pytest.raises(PolicyGateError, match="policy name"):
+                gate.verify(bad, PERMIT_ALL_CEDAR)
+            stub.assert_no_pending_responses()  # nothing was sent for the bad name
+
     def test_names_are_validated_before_any_call(self):
-        # Service constraint observed live: ^[A-Za-z][A-Za-z0-9_]*$ (no hyphens), max 48.
         with pytest.raises(PolicyGateError, match="policy engine name"):
             _gate(_control_client(), engine_name="sec310-demo")
         client = _control_client()
@@ -659,6 +676,8 @@ class _Fake:
         return {"output": {"message": {"content": [{"text": "ready"}]}}}
 
     ar_findings = True  # when False the AR guardrail returns no findings (nothing attached)
+    ar_mixed = False  # when True every AR response carries both an invalid and a valid finding
+    ar_action = "NONE"
 
     def apply_guardrail(self, **kw):
         text = kw["content"][0]["text"]["text"]
