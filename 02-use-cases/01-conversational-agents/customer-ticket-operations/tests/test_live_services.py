@@ -17,6 +17,7 @@ from sec310_sample.live import (
     CedarPolicyGate,
     GuardrailChecks,
     PolicyGateError,
+    PresenterPolicy,
     presenter_policy,
 )
 
@@ -311,27 +312,80 @@ class TestCedarPolicyGate:
         assert gate.engine_id == ENGINE_ID  # retained for the presenter to clean up
 
 
-def test_presenter_policy_reads_file_or_none(tmp_path, monkeypatch):
+def test_presenter_policy_requires_engine_and_statement(tmp_path, monkeypatch):
     monkeypatch.delenv("SEC310_CEDAR_POLICY_FILE", raising=False)
+    monkeypatch.delenv("SEC310_POLICY_ENGINE_ID", raising=False)
     assert presenter_policy() is None
     f = tmp_path / "p.cedar"
     f.write_text("  permit(principal, action, resource);\n")
     monkeypatch.setenv("SEC310_CEDAR_POLICY_FILE", str(f))
-    assert presenter_policy() == PERMIT_ALL_CEDAR
+    with pytest.raises(PolicyGateError, match="must be set together"):
+        presenter_policy()  # a statement without an engine cannot be accepted anywhere
+    monkeypatch.setenv("SEC310_POLICY_ENGINE_ID", "yours-0123456789ab")
+    assert presenter_policy() == PresenterPolicy("yours-0123456789ab", PERMIT_ALL_CEDAR)
     f.write_text("\n")
     with pytest.raises(PolicyGateError, match="empty"):
         presenter_policy()
 
 
+class TestAttachedEngine:
+    def test_attach_uses_existing_engine_and_never_deletes_it(self):
+        client = _control_client()
+        yours = "yours-0123456789ab"
+        with Stubber(client) as stub:
+            stub.add_response(
+                "get_policy_engine",
+                {**_engine("ACTIVE"), "policyEngineId": yours},
+                expected_params={"policyEngineId": yours},
+            )
+            stub.add_response(
+                "create_policy",
+                _policy("CREATING", name="presenter"),
+                expected_params={
+                    "name": "presenter",
+                    "policyEngineId": yours,
+                    "definition": {"cedar": {"statement": UNDEFINED_TOOL_CEDAR}},
+                    "validationMode": "FAIL_ON_ANY_FINDINGS",
+                    "enforcementMode": "LOG_ONLY",
+                },
+            )
+            stub.add_response("get_policy", _policy("ACTIVE", name="presenter"))
+            stub.add_response("delete_policy", _policy("DELETING", name="presenter"))
+            stub.add_client_error("get_policy", service_error_code="ResourceNotFoundException")
+            # no delete_policy_engine: the presenter's engine is not ours
+            gate = _gate(client)
+            assert gate.attach(yours) == yours
+            assert gate.verify("presenter", UNDEFINED_TOOL_CEDAR).accepted
+            report = gate.cleanup()
+            stub.assert_no_pending_responses()
+        assert report.clean and report.deleted == [f"policy {_policy_id('presenter')}"]
+        assert gate.engine_id == yours
+
+    def test_attach_rejects_inactive_engine(self):
+        client = _control_client()
+        with Stubber(client) as stub:
+            stub.add_response("get_policy_engine", _engine("CREATE_FAILED"))
+            with pytest.raises(PolicyGateError, match="CREATE_FAILED"):
+                _gate(client).attach(ENGINE_ID)
+
+
 # -- the stage, end to end, with fake clients -------------------------------------------------
+PRESENTER_ENGINE = "yours-0123456789ab"
+
+
 class _Fake:
     """Minimal duck-typed clients. Each scenario overrides what it needs."""
 
-    accept_everything = False  # when True, every policy settles ACTIVE (the "bad validator" case)
+    accept_everything = False  # every policy settles ACTIVE (the "validator accepts anything" case)
+    guardrail_intervenes_on_attack = True
+    attack_score = 1.0
+    ordinary_score = 0.0
+    rejected_status = "CREATE_FAILED"
 
     def __init__(self, **overrides):
         self.__dict__.update(overrides)
         self.deleted: list[str] = []
+        self.created_on: dict[str, str] = {}  # policyId -> engineId
 
     def get_caller_identity(self):
         return {"Account": "fake-account-1234"}  # the stage prints only the last four characters
@@ -341,39 +395,43 @@ class _Fake:
 
     def apply_guardrail(self, **kw):
         attack = "ignore all previous" in kw["content"][0]["text"]["text"]
-        return {"action": "GUARDRAIL_INTERVENED" if attack else "NONE", "assessments": []}
+        intervene = attack and self.guardrail_intervenes_on_attack
+        return {"action": "GUARDRAIL_INTERVENED" if intervene else "NONE", "assessments": []}
 
     def invoke_guardrail_checks(self, **kw):
         attack = "ignore all previous" in kw["messages"][0]["content"][0]["text"]
-        return _igc_response({**BENIGN, "PROMPT_INJECTION": 1.0 if attack else 0.0})
+        score = self.attack_score if attack else self.ordinary_score
+        return _igc_response({**BENIGN, "PROMPT_INJECTION": score})
 
     def create_policy_engine(self, **kw):
         return _engine("CREATING")
 
     def get_policy_engine(self, **kw):
-        if ENGINE_ID in self.deleted:
+        if kw["policyEngineId"] in self.deleted:
             raise _not_found()
-        return _engine("ACTIVE")
+        return {**_engine("ACTIVE"), "policyEngineId": kw["policyEngineId"]}
 
     def create_policy(self, **kw):
         self.names = {**getattr(self, "names", {}), _policy_id(kw["name"]): kw["name"]}
+        self.created_on[_policy_id(kw["name"])] = kw["policyEngineId"]
         return _policy("CREATING", name=kw["name"])
 
     def get_policy(self, **kw):
         if kw["policyId"] in self.deleted:
             raise _not_found()
         name = self.names[kw["policyId"]]
-        if self.accept_everything:
+        # The presenter's engine has a gateway, so a tool policy is accepted there.
+        if self.accept_everything or kw["policyEngineId"] == PRESENTER_ENGINE:
             return _policy("ACTIVE", name=name)
-        return _policy("CREATE_FAILED", [f"Validation failed for {name}"], name=name)
+        return _policy(self.rejected_status, [f"Validation failed for {name}"], name=name)
 
     def delete_policy(self, **kw):
         self.deleted.append(kw["policyId"])
         return _policy("DELETING", name=self.names[kw["policyId"]])
 
     def delete_policy_engine(self, **kw):
-        self.deleted.append(ENGINE_ID)
-        return _engine("DELETING")
+        self.deleted.append(kw["policyEngineId"])
+        return {**_engine("DELETING"), "policyEngineId": kw["policyEngineId"]}
 
 
 def _not_found():
@@ -391,7 +449,7 @@ def _run_stage(monkeypatch, capsys, fake, env=None) -> tuple[int, str]:
 
     monkeypatch.setenv("SEC310_MODEL_ID", "test-model")
     monkeypatch.setenv("SEC310_GUARDRAIL_ID", "test-guardrail")
-    for k in ("SEC310_AR_GUARDRAIL_ID", "SEC310_CEDAR_POLICY_FILE"):
+    for k in ("SEC310_AR_GUARDRAIL_ID", "SEC310_CEDAR_POLICY_FILE", "SEC310_POLICY_ENGINE_ID"):
         monkeypatch.delenv(k, raising=False)
     for k, v in (env or {}).items():
         monkeypatch.setenv(k, v)
@@ -406,11 +464,13 @@ def _run_stage(monkeypatch, capsys, fake, env=None) -> tuple[int, str]:
 def test_stage_passes_when_every_expected_outcome_holds(monkeypatch, capsys):
     code, out = _run_stage(monkeypatch, capsys, _Fake())
     assert code == 0, out
-    assert "poisoned call: blocked=True" in out and "ordinary call: blocked=False" in out
-    assert "permit-all: status=CREATE_FAILED accepted=False" in out
-    assert "undefined-tool: status=CREATE_FAILED accepted=False" in out
+    assert "✔ attack input: GUARDRAIL_INTERVENED" in out and "✔ ordinary input: NONE" in out
+    assert "✔ poisoned call: blocked=True" in out and "✔ ordinary call: blocked=False" in out
+    assert "✔ policy permit-all: status=CREATE_FAILED accepted=False" in out
+    assert "✔ policy undefined-tool: status=CREATE_FAILED accepted=False" in out
     assert "finding: Validation failed for permit-all" in out
     assert "deleted policy engine" in out and "NOT deleted" not in out
+    assert "an accepted policy needs your gateway" in out
     assert "****1234" in out and "fake-account-1234" not in out
     assert "every live check ran" in out
 
@@ -421,23 +481,59 @@ def test_stage_fails_when_checks_are_unavailable(monkeypatch, capsys):
 
     code, out = _run_stage(monkeypatch, capsys, _Fake(invoke_guardrail_checks=boom))
     assert code == 1
-    assert "poisoned call: UNAVAILABLE" in out and "✔ poisoned" not in out
-    assert "Live proof incomplete" in out and "InvokeGuardrailChecks unavailable" in out
+    assert "✖ poisoned call: UNAVAILABLE" in out and "✔ poisoned" not in out
+    assert "Live proof incomplete" in out and "dependency unavailable" in out
 
 
-def test_stage_fails_when_permit_all_is_unexpectedly_accepted(monkeypatch, capsys):
-    code, out = _run_stage(monkeypatch, capsys, _Fake(accept_everything=True))
+def test_stage_fails_when_apply_guardrail_is_unavailable(monkeypatch, capsys):
+    def boom(**kw):
+        raise RuntimeError("simulated outage")
+
+    code, out = _run_stage(monkeypatch, capsys, _Fake(apply_guardrail=boom))
     assert code == 1
-    assert "✖ permit-all: status=ACTIVE accepted=True" in out
-    assert "expected accepted=False, got ACTIVE" in out
+    assert "✖ attack input: UNAVAILABLE" in out and "✔ attack input" not in out
+
+
+@pytest.mark.parametrize(
+    ("override", "marker"),
+    [
+        ({"attack_score": 0.4}, "✖ poisoned call: blocked=False"),
+        ({"ordinary_score": 0.8}, "✖ ordinary call: blocked=True"),
+        ({"guardrail_intervenes_on_attack": False}, "✖ attack input: NONE"),
+        ({"accept_everything": True}, "✖ policy permit-all: status=ACTIVE accepted=True"),
+        (
+            {"rejected_status": "UPDATE_FAILED"},
+            "✖ policy permit-all: status=UPDATE_FAILED accepted=False",
+        ),
+    ],
+    ids=[
+        "poisoned-allowed",
+        "ordinary-blocked",
+        "guardrail-missed-attack",
+        "permit-all-accepted",
+        "wrong-failure-kind",
+    ],
+)
+def test_stage_fails_on_any_unexpected_evaluated_outcome(monkeypatch, capsys, override, marker):
+    code, out = _run_stage(monkeypatch, capsys, _Fake(**override))
+    assert code == 1, out
+    assert marker in out and "(unexpected)" in out
+    assert "every live check ran" not in out
+
+
+def test_stage_fails_when_configured_ar_guardrail_returns_no_findings(monkeypatch, capsys):
+    code, out = _run_stage(
+        monkeypatch, capsys, _Fake(), env={"SEC310_AR_GUARDRAIL_ID": "ar-guardrail"}
+    )
+    assert code == 1
+    assert "✖ automated reasoning: no findings" in out
 
 
 def test_stage_reports_resources_it_could_not_delete(monkeypatch, capsys):
     def denied_delete(**kw):
         raise AccessDeniedException("not authorized to delete")
 
-    fake = _Fake(delete_policy=denied_delete)
-    code, out = _run_stage(monkeypatch, capsys, fake)
+    code, out = _run_stage(monkeypatch, capsys, _Fake(delete_policy=denied_delete))
     assert code == 1
     assert "NOT deleted: policy" in out and "NOT deleted: policy engine" in out
     assert "deleted policy engine" not in out
@@ -452,6 +548,49 @@ def test_stage_transport_failure_is_not_a_verdict(monkeypatch, capsys):
         _run_stage(monkeypatch, capsys, _Fake(create_policy=outage))
     out = capsys.readouterr().out
     assert "accepted=False" not in out  # no rejection line was ever printed
+
+
+def test_stage_runs_presenter_policy_on_their_engine_and_keeps_it(monkeypatch, capsys, tmp_path):
+    statement = tmp_path / "mine.cedar"
+    statement.write_text(UNDEFINED_TOOL_CEDAR)
+    fake = _Fake()
+    code, out = _run_stage(
+        monkeypatch,
+        capsys,
+        fake,
+        env={
+            "SEC310_POLICY_ENGINE_ID": PRESENTER_ENGINE,
+            "SEC310_CEDAR_POLICY_FILE": str(statement),
+        },
+    )
+    assert code == 0, out
+    assert "✔ policy presenter-policy: status=ACTIVE accepted=True" in out
+    assert fake.created_on[_policy_id("presenter-policy")] == PRESENTER_ENGINE
+    assert fake.created_on[_policy_id("permit-all")] != PRESENTER_ENGINE
+    assert _policy_id("presenter-policy") in fake.deleted  # our policy on their engine: removed
+    assert PRESENTER_ENGINE not in fake.deleted  # their engine: kept
+    assert (
+        fake.created_on[_policy_id("permit-all")] in fake.deleted
+    )  # our throwaway engine: removed
+
+
+def test_stage_requires_engine_with_policy_file(monkeypatch, capsys, tmp_path):
+    statement = tmp_path / "mine.cedar"
+    statement.write_text(UNDEFINED_TOOL_CEDAR)
+    with pytest.raises(PolicyGateError, match="must be set together"):
+        _run_stage(monkeypatch, capsys, _Fake(), env={"SEC310_CEDAR_POLICY_FILE": str(statement)})
+
+
+def test_main_maps_live_failures_to_exit_2(monkeypatch, capsys):
+    from sec310_sample.demo import __main__ as demo
+
+    def failing_stage(make_client=None):
+        raise PolicyGateError("ThrottlingException: slow down")
+
+    monkeypatch.setattr(demo, "stage_live", failing_stage)
+    assert demo.main(["live"]) == 2
+    out = capsys.readouterr().out
+    assert "live stage stopped: ThrottlingException" in out and "SEC310_POLICY_ENGINE_ID" in out
 
 
 @LIVE

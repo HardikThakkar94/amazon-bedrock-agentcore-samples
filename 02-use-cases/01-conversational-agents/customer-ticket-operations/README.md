@@ -98,7 +98,8 @@ the same, which is rather the point.
 ```bash
 uv sync --extra aws                      # boto3 with the agentic guardrail and policy APIs
 export SEC310_AR_GUARDRAIL_ID=<id>       # optional: a guardrail with an Automated Reasoning policy
-export SEC310_CEDAR_POLICY_FILE=<path>   # optional: a Cedar statement for your own gateway
+export SEC310_POLICY_ENGINE_ID=<id>      # optional, together: your engine with a gateway attached...
+export SEC310_CEDAR_POLICY_FILE=<path>   # ...and a Cedar statement naming a tool that gateway defines
 uv run python -m sec310_sample.demo live
 ```
 
@@ -116,12 +117,16 @@ live proof that proved nothing must not look like one that did.
 | `bedrock-runtime:ApplyGuardrail` (AR policy) | formal-logic findings over the answer text, detect mode | stage code |
 | `bedrock-agentcore-control:CreatePolicy` under `FAIL_ON_ANY_FINDINGS` | Cedar is machine-checked before anything could enforce it: creation is asynchronous, the policy settles to `ACTIVE` or `CREATE_FAILED` with `statusReasons`, and the gate reads the verdict from that terminal state | `live.CedarPolicyGate` |
 
-The policy step creates a throwaway engine with no gateway attached, so two rejections are
-shown with the service's own reasons: `permit(principal, action, resource);` fails semantic
-validation (overly permissive) and a policy naming a tool no gateway defines fails the schema
-check. An *accepted* policy must name a tool that an attached gateway defines, which is why
-acceptance is opt-in: write the statement against your gateway and point
-`SEC310_CEDAR_POLICY_FILE` at it. Transport and service failures are raised as
+The policy step creates a throwaway engine with no gateway attached and expects two
+rejections with the service's own reasons: `permit(principal, action, resource);` from
+semantic validation (overly permissive) and a policy naming a tool no gateway defines from
+the schema check. These are the documented behaviours; the stage asserts them and the
+`SEC310_LIVE=1` test checks them against the real service, so treat them as expected until
+you have seen them on your account. An *accepted* policy must name a tool that an attached
+gateway defines, so acceptance is opt-in and runs on *your* engine: set
+`SEC310_POLICY_ENGINE_ID` to an engine with your gateway attached and
+`SEC310_CEDAR_POLICY_FILE` to a statement for one of its tools. The sample deletes the policy
+it created there and never touches your engine. Transport and service failures are raised as
 `PolicyGateError`, never reported as a verdict. Cleanup waits for each deletion to be
 confirmed and prints anything it could not remove.
 

@@ -152,6 +152,7 @@ class CedarPolicyGate:
     ) -> None:
         self._engine_name = engine_name
         self._engine_id: str | None = None
+        self._owns_engine = False
         self._policies: list[str] = []
         self._deadline_s = deadline_s
         self._poll_s = poll_s
@@ -168,19 +169,34 @@ class CedarPolicyGate:
         return self._engine_id
 
     def provision(self) -> str:
-        """Create the throwaway policy engine and wait until it is ACTIVE."""
+        """Create a throwaway policy engine (owned, deleted by cleanup) and wait for ACTIVE."""
         resp = self._call(self._client.create_policy_engine, name=self._engine_name)
         self._engine_id = resp["policyEngineId"]
+        self._owns_engine = True
+        self._require_active_engine()
+        return self._engine_id
+
+    def attach(self, engine_id: str) -> str:
+        """Use an existing engine (the presenter's, with a gateway attached). Never deleted here.
+
+        Schema checks run against the gateways associated with an engine, so an *accepted*
+        policy that names a tool can only be shown on an engine that has that gateway.
+        """
+        self._engine_id = engine_id
+        self._owns_engine = False
+        self._require_active_engine()
+        return engine_id
+
+    def _require_active_engine(self) -> None:
         engine = self._poll(
             lambda: self._call(self._client.get_policy_engine, policyEngineId=self._engine_id),
             what=f"policy engine {self._engine_id}",
         )
         if engine["status"] != "ACTIVE":
             raise PolicyGateError(
-                f"policy engine {self._engine_id} ended {engine['status']}: "
+                f"policy engine {self._engine_id} is {engine['status']}: "
                 f"{list(engine.get('statusReasons', []))}"
             )
-        return self._engine_id
 
     def verify(self, name: str, cedar_statement: str) -> PolicyVerification:
         """Create a policy under FAIL_ON_ANY_FINDINGS and read the terminal verdict."""
@@ -210,11 +226,17 @@ class CedarPolicyGate:
         )
 
     def cleanup(self) -> CleanupReport:
-        """Delete policies, then the engine. Never raises; reports what is left behind."""
+        """Delete the policies this gate created, then an engine it owns. Never raises.
+
+        An attached (presenter-owned) engine is left alone. Anything that could not be removed
+        is reported, not hidden.
+        """
         report = CleanupReport()
         for policy_id in list(self._policies):
             if self._delete_policy(report, policy_id):
                 self._policies.remove(policy_id)
+        if not self._owns_engine:
+            return report
         if self._engine_id and not self._policies:
             engine_id = self._engine_id
             if self._delete(
@@ -305,17 +327,31 @@ def ar_guardrail_id() -> str | None:
     return os.environ.get("SEC310_AR_GUARDRAIL_ID")
 
 
-def presenter_policy() -> str | None:
-    """Cedar statement written against the presenter's own gateway, if configured.
+@dataclass(frozen=True)
+class PresenterPolicy:
+    engine_id: str
+    statement: str
 
-    ``SEC310_CEDAR_POLICY_FILE`` points at a file holding one statement that names a tool the
-    engine's attached gateway defines. It is the only way to show an *accepted* policy.
+
+def presenter_policy() -> PresenterPolicy | None:
+    """The accepted-policy example, if the presenter configured one.
+
+    ``SEC310_POLICY_ENGINE_ID`` names an engine the presenter owns that has a gateway attached;
+    ``SEC310_CEDAR_POLICY_FILE`` holds one statement naming a tool that gateway defines. Both
+    are required: schema checks run against the engine's gateways, so a fresh engine cannot
+    accept a tool policy. The engine is never deleted by the sample.
     """
+    engine_id = os.environ.get("SEC310_POLICY_ENGINE_ID")
     path = os.environ.get("SEC310_CEDAR_POLICY_FILE")
-    if not path:
+    if not engine_id and not path:
         return None
+    if not (engine_id and path):
+        raise PolicyGateError(
+            "SEC310_POLICY_ENGINE_ID and SEC310_CEDAR_POLICY_FILE must be set together: an accepted "
+            "tool policy needs an engine with a gateway attached"
+        )
     with open(path, encoding="utf-8") as fh:
         statement = fh.read().strip()
     if not statement:
         raise PolicyGateError(f"{path} is empty")
-    return statement
+    return PresenterPolicy(engine_id=engine_id, statement=statement)

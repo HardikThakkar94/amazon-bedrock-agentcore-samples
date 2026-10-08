@@ -131,8 +131,9 @@ uv run python -m sec310_sample.demo live
 ```
 
 Needs credentials plus `SEC310_MODEL_ID` / `SEC310_GUARDRAIL_ID` (optional
-`SEC310_AR_GUARDRAIL_ID`, `SEC310_CEDAR_POLICY_FILE`); stops with an explicit message
-otherwise, and exits 1 if any check was unavailable or any verdict was not the expected one.
+`SEC310_AR_GUARDRAIL_ID`; optional together `SEC310_POLICY_ENGINE_ID` +
+`SEC310_CEDAR_POLICY_FILE`); stops with an explicit message otherwise, and exits 1 if any
+check was unavailable or any outcome was not the expected one.
 Each real call maps to a control the offline stages already proved: `Converse` (proposals
 only), `ApplyGuardrail` (three outcomes), `InvokeGuardrailChecks` on a *proposed tool call*
 (severity scores; say out loud that the threshold is ours and a missing evaluation is
@@ -141,8 +142,11 @@ over the answer text; detect mode), and AgentCore Policy `CreatePolicy` under
 `FAIL_ON_ANY_FINDINGS`. The policy step takes the longest: creation is asynchronous and the
 gate polls to the terminal state, then prints the service's own `statusReasons` for the
 permit-all policy (overly permissive) and for a tool no gateway defines (schema). If you
-bring a statement for your own gateway in `SEC310_CEDAR_POLICY_FILE`, the accepted case
-shows too. Say: every one of these is a signal the application acts on; none is a
+bring your own engine (gateway attached) in `SEC310_POLICY_ENGINE_ID` and a statement for
+one of its tools in `SEC310_CEDAR_POLICY_FILE`, the accepted case shows too, on your
+engine; the sample removes only the policy it created there. Rehearse the whole stage on
+the account once before the talk: the two rejections are the documented behaviour, and the
+rehearsal is what turns "expected" into "seen". Say: every one of these is a signal the application acts on; none is a
 permission; validation is the release gate, enforcement happens at the gateway. Have the
 offline recording ready if the network fails; the outcomes are the same, which is the point.
 Slot it after Patch 3 or after Patch 5, never in the cold open.
