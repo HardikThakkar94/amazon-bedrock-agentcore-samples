@@ -326,6 +326,48 @@ def test_presenter_policy_requires_engine_and_statement(tmp_path, monkeypatch):
     f.write_text("\n")
     with pytest.raises(PolicyGateError, match="empty"):
         presenter_policy()
+    monkeypatch.setenv("SEC310_CEDAR_POLICY_FILE", str(tmp_path / "missing.cedar"))
+    with pytest.raises(PolicyGateError, match="cannot read"):
+        presenter_policy()  # a guided exit 2 from main(), not a traceback
+
+
+class TestCleanupTerminalFailures:
+    def test_delete_failed_is_reported_and_engine_kept(self):
+        client = _control_client()
+        with Stubber(client) as stub:
+            stub.add_response("create_policy_engine", _engine())
+            stub.add_response("get_policy_engine", _engine())
+            stub.add_response("create_policy", _policy("CREATING"))
+            stub.add_response("get_policy", _policy("ACTIVE"))
+            stub.add_response("delete_policy", _policy("DELETING"))
+            stub.add_response("get_policy", _policy("DELETE_FAILED", ["still referenced"]))
+            gate = _gate(client)
+            gate.provision()
+            gate.verify("permit-all", PERMIT_ALL_CEDAR)
+            report = gate.cleanup()
+            stub.assert_no_pending_responses()  # no delete_policy_engine while a policy remains
+        assert not report.clean
+        assert any("DELETE_FAILED" in r and "still referenced" in r for r in report.remaining)
+        assert any("policies remain" in r for r in report.remaining)
+        assert gate.engine_id == ENGINE_ID
+
+    def test_deletion_deadline_is_reported_not_claimed(self):
+        client = _control_client()
+        with Stubber(client) as stub:
+            stub.add_response("create_policy_engine", _engine())
+            stub.add_response("get_policy_engine", _engine())
+            stub.add_response("create_policy", _policy("CREATING"))
+            stub.add_response("get_policy", _policy("ACTIVE"))
+            stub.add_response("delete_policy", _policy("DELETING"))
+            for _ in range(4):
+                stub.add_response("get_policy", _policy("DELETING"))
+            gate = _gate(client, deadline_s=9.0, poll_s=3.0)
+            gate.provision()
+            gate.verify("permit-all", PERMIT_ALL_CEDAR)
+            report = gate.cleanup()
+            stub.assert_no_pending_responses()
+        assert report.deleted == []
+        assert any("still DELETING after 9s" in r for r in report.remaining)
 
 
 class TestAttachedEngine:

@@ -350,8 +350,11 @@ def presenter_policy() -> PresenterPolicy | None:
             "SEC310_POLICY_ENGINE_ID and SEC310_CEDAR_POLICY_FILE must be set together: an accepted "
             "tool policy needs an engine with a gateway attached"
         )
-    with open(path, encoding="utf-8") as fh:
-        statement = fh.read().strip()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            statement = fh.read().strip()
+    except OSError as exc:
+        raise PolicyGateError(f"cannot read SEC310_CEDAR_POLICY_FILE {path}: {exc}") from exc
     if not statement:
         raise PolicyGateError(f"{path} is empty")
     return PresenterPolicy(engine_id=engine_id, statement=statement)
