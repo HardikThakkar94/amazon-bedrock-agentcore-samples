@@ -102,10 +102,16 @@ class BedrockGuardrail:
             )
         except Exception as exc:  # noqa: BLE001 - any failure is "unavailable" to the policy layer
             return GuardrailDecision(GuardrailAction.UNAVAILABLE, source, (type(exc).__name__,))
-        if resp.get("action") == "GUARDRAIL_INTERVENED":
+        action = resp.get("action")
+        if action == "GUARDRAIL_INTERVENED":
             reasons = tuple(sorted(_assessment_reasons(resp)))
             return GuardrailDecision(GuardrailAction.INTERVENED, source, reasons)
-        return GuardrailDecision(GuardrailAction.NONE, source)
+        if action == "NONE":
+            return GuardrailDecision(GuardrailAction.NONE, source)
+        # A missing or unknown action is not evidence that the text passed.
+        return GuardrailDecision(
+            GuardrailAction.UNAVAILABLE, source, (f"unexpected_action:{action}",)
+        )
 
 
 def _assessment_reasons(resp: dict) -> set[str]:

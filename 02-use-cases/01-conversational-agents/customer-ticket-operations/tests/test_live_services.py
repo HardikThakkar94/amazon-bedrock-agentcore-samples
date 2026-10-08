@@ -679,6 +679,8 @@ class _Fake:
     ar_mixed = False  # when True every AR response carries both an invalid and a valid finding
     ar_action = "NONE"
 
+    ordinary_guardrail_response = None  # when set, returned verbatim for the ordinary-input check
+
     def apply_guardrail(self, **kw):
         text = kw["content"][0]["text"]["text"]
         if kw["guardrailIdentifier"] == "ar-guardrail":
@@ -697,11 +699,19 @@ class _Fake:
                     {"identifier": "RULE1"}
                 ],
             }
+            findings = [
+                {kind: body},
+                {"translationAmbiguous": {}},
+            ]  # real responses carry extra kinds
+            if self.ar_mixed:
+                findings.append({"valid" if kind == "invalid" else "invalid": {"translation": {}}})
             return {
-                "action": "NONE",
-                "assessments": [{"automatedReasoningPolicy": {"findings": [{kind: body}]}}],
+                "action": self.ar_action,
+                "assessments": [{"automatedReasoningPolicy": {"findings": findings}}],
             }
         attack = "ignore all previous" in text
+        if not attack and self.ordinary_guardrail_response is not None:
+            return self.ordinary_guardrail_response
         intervene = attack and self.guardrail_intervenes_on_attack
         return {"action": "GUARDRAIL_INTERVENED" if intervene else "NONE", "assessments": []}
 
@@ -845,9 +855,54 @@ def test_stage_checks_both_ar_claims(monkeypatch, capsys):
         monkeypatch, capsys, _Fake(), env={"SEC310_AR_GUARDRAIL_ID": "ar-guardrail"}
     )
     assert code == 0, out
-    assert "✔ claim the policy contradicts: findings=['invalid'] action=NONE" in out
-    assert "✔ claim the policy supports: findings=['valid'] action=NONE" in out
+    # extra non-verdict kinds (translationAmbiguous) are fine; the verdict itself must be unambiguous
+    assert (
+        "✔ claim the policy contradicts: findings=['invalid', 'translationAmbiguous'] action=NONE"
+        in out
+    )
+    assert (
+        "✔ claim the policy supports: findings=['translationAmbiguous', 'valid'] action=NONE" in out
+    )
     assert "contradicts rule RULE1" in out and "supported by rule RULE1" in out
+    assert "action=NONE every time" in out
+
+
+@pytest.mark.parametrize(
+    ("override", "marker"),
+    [
+        (
+            {"ar_mixed": True},
+            "✖ claim the policy contradicts: findings=['invalid', 'translationAmbiguous', 'valid'] action=NONE  (unexpected)",
+        ),
+        ({"ar_action": "GUARDRAIL_INTERVENED"}, "action=GUARDRAIL_INTERVENED  (unexpected)"),
+        ({"ar_action": None}, "action=None  (unexpected)"),
+    ],
+    ids=["mixed-verdicts", "guardrail-intervened", "missing-action"],
+)
+def test_stage_fails_on_an_ambiguous_or_enforcing_ar_result(monkeypatch, capsys, override, marker):
+    code, out = _run_stage(
+        monkeypatch, capsys, _Fake(**override), env={"SEC310_AR_GUARDRAIL_ID": "ar-guardrail"}
+    )
+    assert code == 1, out
+    assert marker in out
+    if "ar_action" in override:  # the detect-mode remark is derived from the actions actually seen
+        assert "action=NONE every time" not in out
+    assert "every live check ran" not in out
+
+
+@pytest.mark.parametrize(
+    "response",
+    [{}, {"action": "BLOCKED"}, {"assessments": []}],
+    ids=["empty", "unknown-action", "no-action"],
+)
+def test_stage_fails_when_the_ordinary_guardrail_response_is_incomplete(
+    monkeypatch, capsys, response
+):
+    # An incomplete ApplyGuardrail response is not evidence that the text passed.
+    code, out = _run_stage(monkeypatch, capsys, _Fake(ordinary_guardrail_response=response))
+    assert code == 1, out
+    assert "✖ ordinary input: UNAVAILABLE" in out and "unexpected_action:" in out
+    assert "every live check ran" not in out
 
 
 def test_stage_fails_when_configured_ar_guardrail_returns_no_findings(monkeypatch, capsys):

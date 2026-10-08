@@ -222,3 +222,40 @@ def test_complete_refuses_jobs_that_were_never_started(coordinator):
         coordinator.complete("case-12/acct-a", lambda job, deadline: ran.append(job.job_id) or {})
 
     assert ran == []  # the worker never executed against a job in the wrong state
+
+
+class TestBedrockGuardrailDecisionMapping:
+    """Only an explicit action is a verdict; anything else is UNAVAILABLE, never a clean pass."""
+
+    @staticmethod
+    def _assess(response):
+        from sec310_sample.guardrails import BedrockGuardrail
+
+        class Client:
+            def apply_guardrail(self, **kw):
+                return response
+
+        return BedrockGuardrail(guardrail_id="g", version="DRAFT", client=Client()).assess(
+            "hi", "INPUT"
+        )
+
+    def test_explicit_none_is_clean(self):
+        d = self._assess({"action": "NONE", "assessments": []})
+        assert not d.intervened and not d.unavailable
+
+    def test_intervened_carries_reasons(self):
+        d = self._assess(
+            {
+                "action": "GUARDRAIL_INTERVENED",
+                "assessments": [{"contentPolicy": {"filters": [{"type": "PROMPT_ATTACK"}]}}],
+            }
+        )
+        assert d.intervened and d.reasons == ("contentPolicy:PROMPT_ATTACK",)
+
+    @pytest.mark.parametrize(
+        "response", [{}, {"assessments": []}, {"action": "BLOCKED"}, {"action": None}]
+    )
+    def test_missing_or_unknown_action_is_unavailable(self, response):
+        d = self._assess(response)
+        assert d.unavailable and not d.intervened
+        assert d.reasons[0].startswith("unexpected_action:")

@@ -18,7 +18,8 @@ query() {
   printf '%s\n' "$out"
 }
 
-say "account: $(aws sts get-caller-identity --query Account --output text | sed 's/^[0-9]\{8\}/****/')"
+account=$(query sts get-caller-identity --query Account --output text) || { say "cannot determine the caller identity; nothing attempted"; exit 1; }
+say "account: $(printf '%s' "$account" | sed 's/^[0-9]\{8\}/****/')"
 
 # -- guardrails ---------------------------------------------------------------------------
 for name in sec310_demo sec310_demo_ar; do
@@ -32,7 +33,7 @@ done
 arns=$(query bedrock list-automated-reasoning-policies --query "automatedReasoningPolicySummaries[?name=='sec310_demo_ar'].policyArn" --output text) || { failed=1; arns=""; }
 for arn in $arns; do
   workflows=$(query bedrock list-automated-reasoning-policy-build-workflows --policy-arn "$arn" \
-    --query 'automatedReasoningPolicyBuildWorkflowSummaries[].[buildWorkflowId, updatedAt]' --output text) || continue
+    --query 'automatedReasoningPolicyBuildWorkflowSummaries[].[buildWorkflowId, updatedAt]' --output text) || { failed=1; continue; }
   while read -r wf updated; do
     [ -n "$wf" ] || continue
     if aws bedrock delete-automated-reasoning-policy-build-workflow --policy-arn "$arn" --build-workflow-id "$wf" --last-updated-at "$updated"; then
