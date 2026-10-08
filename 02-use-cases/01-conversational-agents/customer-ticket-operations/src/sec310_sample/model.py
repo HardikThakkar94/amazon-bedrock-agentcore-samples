@@ -113,11 +113,32 @@ _SYSTEM = (
 )
 
 
+def _response_tool() -> dict:
+    """The output contract, offered to the model as the one tool it must call.
+
+    The schema is the same pydantic model the sample validates against, so the typed shape is
+    requested at the API boundary and still checked on the way back in. Observed 2026-10-08:
+    without this, a capable model wraps the JSON in a Markdown fence, which the strict parser
+    rightly rejects.
+    """
+    from sec310_sample.schemas import AssistantResponse  # local: keep module import light
+
+    return {
+        "toolSpec": {
+            "name": "respond",
+            "description": "Return the assistant response in the required shape.",
+            "inputSchema": {"json": AssistantResponse.model_json_schema()},
+        }
+    }
+
+
 class BedrockModel:
     """Opt-in live model via the Bedrock Converse API. Proposals only.
 
     Requires the ``aws`` extra and ``SEC310_MODEL_ID`` in the environment. Region and
-    credentials come from the normal AWS SDK chain. Nothing here can mutate state.
+    credentials come from the normal AWS SDK chain. Nothing here can mutate state. The response
+    shape is requested with a forced tool call; ``complete``/``stream`` return its JSON input as
+    text so the rest of the sample treats the live model exactly like the scripted one.
     """
 
     def __init__(self, model_id: str | None = None, client=None) -> None:
@@ -131,23 +152,34 @@ class BedrockModel:
             client = boto3.client("bedrock-runtime")
         self._client = client
 
+    def _request(self, prompt: str) -> dict:
+        return {
+            "modelId": self.model_id,
+            "system": [{"text": _SYSTEM}],
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+            "toolConfig": {
+                "tools": [_response_tool()],
+                "toolChoice": {"tool": {"name": "respond"}},
+            },
+            # maxTokens only: some models reject sampling parameters such as temperature.
+            "inferenceConfig": {"maxTokens": 800},
+        }
+
     def complete(self, prompt: str) -> str:
-        resp = self._client.converse(
-            modelId=self.model_id,
-            system=[{"text": _SYSTEM}],
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 800, "temperature": 0},
-        )
-        return "".join(part.get("text", "") for part in resp["output"]["message"]["content"])
+        resp = self._client.converse(**self._request(prompt))
+        blocks = resp["output"]["message"]["content"]
+        for block in blocks:
+            if "toolUse" in block:
+                return json.dumps(block["toolUse"]["input"])
+        # No tool call despite the forced choice: hand back whatever text came, so the strict
+        # parser reports it as malformed rather than this adapter guessing.
+        return "".join(block.get("text", "") for block in blocks)
 
     def stream(self, prompt: str) -> Iterator[str]:
-        resp = self._client.converse_stream(
-            modelId=self.model_id,
-            system=[{"text": _SYSTEM}],
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 800, "temperature": 0},
-        )
+        resp = self._client.converse_stream(**self._request(prompt))
         for event in resp["stream"]:
             delta = event.get("contentBlockDelta", {}).get("delta", {})
-            if "text" in delta:
+            if "toolUse" in delta:
+                yield delta["toolUse"]["input"]
+            elif "text" in delta:
                 yield delta["text"]

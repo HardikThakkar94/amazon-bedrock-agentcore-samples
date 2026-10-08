@@ -1,0 +1,7 @@
+Detection rule change policy
+
+1. A detection rule may be disabled only when a change ticket exists for the change.
+2. If a detection rule is disabled and no change ticket exists for the change, the event is a security incident.
+3. Re-enabling a disabled detection rule is always permitted.
+4. Every rule change must record the engineer who performed it and the time it was performed.
+5. A rule change performed by an automation account is not a security incident when a change ticket exists.

@@ -7,24 +7,30 @@ from the environment (see ``model.BedrockModel`` and ``guardrails.BedrockGuardra
 ``GuardrailChecks``
     The agentic guardrail API (``InvokeGuardrailChecks``): prompt-attack screening of a
     *proposed tool call* before it executes, and of a tool's result before it enters the
-    context. The service returns a severity score per requested category (discrete, 0 to 1);
-    the score itself blocks nothing. The threshold is an application decision, so it is
-    explicit here. An incomplete evaluation is UNAVAILABLE, never a clean pass.
+    context. Only the argument *values* are screened: they are the one part of a tool call
+    that untrusted data can reach, and the classifier scores an instruction-shaped wrapper
+    such as ``"proposed tool call: ..."`` as an attack on its own (observed 0.8). The service
+    returns a severity score per requested category (discrete, 0 to 1); the score itself
+    blocks nothing. The threshold is an application decision, so it is explicit here. An
+    incomplete evaluation is UNAVAILABLE, never a clean pass.
 
 ``CedarPolicyGate``
     AgentCore Policy control plane (``bedrock-agentcore-control``). Creating a policy under
     ``validationMode=FAIL_ON_ANY_FINDINGS`` runs schema checks and automated-reasoning
-    semantic validation. Creation is asynchronous: the call returns ``CREATING`` and the
-    policy settles to ``ACTIVE`` or ``CREATE_FAILED`` with ``statusReasons``. A verdict is
-    read from the terminal state; a transport or service failure is an operational error,
-    not a verdict. The throwaway engine and policies are deleted afterwards and anything left
-    behind is reported, not hidden.
+    semantic validation. Two kinds of verdict exist, both observed live (2026-10-08): the
+    parser rejects some statements synchronously with a ``ValidationException`` (for example
+    an unconstrained ``resource``), and everything else is asynchronous: the call returns
+    ``CREATING`` and the policy settles to ``ACTIVE`` or ``CREATE_FAILED`` with
+    ``statusReasons``. A verdict is read from the response or the terminal state; any other
+    failure (throttling, access, transport) is an operational error, never a verdict. The
+    throwaway engine and policies are deleted afterwards and anything left behind is
+    reported, not hidden.
 """
 
 from __future__ import annotations
 
-import json
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -57,9 +63,15 @@ class GuardrailChecks:
         self.threshold = threshold
 
     def check_tool_call(self, tool_name: str, arguments: dict) -> CheckResult:
-        """Screen a proposed tool call before it executes."""
-        text = f"proposed tool call: {tool_name}\narguments: {json.dumps(arguments, default=str)}"
-        return self._check(text)
+        """Screen the attacker-reachable part of a proposed tool call: its string values.
+
+        The tool name and argument keys come from the application's own schema. Numbers and
+        booleans carry no instructions. If nothing is screenable the result says so.
+        """
+        values = _string_values(arguments)
+        if not values:
+            return CheckResult(blocked=False, reasons=("nothing_to_screen",))
+        return self._check("\n".join(values))
 
     def check_tool_result(self, text: str) -> CheckResult:
         """Screen a tool's result before it enters the context."""
@@ -98,6 +110,16 @@ class GuardrailChecks:
         return CheckResult(blocked=bool(reasons), scores=scores, reasons=reasons)
 
 
+def _string_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, dict):
+        return [v for item in value.values() for v in _string_values(item)]
+    if isinstance(value, (list, tuple)):
+        return [v for item in value for v in _string_values(item)]
+    return []
+
+
 class PolicyGateError(RuntimeError):
     """Operational failure (transport, service, timeout). Not a validation verdict."""
 
@@ -122,19 +144,32 @@ class CleanupReport:
         return not self.remaining
 
 
-# Cedar for AgentCore Policy. Actions are gateway tools (``AgentCore::Action::"Target___tool"``)
-# and resources are gateways, so a policy that names a specific tool only passes schema checks
-# when the engine has a gateway attached that defines it. Permit-all needs no schema and is
-# rejected by semantic validation as overly permissive. Both rejections are documented
-# behaviour; an *accepted* policy needs the presenter's own gateway (see ``presenter_policy``).
+# Cedar for AgentCore Policy, as the service judged them on an engine with no gateway attached
+# (observed 2026-10-08, us-east-1). Actions are gateway tools and resources are gateways, so a
+# bare engine has no tool schema: only gateway-wide statements get as far as semantic
+# validation, and anything that touches tool arguments fails the schema check. An *accepted*
+# policy therefore needs the presenter's own engine with a gateway attached.
 PERMIT_ALL_CEDAR = "permit(principal, action, resource);"
-UNDEFINED_TOOL_CEDAR = (
-    'permit(principal, action == AgentCore::Action::"EvidenceTools___read_evidence", '
-    "resource is AgentCore::Gateway);"
+"""Rejected synchronously by the parser: an unconstrained resource is not allowed."""
+PERMIT_ALL_GATEWAYS_CEDAR = "permit(principal, action, resource is AgentCore::Gateway);"
+"""Settles CREATE_FAILED, automated reasoning: overly permissive."""
+FORBID_ALL_GATEWAYS_CEDAR = "forbid(principal, action, resource is AgentCore::Gateway);"
+"""Settles CREATE_FAILED, automated reasoning: overly restrictive."""
+SCOPED_WITHOUT_GATEWAY_CEDAR = (
+    "permit(principal, action, resource is AgentCore::Gateway) "
+    'when { context.input.account_id == "acct-a" };'
 )
-
+"""Settles CREATE_FAILED, schema check: no attached gateway defines ``input.account_id``."""
 
 _TERMINAL = {"ACTIVE", "CREATE_FAILED", "UPDATE_FAILED", "DELETE_FAILED"}
+# Engine and policy names: letters, digits, underscores; no hyphens (service constraint).
+_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,47}$")
+
+
+def _valid_name(name: str, what: str) -> str:
+    if not _NAME.match(name):
+        raise PolicyGateError(f"{what} name {name!r} must match {_NAME.pattern}")
+    return name
 
 
 class CedarPolicyGate:
@@ -142,7 +177,7 @@ class CedarPolicyGate:
 
     def __init__(
         self,
-        engine_name: str = "sec310-demo",
+        engine_name: str = "sec310_demo",
         client=None,
         *,
         deadline_s: float = 180.0,
@@ -150,7 +185,7 @@ class CedarPolicyGate:
         sleep: Callable[[float], None] | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
-        self._engine_name = engine_name
+        self._engine_name = _valid_name(engine_name, "policy engine")
         self._engine_id: str | None = None
         self._owns_engine = False
         self._policies: list[str] = []
@@ -201,15 +236,23 @@ class CedarPolicyGate:
     def verify(self, name: str, cedar_statement: str) -> PolicyVerification:
         """Create a policy under FAIL_ON_ANY_FINDINGS and read the terminal verdict."""
         if not self._engine_id:
-            raise PolicyGateError("call provision() first")
-        resp = self._call(
-            self._client.create_policy,
-            name=name,
-            policyEngineId=self._engine_id,
-            definition={"cedar": {"statement": cedar_statement}},
-            validationMode="FAIL_ON_ANY_FINDINGS",
-            enforcementMode="LOG_ONLY",
-        )
+            raise PolicyGateError("call provision() or attach() first")
+        name = _valid_name(name, "policy")
+        try:
+            resp = self._client.create_policy(
+                name=name,
+                policyEngineId=self._engine_id,
+                definition={"cedar": {"statement": cedar_statement}},
+                validationMode="FAIL_ON_ANY_FINDINGS",
+                enforcementMode="LOG_ONLY",
+            )
+        except Exception as exc:  # noqa: BLE001 - sorted into verdict vs operational below
+            if _error_code(exc) == "ValidationException":
+                # The parser judged the statement itself (parameters are validated locally).
+                return PolicyVerification(
+                    accepted=False, status="REJECTED", findings=(_error_message(exc),)
+                )
+            raise PolicyGateError(f"{_error_code(exc)}: {exc}") from exc
         policy_id = resp["policyId"]
         self._policies.append(policy_id)
         policy = self._poll(
@@ -320,6 +363,15 @@ def _error_code(exc: BaseException) -> str:
         if code:
             return str(code)
     return type(exc).__name__
+
+
+def _error_message(exc: BaseException) -> str:
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        message = response.get("Error", {}).get("Message")
+        if message:
+            return str(message)
+    return str(exc)
 
 
 def ar_guardrail_id() -> str | None:

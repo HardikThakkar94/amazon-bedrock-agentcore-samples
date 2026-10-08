@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Callable
 
@@ -125,7 +126,13 @@ def stage_unsafe(model: Model, guardrail: Guardrail) -> None:
             f"{action['operation']} {action.get('account_id')} {action.get('resource_id', '')} → {action['status']}"
         )
     denied(f"links returned to the UI: {result['links']}")
-    denied(f"acct-b rules now: {store.rules('acct-b')}   (tenant-b never saw this coming)")
+    if "rule-77" not in store.rules("acct-b"):
+        denied(f"acct-b rules now: {store.rules('acct-b')}   (tenant-b never saw this coming)")
+    else:
+        note(
+            "acct-b is intact this time: this model did not follow the injected instruction. "
+            "Nothing in the code would have stopped it; whether it happens is up to the model."
+        )
     note(
         "Nothing was 'hacked'. Identity came from the body, tool data went in raw, and code obeyed the model."
     )
@@ -190,17 +197,21 @@ def stage_untrusted(model: Model, guardrail: Guardrail) -> None:
     )
 
     step(
-        "Indirect injection inside tool data: the keyword guardrail misses it, the model follows it..."
+        "Indirect injection inside tool data: the keyword guardrail misses it; whatever the model does next..."
     )
     world = World(model, guardrail, poisoned_with="indirect-injection")
     result = world.assistant.handle_sync(raw("indirect-injection"), ALICE)
     note(f"guardrail_input={result.guardrail_input}  (nothing looked like an attack)")
     ok(f"answer: {result.answer}")
-    step("...and deterministic validation still holds")
+    step("...deterministic validation still holds")
     for target, reason in result.rejected_actions:
         denied(f"proposal {target} rejected: {reason}")
     for link, reason in result.rejected_links:
         denied(f"link {link} rejected: {reason}")
+    if not result.rejected_actions and not result.rejected_links:
+        note(
+            "this model proposed nothing the injection asked for; the gate above is what holds when one does"
+        )
     ok(f"links that reached the UI: {list(result.links)}")
     ok(f"mutations so far: {world.store.mutation_log}")
 
@@ -211,10 +222,14 @@ def stage_untrusted(model: Model, guardrail: Guardrail) -> None:
         )
     )
     stream_result = events[-1]
-    ok(
-        f"sync.policy_outcome == stream.policy_outcome → {result.policy_outcome == stream_result.policy_outcome}"
-    )
-    ok(f"'exfil' in streamed text → {'exfil' in ''.join(e for e in events if isinstance(e, str))}")
+    parity = result.policy_outcome == stream_result.policy_outcome
+    (ok if parity else note)(f"sync.policy_outcome == stream.policy_outcome → {parity}")
+    if not parity:
+        note(
+            "a live model answers differently each call; parity of the gate itself is proven offline (tests/test_sync_stream_parity.py)"
+        )
+    exfil = "exfil" in "".join(e for e in events if isinstance(e, str))
+    (denied if exfil else ok)(f"'exfil' in streamed text → {exfil}")
 
     step("Guardrail outage: reads continue in degraded mode, writes fail closed")
     world = World(model, UnavailableGuardrail())
@@ -233,7 +248,21 @@ def stage_tools(model: Model, guardrail: Guardrail) -> None:
 
     step("The honest analyst asks to re-enable rule-42; the model proposes a typed update")
     result = world.assistant.handle_sync(raw("normal-evidence"), ALICE)
-    plan = next(p for p in result.proposed_actions if p.operation is Operation.UPDATE_RULE)
+    plan = next((p for p in result.proposed_actions if p.operation is Operation.UPDATE_RULE), None)
+    if plan is None:
+        # A live model may answer without proposing a write. Say so, then continue with the
+        # scripted proposal so the gateway path can still be shown.
+        note(
+            f"the model proposed no update_rule (status={result.status}, notes={list(result.notes)})"
+        )
+        note("continuing with the scripted proposal so the gateway path can be shown")
+        plan = ActionPlan(
+            operation=Operation.UPDATE_RULE,
+            account_id="acct-a",
+            resource_id="rule-42",
+            reason="analyst asked to re-enable",
+            change={"enabled": True},
+        )
     show("ActionPlan", plan.model_dump(mode="json"))
 
     step("Schema-valid is not authorized: the gateway asks for a human")
@@ -399,8 +428,10 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
 
     from sec310_sample.guardrails import BedrockGuardrail
     from sec310_sample.live import (
+        FORBID_ALL_GATEWAYS_CEDAR,
         PERMIT_ALL_CEDAR,
-        UNDEFINED_TOOL_CEDAR,
+        PERMIT_ALL_GATEWAYS_CEDAR,
+        SCOPED_WITHOUT_GATEWAY_CEDAR,
         CedarPolicyGate,
         GuardrailChecks,
         ar_guardrail_id,
@@ -465,35 +496,63 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
             else f"reasons={list(r.reasons)}",
             unavailable=r.unavailable,
         )
+    note(
+        "Only the argument values are screened: an instruction-shaped wrapper scores as an attack by itself."
+    )
     note("A score is a signal. The application decides, the same as every other layer.")
 
-    step("Automated Reasoning on the answer text")
+    step("Automated Reasoning on the answer text (ApplyGuardrail with an AR policy attached)")
     ar_id = ar_guardrail_id()
     if ar_id:
-        resp = make_client("bedrock-runtime").apply_guardrail(
-            guardrailIdentifier=ar_id,
-            guardrailVersion="DRAFT",
-            source="OUTPUT",
-            content=[
-                {"text": {"text": "Rule 42 was disabled at 14:00 UTC by the on-call engineer."}}
-            ],
-        )
-        findings = [
-            f
-            for a in resp.get("assessments", [])
-            for f in a.get("automatedReasoningPolicy", {}).get("findings", [])
-        ]
-        expect(
-            "automated reasoning",
-            bool(findings),
-            f"{len(findings)} finding(s)"
-            if findings
-            else "no findings: is an AR policy attached to this guardrail?",
-        )
-        for finding in findings:
-            show("finding", {k: (v if isinstance(v, str) else "...") for k, v in finding.items()})
         note(
-            "Formal-logic findings over the model's answer. Detect mode; the application still decides."
+            "the policy encodes the team's rule-change rules; each claim below is checked against them"
+        )
+        runtime = make_client("bedrock-runtime")
+        for label, claim, expected_kind in (
+            (
+                "claim the policy contradicts",
+                "Rule 42 was disabled by the on-call engineer without a change ticket; this is not a security incident.",
+                "invalid",
+            ),
+            (
+                "claim the policy supports",
+                "Rule 42 was disabled under change ticket CHG-1234 by the on-call engineer, so the change was allowed.",
+                "valid",
+            ),
+        ):
+            resp = runtime.apply_guardrail(
+                guardrailIdentifier=ar_id,
+                guardrailVersion=os.environ.get("SEC310_AR_GUARDRAIL_VERSION", "DRAFT"),
+                source="OUTPUT",
+                content=[{"text": {"text": claim}}],
+            )
+            findings = [
+                f
+                for a in resp.get("assessments", [])
+                for f in a.get("automatedReasoningPolicy", {}).get("findings", [])
+            ]
+            kinds = sorted({k for f in findings for k in f})
+            expect(label, expected_kind in kinds, f"findings={kinds} action={resp.get('action')}")
+            for finding in findings:
+                for kind, body in finding.items():
+                    if kind != expected_kind or not isinstance(body, dict):
+                        continue
+                    translation = body.get("translation", {})
+                    premises = "; ".join(
+                        p.get("naturalLanguage", "") for p in translation.get("premises", [])
+                    )
+                    claims = "; ".join(
+                        c.get("naturalLanguage", "") for c in translation.get("claims", [])
+                    )
+                    note(f"{kind}: premises [{premises}] claim [{claims}]")
+                    rules = body.get("contradictingRules") or body.get("supportingRules") or []
+                    if rules:
+                        note(
+                            f"{'contradicts' if kind == 'invalid' else 'supported by'} rule {rules[0].get('identifier')}"
+                        )
+                    break
+        note(
+            "Formal logic over the model's answer, and action=NONE every time: detect mode. The application decides."
         )
     else:
         note("skipped: create a guardrail with an AR policy and set SEC310_AR_GUARDRAIL_ID")
@@ -507,27 +566,43 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
         v = gate.verify(name, statement)
         held = v.status == status and (status == "ACTIVE" or bool(v.findings))
         expect(f"policy {name}", held, f"status={v.status} accepted={v.accepted}  ({why})")
-        for finding in v.findings:
-            note(f"finding: {finding}")
-        if v.status == status == "CREATE_FAILED" and not v.findings:
-            note("rejected without a stated reason")
+        for finding in v.findings[:3]:
+            lines = [ln.strip(" *") for ln in finding.splitlines() if ln.strip()]
+            note(f"finding: {next((ln for ln in lines if not ln.endswith(':')), lines[0])[:150]}")
+        if len(v.findings) > 3:
+            note(f"... {len(v.findings) - 3} more finding(s)")
 
     throwaway = CedarPolicyGate(client=control)
     try:
         note(f"throwaway policy engine: {throwaway.provision()}  (no gateway attached)")
+        note("every statement below is judged before anything could enforce it")
         verify_expecting(
             throwaway,
-            "permit-all",
+            "permit_all",
             PERMIT_ALL_CEDAR,
-            "CREATE_FAILED",
-            "semantic validation: overly permissive",
+            "REJECTED",
+            "parser: an unconstrained resource is refused outright",
         )
         verify_expecting(
             throwaway,
-            "undefined-tool",
-            UNDEFINED_TOOL_CEDAR,
+            "permit_all_gateways",
+            PERMIT_ALL_GATEWAYS_CEDAR,
             "CREATE_FAILED",
-            "schema check: tool not defined on any attached gateway",
+            "automated reasoning: overly permissive",
+        )
+        verify_expecting(
+            throwaway,
+            "forbid_all_gateways",
+            FORBID_ALL_GATEWAYS_CEDAR,
+            "CREATE_FAILED",
+            "automated reasoning: overly restrictive",
+        )
+        verify_expecting(
+            throwaway,
+            "scoped_without_gateway",
+            SCOPED_WITHOUT_GATEWAY_CEDAR,
+            "CREATE_FAILED",
+            "schema: no attached gateway defines input.account_id",
         )
     finally:
         report_cleanup(throwaway.cleanup(), problems)
@@ -541,7 +616,7 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
             )
             verify_expecting(
                 on_presenter,
-                "presenter-policy",
+                "presenter_policy",
                 presenter.statement,
                 "ACTIVE",
                 "names a tool the attached gateway defines",

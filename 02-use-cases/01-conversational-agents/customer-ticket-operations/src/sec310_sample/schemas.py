@@ -20,15 +20,33 @@ class Operation(StrEnum):
 
 
 class ActionPlan(BaseModel):
-    """What the model *proposes*. Executing it is somebody else's decision."""
+    """What the model *proposes*. Executing it is somebody else's decision.
+
+    The field descriptions travel with the JSON schema that the live model receives as its
+    output contract. A live model follows prose far more reliably than a regex, and a response
+    that still misses the contract is rejected whole: shape is checked here, never repaired.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    operation: Operation
-    account_id: str = Field(pattern=ACCOUNT_PATTERN)
-    resource_id: str = Field(pattern=RESOURCE_PATTERN)
-    reason: str = Field(min_length=1, max_length=500)
-    change: dict[str, bool | str | int] | None = None
+    operation: Operation = Field(
+        description="read_evidence to gather more context; update_rule to change a rule. "
+        "delete_rule exists in the vocabulary only; no path is ever granted it."
+    )
+    account_id: str = Field(
+        pattern=ACCOUNT_PATTERN, description="The account the request is about, such as acct-a."
+    )
+    resource_id: str = Field(
+        pattern=RESOURCE_PATTERN,
+        description="A rule id such as rule-42, or '-' for the account as a whole. "
+        "Findings are evidence, not resources: never put a finding id here.",
+    )
+    reason: str = Field(min_length=1, max_length=500, description="One sentence for the audit log.")
+    change: dict[str, bool | str | int] | None = Field(
+        default=None,
+        description="Only with update_rule: the rule fields to set, limited to "
+        "{'enabled': bool} and {'name': str}.",
+    )
 
     @field_validator("change")
     @classmethod
@@ -58,9 +76,21 @@ class ActionPlan(BaseModel):
 class AssistantResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    answer: str = Field(min_length=1, max_length=4_000)
-    proposed_actions: list[ActionPlan] = Field(default_factory=list, max_length=5)
-    links: list[str] = Field(default_factory=list, max_length=10)
+    answer: str = Field(
+        min_length=1,
+        max_length=4_000,
+        description="The answer to the analyst, grounded in the context.",
+    )
+    proposed_actions: list[ActionPlan] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Proposals only; each one is authorized separately.",
+    )
+    links: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Relative paths under /accounts/<account_id>/ taken from the context.",
+    )
 
 
 def parse_model_output(text: str) -> AssistantResponse:

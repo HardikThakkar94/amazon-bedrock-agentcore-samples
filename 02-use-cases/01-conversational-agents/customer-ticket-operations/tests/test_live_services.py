@@ -12,8 +12,10 @@ import os
 import pytest
 
 from sec310_sample.live import (
+    FORBID_ALL_GATEWAYS_CEDAR,
     PERMIT_ALL_CEDAR,
-    UNDEFINED_TOOL_CEDAR,
+    PERMIT_ALL_GATEWAYS_CEDAR,
+    SCOPED_WITHOUT_GATEWAY_CEDAR,
     CedarPolicyGate,
     GuardrailChecks,
     PolicyGateError,
@@ -22,7 +24,7 @@ from sec310_sample.live import (
 )
 
 boto3 = pytest.importorskip("boto3", reason="aws extra not installed")
-from botocore.stub import Stubber  # noqa: E402
+from botocore.stub import ANY, Stubber  # noqa: E402
 
 LIVE = pytest.mark.skipif(os.environ.get("SEC310_LIVE") != "1", reason="SEC310_LIVE=1 not set")
 
@@ -59,7 +61,7 @@ def _engine(status: str = "ACTIVE") -> dict:
     return {
         "policyEngineId": ENGINE_ID,
         "policyEngineArn": ENGINE_ARN,
-        "name": "sec310-demo",
+        "name": "sec310_demo",
         "status": status,
         "statusReasons": [],
         "createdAt": 0,
@@ -68,14 +70,14 @@ def _engine(status: str = "ACTIVE") -> dict:
 
 
 def _policy_id(name: str) -> str:
-    return f"{name.replace('-', '')}-0123456789ab"
+    return f"{name.replace('_', '')}-0123456789ab"
 
 
 def _policy(
     status: str,
     reasons: list[str] = (),
     statement: str = PERMIT_ALL_CEDAR,
-    name: str = "permit-all",
+    name: str = "permit_all",
 ) -> dict:
     return {
         "policyId": _policy_id(name),
@@ -116,7 +118,9 @@ class TestGuardrailChecks:
         client = _runtime_client()
         with Stubber(client) as stub:
             stub.add_response("invoke_guardrail_checks", _igc_response(BENIGN))
-            result = GuardrailChecks(client=client).check_tool_call("read_evidence", {})
+            result = GuardrailChecks(client=client).check_tool_call(
+                "read_evidence", {"account_id": "acct-a"}
+            )
         assert not result.blocked and not result.unavailable
         assert result.scores == BENIGN
 
@@ -151,9 +155,53 @@ class TestGuardrailChecks:
             stub.add_client_error(
                 "invoke_guardrail_checks", service_error_code="ThrottlingException"
             )
-            result = GuardrailChecks(client=client).check_tool_call("read_evidence", {})
+            result = GuardrailChecks(client=client).check_tool_call(
+                "read_evidence", {"account_id": "acct-a"}
+            )
         assert result.unavailable and not result.blocked
         assert any("Throttling" in r for r in result.reasons)
+
+    def test_tool_call_screens_only_string_values(self):
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            stub.add_response(
+                "invoke_guardrail_checks",
+                _igc_response(BENIGN),
+                expected_params={
+                    # no tool name, no keys, no wrapper: those are the application's, not the attacker's
+                    "messages": [
+                        {"role": "user", "content": [{"text": "acct-a\nweekly review\nrule-42"}]}
+                    ],
+                    "checks": {
+                        "promptAttack": {
+                            "categories": [
+                                {"category": "PROMPT_INJECTION"},
+                                {"category": "JAILBREAK"},
+                            ]
+                        }
+                    },
+                },
+            )
+            GuardrailChecks(client=client).check_tool_call(
+                "read_evidence",
+                {
+                    "account_id": "acct-a",
+                    "limit": 10,
+                    "verbose": True,
+                    "reason": "weekly review",
+                    "tags": ["rule-42", ""],
+                },
+            )
+            stub.assert_no_pending_responses()
+
+    def test_tool_call_without_text_has_nothing_to_screen(self):
+        client = _runtime_client()
+        with Stubber(client):  # no response registered: any call would fail
+            result = GuardrailChecks(client=client).check_tool_call(
+                "read_evidence", {"limit": 10, "all": False}
+            )
+        assert not result.blocked and not result.unavailable
+        assert result.reasons == ("nothing_to_screen",)
 
     def test_request_shape_matches_service_model(self):
         client = _runtime_client()
@@ -175,6 +223,137 @@ class TestGuardrailChecks:
             )
             GuardrailChecks(client=client).check_tool_result("rule 42: disabled")
             stub.assert_no_pending_responses()
+
+
+class TestBedrockModel:
+    """The live model is asked for the typed shape with a forced tool call."""
+
+    def _tool_use_response(self, payload: dict) -> dict:
+        return {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"toolUse": {"toolUseId": "t1", "name": "respond", "input": payload}}
+                    ],
+                }
+            },
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+            "metrics": {"latencyMs": 1},
+        }
+
+    def test_complete_requests_the_schema_and_returns_tool_input_as_json(self):
+        from sec310_sample.model import BedrockModel
+        from sec310_sample.schemas import AssistantResponse, parse_model_output
+
+        payload = {
+            "answer": "rule-42 was disabled shortly before the sign-in.",
+            "proposed_actions": [
+                {
+                    "operation": "update_rule",
+                    "account_id": "acct-a",
+                    "resource_id": "rule-42",
+                    "reason": "re-enable",
+                    "change": {"enabled": True},
+                }
+            ],
+            "links": ["/accounts/acct-a/rules/rule-42"],
+        }
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            stub.add_response(
+                "converse",
+                self._tool_use_response(payload),
+                expected_params={
+                    "modelId": "test-model",
+                    "system": [{"text": ANY}],
+                    "messages": [{"role": "user", "content": [{"text": "prompt"}]}],
+                    "toolConfig": {
+                        "tools": [
+                            {
+                                "toolSpec": {
+                                    "name": "respond",
+                                    "description": ANY,
+                                    "inputSchema": {"json": AssistantResponse.model_json_schema()},
+                                }
+                            }
+                        ],
+                        "toolChoice": {"tool": {"name": "respond"}},
+                    },
+                    "inferenceConfig": {"maxTokens": 800},  # no temperature: some models reject it
+                },
+            )
+            text = BedrockModel(model_id="test-model", client=client).complete("prompt")
+            stub.assert_no_pending_responses()
+        parsed = parse_model_output(text)  # the strict parser still runs on the way back in
+        assert parsed.proposed_actions[0].change == {"enabled": True}
+
+    def test_complete_without_tool_call_hands_back_text_for_the_parser_to_reject(self):
+        from sec310_sample.errors import OutputValidationError
+        from sec310_sample.model import BedrockModel
+        from sec310_sample.schemas import parse_model_output
+
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            stub.add_response(
+                "converse",
+                {
+                    "output": {
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"text": "Sure! Here is prose."}],
+                        }
+                    },
+                    "stopReason": "end_turn",
+                    "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+                    "metrics": {"latencyMs": 1},
+                },
+            )
+            text = BedrockModel(model_id="test-model", client=client).complete("prompt")
+        assert text == "Sure! Here is prose."
+        with pytest.raises(OutputValidationError, match="malformed_output"):
+            parse_model_output(text)
+
+    def test_stream_yields_tool_input_fragments(self):
+        # Stubber cannot model an event stream, so the client is a minimal double here; the
+        # event shapes are the ones observed from converse_stream with a forced tool call.
+        from sec310_sample.model import BedrockModel
+
+        events = [
+            {"messageStart": {"role": "assistant"}},
+            {
+                "contentBlockStart": {
+                    "contentBlockIndex": 0,
+                    "start": {"toolUse": {"toolUseId": "t1", "name": "respond"}},
+                }
+            },
+            {
+                "contentBlockDelta": {
+                    "contentBlockIndex": 0,
+                    "delta": {"toolUse": {"input": '{"answer": "ok", '}},
+                }
+            },
+            {
+                "contentBlockDelta": {
+                    "contentBlockIndex": 0,
+                    "delta": {"toolUse": {"input": '"proposed_actions": [], "links": []}'}},
+                }
+            },
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "tool_use"}},
+        ]
+        seen = {}
+
+        class Client:
+            def converse_stream(self, **kwargs):
+                seen.update(kwargs)
+                return {"stream": iter(events)}
+
+        chunks = list(BedrockModel(model_id="test-model", client=Client()).stream("prompt"))
+        assert "".join(chunks) == '{"answer": "ok", "proposed_actions": [], "links": []}'
+        assert seen["toolConfig"]["toolChoice"] == {"tool": {"name": "respond"}}
+        assert seen["inferenceConfig"] == {"maxTokens": 800}
 
 
 class TestCedarPolicyGate:
@@ -202,7 +381,7 @@ class TestCedarPolicyGate:
 
     def test_rejection_is_read_from_terminal_state(self):
         client = _control_client()
-        reason = "Validation failed: overly permissive policy"
+        reason = "Overly Permissive: Policy Engine will allow every request ..."
         with Stubber(client) as stub:
             stub.add_response("create_policy_engine", _engine())
             stub.add_response("get_policy_engine", _engine())
@@ -210,9 +389,9 @@ class TestCedarPolicyGate:
                 "create_policy",
                 _policy("CREATING"),
                 expected_params={
-                    "name": "permit-all",
+                    "name": "permit_all",
                     "policyEngineId": ENGINE_ID,
-                    "definition": {"cedar": {"statement": PERMIT_ALL_CEDAR}},
+                    "definition": {"cedar": {"statement": PERMIT_ALL_GATEWAYS_CEDAR}},
                     "validationMode": "FAIL_ON_ANY_FINDINGS",
                     "enforcementMode": "LOG_ONLY",
                 },
@@ -221,23 +400,53 @@ class TestCedarPolicyGate:
             stub.add_response("get_policy", _policy("CREATE_FAILED", [reason]))
             gate = _gate(client)
             gate.provision()
-            v = gate.verify("permit-all", PERMIT_ALL_CEDAR)
+            v = gate.verify("permit_all", PERMIT_ALL_GATEWAYS_CEDAR)
             stub.assert_no_pending_responses()
         assert not v.accepted
         assert v.status == "CREATE_FAILED" and v.findings == (reason,)
         assert v.policy_id == POLICY_ID
+
+    def test_synchronous_parser_rejection_is_a_verdict_with_its_reason(self):
+        # Observed live: an unconstrained resource is refused by the parser before any
+        # asynchronous validation starts. That is a verdict about the statement, not an outage.
+        client = _control_client()
+        message = "When parsing the policy statement, a wildcard resource was detected."
+        with Stubber(client) as stub:
+            stub.add_response("create_policy_engine", _engine())
+            stub.add_response("get_policy_engine", _engine())
+            stub.add_client_error(
+                "create_policy", service_error_code="ValidationException", service_message=message
+            )
+            gate = _gate(client)
+            gate.provision()
+            v = gate.verify("permit_all", PERMIT_ALL_CEDAR)
+            stub.add_response("delete_policy_engine", _engine("DELETING"))
+            stub.add_client_error(
+                "get_policy_engine", service_error_code="ResourceNotFoundException"
+            )
+            report = gate.cleanup()  # no policy was created, so only the engine goes
+            stub.assert_no_pending_responses()
+        assert not v.accepted and v.status == "REJECTED" and v.findings == (message,)
+        assert v.policy_id is None
+        assert report.clean and report.deleted == [f"policy engine {ENGINE_ID}"]
 
     def test_acceptance_requires_active_not_creating(self):
         client = _control_client()
         with Stubber(client) as stub:
             stub.add_response("create_policy_engine", _engine())
             stub.add_response("get_policy_engine", _engine())
-            stub.add_response("create_policy", _policy("CREATING", statement=UNDEFINED_TOOL_CEDAR))
-            stub.add_response("get_policy", _policy("CREATING", statement=UNDEFINED_TOOL_CEDAR))
-            stub.add_response("get_policy", _policy("ACTIVE", statement=UNDEFINED_TOOL_CEDAR))
+            stub.add_response(
+                "create_policy", _policy("CREATING", statement=SCOPED_WITHOUT_GATEWAY_CEDAR)
+            )
+            stub.add_response(
+                "get_policy", _policy("CREATING", statement=SCOPED_WITHOUT_GATEWAY_CEDAR)
+            )
+            stub.add_response(
+                "get_policy", _policy("ACTIVE", statement=SCOPED_WITHOUT_GATEWAY_CEDAR)
+            )
             gate = _gate(client)
             gate.provision()
-            v = gate.verify("p", UNDEFINED_TOOL_CEDAR)
+            v = gate.verify("p", SCOPED_WITHOUT_GATEWAY_CEDAR)
         assert v.accepted and v.status == "ACTIVE" and v.findings == ()
 
     def test_service_failure_is_never_a_verdict(self):
@@ -249,7 +458,7 @@ class TestCedarPolicyGate:
             gate = _gate(client)
             gate.provision()
             with pytest.raises(PolicyGateError, match="ThrottlingException"):
-                gate.verify("permit-all", PERMIT_ALL_CEDAR)
+                gate.verify("permit_all", PERMIT_ALL_CEDAR)
 
     def test_polling_deadline_is_operational_error(self):
         client = _control_client()
@@ -262,11 +471,25 @@ class TestCedarPolicyGate:
             gate = _gate(client, deadline_s=9.0, poll_s=3.0)
             gate.provision()
             with pytest.raises(PolicyGateError, match="still CREATING after 9s"):
-                gate.verify("permit-all", PERMIT_ALL_CEDAR)
+                gate.verify("permit_all", PERMIT_ALL_CEDAR)
 
     def test_verify_requires_provision(self):
         with pytest.raises(PolicyGateError, match="provision"):
             _gate(_control_client()).verify("x", PERMIT_ALL_CEDAR)
+
+    def test_names_are_validated_before_any_call(self):
+        # Service constraint observed live: ^[A-Za-z][A-Za-z0-9_]*$ (no hyphens), max 48.
+        with pytest.raises(PolicyGateError, match="policy engine name"):
+            _gate(_control_client(), engine_name="sec310-demo")
+        client = _control_client()
+        with Stubber(client) as stub:
+            stub.add_response("create_policy_engine", _engine())
+            stub.add_response("get_policy_engine", _engine())
+            gate = _gate(client)
+            gate.provision()
+            with pytest.raises(PolicyGateError, match="policy name"):
+                gate.verify("permit-all", PERMIT_ALL_CEDAR)
+            stub.assert_no_pending_responses()  # the invalid name never reached the service
 
     def test_cleanup_confirms_deletion_in_order(self):
         client = _control_client()
@@ -284,7 +507,7 @@ class TestCedarPolicyGate:
             )
             gate = _gate(client)
             gate.provision()
-            gate.verify("permit-all", PERMIT_ALL_CEDAR)
+            gate.verify("permit_all", PERMIT_ALL_CEDAR)
             report = gate.cleanup()
             stub.assert_no_pending_responses()
         assert report.clean
@@ -301,7 +524,7 @@ class TestCedarPolicyGate:
             stub.add_client_error("delete_policy", service_error_code="AccessDeniedException")
             gate = _gate(client)
             gate.provision()
-            gate.verify("permit-all", PERMIT_ALL_CEDAR)
+            gate.verify("permit_all", PERMIT_ALL_CEDAR)
             report = gate.cleanup()  # must not raise
             stub.assert_no_pending_responses()
         assert not report.clean
@@ -343,7 +566,7 @@ class TestCleanupTerminalFailures:
             stub.add_response("get_policy", _policy("DELETE_FAILED", ["still referenced"]))
             gate = _gate(client)
             gate.provision()
-            gate.verify("permit-all", PERMIT_ALL_CEDAR)
+            gate.verify("permit_all", PERMIT_ALL_CEDAR)
             report = gate.cleanup()
             stub.assert_no_pending_responses()  # no delete_policy_engine while a policy remains
         assert not report.clean
@@ -363,7 +586,7 @@ class TestCleanupTerminalFailures:
                 stub.add_response("get_policy", _policy("DELETING"))
             gate = _gate(client, deadline_s=9.0, poll_s=3.0)
             gate.provision()
-            gate.verify("permit-all", PERMIT_ALL_CEDAR)
+            gate.verify("permit_all", PERMIT_ALL_CEDAR)
             report = gate.cleanup()
             stub.assert_no_pending_responses()
         assert report.deleted == []
@@ -386,7 +609,7 @@ class TestAttachedEngine:
                 expected_params={
                     "name": "presenter",
                     "policyEngineId": yours,
-                    "definition": {"cedar": {"statement": UNDEFINED_TOOL_CEDAR}},
+                    "definition": {"cedar": {"statement": SCOPED_WITHOUT_GATEWAY_CEDAR}},
                     "validationMode": "FAIL_ON_ANY_FINDINGS",
                     "enforcementMode": "LOG_ONLY",
                 },
@@ -397,7 +620,7 @@ class TestAttachedEngine:
             # no delete_policy_engine: the presenter's engine is not ours
             gate = _gate(client)
             assert gate.attach(yours) == yours
-            assert gate.verify("presenter", UNDEFINED_TOOL_CEDAR).accepted
+            assert gate.verify("presenter", SCOPED_WITHOUT_GATEWAY_CEDAR).accepted
             report = gate.cleanup()
             stub.assert_no_pending_responses()
         assert report.clean and report.deleted == [f"policy {_policy_id('presenter')}"]
@@ -435,8 +658,31 @@ class _Fake:
     def converse(self, **kw):
         return {"output": {"message": {"content": [{"text": "ready"}]}}}
 
+    ar_findings = True  # when False the AR guardrail returns no findings (nothing attached)
+
     def apply_guardrail(self, **kw):
-        attack = "ignore all previous" in kw["content"][0]["text"]["text"]
+        text = kw["content"][0]["text"]["text"]
+        if kw["guardrailIdentifier"] == "ar-guardrail":
+            if not self.ar_findings:
+                return {
+                    "action": "NONE",
+                    "assessments": [{"automatedReasoningPolicy": {"findings": []}}],
+                }
+            kind = "invalid" if "without a change ticket" in text else "valid"
+            body = {
+                "translation": {
+                    "premises": [{"naturalLanguage": "isRuleDisabled is true"}],
+                    "claims": [{"naturalLanguage": "isSecurityIncident is false"}],
+                },
+                ("contradictingRules" if kind == "invalid" else "supportingRules"): [
+                    {"identifier": "RULE1"}
+                ],
+            }
+            return {
+                "action": "NONE",
+                "assessments": [{"automatedReasoningPolicy": {"findings": [{kind: body}]}}],
+            }
+        attack = "ignore all previous" in text
         intervene = attack and self.guardrail_intervenes_on_attack
         return {"action": "GUARDRAIL_INTERVENED" if intervene else "NONE", "assessments": []}
 
@@ -454,6 +700,11 @@ class _Fake:
         return {**_engine("ACTIVE"), "policyEngineId": kw["policyEngineId"]}
 
     def create_policy(self, **kw):
+        if (
+            kw["definition"]["cedar"]["statement"] == PERMIT_ALL_CEDAR
+            and not self.accept_everything
+        ):
+            raise _client_error("ValidationException", "a wildcard resource was detected")
         self.names = {**getattr(self, "names", {}), _policy_id(kw["name"]): kw["name"]}
         self.created_on[_policy_id(kw["name"])] = kw["policyEngineId"]
         return _policy("CREATING", name=kw["name"])
@@ -476,10 +727,14 @@ class _Fake:
         return {**_engine("DELETING"), "policyEngineId": kw["policyEngineId"]}
 
 
-def _not_found():
+def _client_error(code: str, message: str):
     from botocore.exceptions import ClientError
 
-    return ClientError({"Error": {"Code": "ResourceNotFoundException", "Message": "gone"}}, "op")
+    return ClientError({"Error": {"Code": code, "Message": message}}, "op")
+
+
+def _not_found():
+    return _client_error("ResourceNotFoundException", "gone")
 
 
 class AccessDeniedException(Exception):
@@ -508,9 +763,12 @@ def test_stage_passes_when_every_expected_outcome_holds(monkeypatch, capsys):
     assert code == 0, out
     assert "✔ attack input: GUARDRAIL_INTERVENED" in out and "✔ ordinary input: NONE" in out
     assert "✔ poisoned call: blocked=True" in out and "✔ ordinary call: blocked=False" in out
-    assert "✔ policy permit-all: status=CREATE_FAILED accepted=False" in out
-    assert "✔ policy undefined-tool: status=CREATE_FAILED accepted=False" in out
-    assert "finding: Validation failed for permit-all" in out
+    assert "✔ policy permit_all: status=REJECTED accepted=False" in out
+    assert "finding: a wildcard resource was detected" in out
+    assert "✔ policy permit_all_gateways: status=CREATE_FAILED accepted=False" in out
+    assert "✔ policy forbid_all_gateways: status=CREATE_FAILED accepted=False" in out
+    assert "✔ policy scoped_without_gateway: status=CREATE_FAILED accepted=False" in out
+    assert "finding: Validation failed for permit_all_gateways" in out
     assert "deleted policy engine" in out and "NOT deleted" not in out
     assert "an accepted policy needs your gateway" in out
     assert "****1234" in out and "fake-account-1234" not in out
@@ -542,10 +800,10 @@ def test_stage_fails_when_apply_guardrail_is_unavailable(monkeypatch, capsys):
         ({"attack_score": 0.4}, "✖ poisoned call: blocked=False"),
         ({"ordinary_score": 0.8}, "✖ ordinary call: blocked=True"),
         ({"guardrail_intervenes_on_attack": False}, "✖ attack input: NONE"),
-        ({"accept_everything": True}, "✖ policy permit-all: status=ACTIVE accepted=True"),
+        ({"accept_everything": True}, "✖ policy permit_all: status=ACTIVE accepted=True"),
         (
             {"rejected_status": "UPDATE_FAILED"},
-            "✖ policy permit-all: status=UPDATE_FAILED accepted=False",
+            "✖ policy permit_all_gateways: status=UPDATE_FAILED accepted=False",
         ),
     ],
     ids=[
@@ -563,12 +821,25 @@ def test_stage_fails_on_any_unexpected_evaluated_outcome(monkeypatch, capsys, ov
     assert "every live check ran" not in out
 
 
-def test_stage_fails_when_configured_ar_guardrail_returns_no_findings(monkeypatch, capsys):
+def test_stage_checks_both_ar_claims(monkeypatch, capsys):
     code, out = _run_stage(
         monkeypatch, capsys, _Fake(), env={"SEC310_AR_GUARDRAIL_ID": "ar-guardrail"}
     )
+    assert code == 0, out
+    assert "✔ claim the policy contradicts: findings=['invalid'] action=NONE" in out
+    assert "✔ claim the policy supports: findings=['valid'] action=NONE" in out
+    assert "contradicts rule RULE1" in out and "supported by rule RULE1" in out
+
+
+def test_stage_fails_when_configured_ar_guardrail_returns_no_findings(monkeypatch, capsys):
+    code, out = _run_stage(
+        monkeypatch,
+        capsys,
+        _Fake(ar_findings=False),
+        env={"SEC310_AR_GUARDRAIL_ID": "ar-guardrail"},
+    )
     assert code == 1
-    assert "✖ automated reasoning: no findings" in out
+    assert "✖ claim the policy contradicts: findings=[] action=NONE  (unexpected)" in out
 
 
 def test_stage_reports_resources_it_could_not_delete(monkeypatch, capsys):
@@ -587,14 +858,16 @@ def test_stage_transport_failure_is_not_a_verdict(monkeypatch, capsys):
         raise RuntimeError("simulated AgentCore transport outage")
 
     with pytest.raises(PolicyGateError, match="transport outage"):
-        _run_stage(monkeypatch, capsys, _Fake(create_policy=outage))
+        _run_stage(
+            monkeypatch, capsys, _Fake(create_policy=outage)
+        )  # RuntimeError is not a ValidationException
     out = capsys.readouterr().out
     assert "accepted=False" not in out  # no rejection line was ever printed
 
 
 def test_stage_runs_presenter_policy_on_their_engine_and_keeps_it(monkeypatch, capsys, tmp_path):
     statement = tmp_path / "mine.cedar"
-    statement.write_text(UNDEFINED_TOOL_CEDAR)
+    statement.write_text(SCOPED_WITHOUT_GATEWAY_CEDAR)
     fake = _Fake()
     code, out = _run_stage(
         monkeypatch,
@@ -606,19 +879,19 @@ def test_stage_runs_presenter_policy_on_their_engine_and_keeps_it(monkeypatch, c
         },
     )
     assert code == 0, out
-    assert "✔ policy presenter-policy: status=ACTIVE accepted=True" in out
-    assert fake.created_on[_policy_id("presenter-policy")] == PRESENTER_ENGINE
-    assert fake.created_on[_policy_id("permit-all")] != PRESENTER_ENGINE
-    assert _policy_id("presenter-policy") in fake.deleted  # our policy on their engine: removed
+    assert "✔ policy presenter_policy: status=ACTIVE accepted=True" in out
+    assert fake.created_on[_policy_id("presenter_policy")] == PRESENTER_ENGINE
+    assert fake.created_on[_policy_id("permit_all_gateways")] != PRESENTER_ENGINE
+    assert _policy_id("presenter_policy") in fake.deleted  # our policy on their engine: removed
     assert PRESENTER_ENGINE not in fake.deleted  # their engine: kept
     assert (
-        fake.created_on[_policy_id("permit-all")] in fake.deleted
+        fake.created_on[_policy_id("permit_all_gateways")] in fake.deleted
     )  # our throwaway engine: removed
 
 
 def test_stage_requires_engine_with_policy_file(monkeypatch, capsys, tmp_path):
     statement = tmp_path / "mine.cedar"
-    statement.write_text(UNDEFINED_TOOL_CEDAR)
+    statement.write_text(SCOPED_WITHOUT_GATEWAY_CEDAR)
     with pytest.raises(PolicyGateError, match="must be set together"):
         _run_stage(monkeypatch, capsys, _Fake(), env={"SEC310_CEDAR_POLICY_FILE": str(statement)})
 
@@ -640,13 +913,20 @@ class TestLiveIntegration:
     """Real AWS calls. Run with SEC310_LIVE=1 and credentials for a throwaway account."""
 
     def test_policy_engine_lifecycle(self):
-        gate = CedarPolicyGate(engine_name="sec310-demo-itest")
+        gate = CedarPolicyGate(engine_name="sec310_demo_itest")
         try:
             gate.provision()
-            permit_all = gate.verify("permit-all", PERMIT_ALL_CEDAR)
-            assert permit_all.status == "CREATE_FAILED" and permit_all.findings, permit_all
-            undefined = gate.verify("undefined-tool", UNDEFINED_TOOL_CEDAR)
-            assert undefined.status == "CREATE_FAILED" and undefined.findings, undefined
+            bare = gate.verify("permit_all", PERMIT_ALL_CEDAR)
+            assert bare.status == "REJECTED" and "wildcard resource" in bare.findings[0], bare
+            permissive = gate.verify("permit_all_gateways", PERMIT_ALL_GATEWAYS_CEDAR)
+            assert permissive.status == "CREATE_FAILED", permissive
+            assert any("Overly Permissive" in f for f in permissive.findings), permissive
+            restrictive = gate.verify("forbid_all_gateways", FORBID_ALL_GATEWAYS_CEDAR)
+            assert restrictive.status == "CREATE_FAILED", restrictive
+            assert any("Overly Restrictive" in f for f in restrictive.findings), restrictive
+            schema = gate.verify("scoped_without_gateway", SCOPED_WITHOUT_GATEWAY_CEDAR)
+            assert schema.status == "CREATE_FAILED", schema
+            assert any("input" in f and "not found" in f for f in schema.findings), schema
         finally:
             report = gate.cleanup()
         assert report.clean, report.remaining

@@ -127,29 +127,32 @@ recommended practice; present it as the gate you *should* have, not one you alre
 ## Optional · `live`: the same controls against real services (3–4 min, if time and network allow)
 
 ```bash
+sh scripts/live_setup.sh      # the day before: guardrails + Automated Reasoning policy, ~2 min
 uv run python -m sec310_sample.demo live
 ```
 
-Needs credentials plus `SEC310_MODEL_ID` / `SEC310_GUARDRAIL_ID` (optional
-`SEC310_AR_GUARDRAIL_ID`; optional together `SEC310_POLICY_ENGINE_ID` +
-`SEC310_CEDAR_POLICY_FILE`); stops with an explicit message otherwise, and exits 1 if any
-check was unavailable or any outcome was not the expected one.
-Each real call maps to a control the offline stages already proved: `Converse` (proposals
-only), `ApplyGuardrail` (three outcomes), `InvokeGuardrailChecks` on a *proposed tool call*
-(severity scores; say out loud that the threshold is ours and a missing evaluation is
-UNAVAILABLE), `ApplyGuardrail` with an Automated Reasoning policy (formal-logic findings
-over the answer text; detect mode), and AgentCore Policy `CreatePolicy` under
-`FAIL_ON_ANY_FINDINGS`. The policy step takes the longest: creation is asynchronous and the
-gate polls to the terminal state, then prints the service's own `statusReasons` for the
-permit-all policy (overly permissive) and for a tool no gateway defines (schema). If you
-bring your own engine (gateway attached) in `SEC310_POLICY_ENGINE_ID` and a statement for
-one of its tools in `SEC310_CEDAR_POLICY_FILE`, the accepted case shows too, on your
-engine; the sample removes only the policy it created there. Rehearse the whole stage on
-the account once before the talk: the two rejections are the documented behaviour, and the
-rehearsal is what turns "expected" into "seen". Say: every one of these is a signal the application acts on; none is a
-permission; validation is the release gate, enforcement happens at the gateway. Have the
-offline recording ready if the network fails; the outcomes are the same, which is the point.
-Slot it after Patch 3 or after Patch 5, never in the cold open.
+Needs credentials plus the exports the setup script prints (`SEC310_MODEL_ID`,
+`SEC310_GUARDRAIL_ID`, `SEC310_AR_GUARDRAIL_ID`; optional together `SEC310_POLICY_ENGINE_ID` +
+`SEC310_CEDAR_POLICY_FILE` for the accepted-policy case on your own gateway). It stops with
+an explicit message otherwise, and exits 1 if any check was unavailable or any outcome was
+not the expected one. Rehearsed end to end on 2026-10-08: about 75 seconds, all green.
+
+Beats, each mapped to a control the offline stages already proved: `Converse` (proposals
+only; say that the typed shape is requested as a forced tool call and *still* validated),
+`ApplyGuardrail` (three outcomes), `InvokeGuardrailChecks` on the argument values of a
+proposed tool call (say out loud that the threshold is ours, that a missing evaluation is
+UNAVAILABLE, and that the classifier flagged our own "proposed tool call:" wrapper as an
+attack when we first tried it), `ApplyGuardrail` with the Automated Reasoning policy (one
+claim the rule-change policy contradicts, one it supports; read the premises and the
+contradicted rule aloud; point at `action=NONE`: detect mode), and AgentCore Policy
+`CreatePolicy` under `FAIL_ON_ANY_FINDINGS`. The policy step is the slow one: creation is
+asynchronous and the gate polls to the terminal state, then prints the service's own
+`statusReasons` for four rejections (parser, overly permissive, overly restrictive, schema).
+Say: every one of these is a signal the application acts on; none is a permission;
+validation is the release gate, enforcement happens at the gateway. Have the offline
+recording ready if the network fails; the outcomes are the same, which is the point. Slot it
+after Patch 3 or after Patch 5, never in the cold open. Run `sh scripts/live_teardown.sh`
+afterwards.
 
 ## ~48:00–52:00 · Close, then stay for questions
 

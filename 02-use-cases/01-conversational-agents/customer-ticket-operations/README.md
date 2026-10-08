@@ -79,6 +79,9 @@ docs/walkthrough.md           segment-by-segment presenter map
 docs/failure-policy.md        the decision table, explained
 scripts/scan_identifiers.py   disclosure scan (run before publishing anything)
 scripts/check_tags.sh         every tag builds + passes from a fresh checkout
+scripts/live_setup.sh         AWS resources for the live stage (guardrails, AR policy); prints exports
+scripts/live_teardown.sh      removes them, plus any sec310_demo* policy engine left behind
+scripts/live/                 the natural-language source the Automated Reasoning policy is built from
 ```
 
 ## Live mode (optional)
@@ -96,39 +99,51 @@ the same, which is rather the point.
 ### The `live` stage: the same controls against real services
 
 ```bash
-uv sync --extra aws                      # boto3 with the agentic guardrail and policy APIs
-export SEC310_AR_GUARDRAIL_ID=<id>       # optional: a guardrail with an Automated Reasoning policy
-export SEC310_POLICY_ENGINE_ID=<id>      # optional, together: your engine with a gateway attached...
-export SEC310_CEDAR_POLICY_FILE=<path>   # ...and a Cedar statement naming a tool that gateway defines
+uv sync --extra aws                 # boto3 with the agentic guardrail and policy APIs
+eval "$(sh scripts/live_setup.sh)"  # creates the guardrails + an Automated Reasoning policy (~2 min) and exports their ids
 uv run python -m sec310_sample.demo live
+sh scripts/live_teardown.sh         # removes everything the setup created
 ```
 
 `live` is not part of `all`. It needs credentials in the default AWS SDK chain plus the
-variables above, and it stops with an explicit message (exit 2) when they are missing. It
-exits 0 only when every check ran and every expected outcome held; an unavailable dependency
-or an unexpected verdict is listed under "Live proof incomplete" and the exit code is 1. A
-live proof that proved nothing must not look like one that did.
+variables the setup script prints (`SEC310_MODEL_ID`, `SEC310_GUARDRAIL_ID`,
+`SEC310_AR_GUARDRAIL_ID`). It stops with an explicit message (exit 2) when they are missing,
+and exits 0 only when every check ran and every outcome was the expected one; an unavailable
+dependency or an unexpected verdict is listed under "Live proof incomplete" with exit 1. A
+live proof that proved nothing must not look like one that did. Everything below was run
+against a real account on 2026-10-08 (us-east-1); the whole stage takes about 75 seconds.
 
 | Call | Control it proves | Code |
 |---|---|---|
-| `bedrock-runtime:Converse` | the model proposes; it does not act | `model.BedrockModel` |
+| `bedrock-runtime:Converse` | the model proposes; it does not act. The typed shape is requested with a forced tool call whose schema *is* the sample's pydantic model, then validated again on the way back | `model.BedrockModel` |
 | `bedrock-runtime:ApplyGuardrail` | guardrail on model I/O with three outcomes, branched on all three | `guardrails.BedrockGuardrail` |
-| `bedrock-runtime:InvokeGuardrailChecks` | prompt-attack severity scores for a *proposed tool call* before it runs; the threshold is the application's, and a missing evaluation is UNAVAILABLE, not a pass | `live.GuardrailChecks` |
-| `bedrock-runtime:ApplyGuardrail` (AR policy) | formal-logic findings over the answer text, detect mode | stage code |
-| `bedrock-agentcore-control:CreatePolicy` under `FAIL_ON_ANY_FINDINGS` | Cedar is machine-checked before anything could enforce it: creation is asynchronous, the policy settles to `ACTIVE` or `CREATE_FAILED` with `statusReasons`, and the gate reads the verdict from that terminal state | `live.CedarPolicyGate` |
+| `bedrock-runtime:InvokeGuardrailChecks` | prompt-attack severity scores for the argument *values* of a proposed tool call, before it runs; the threshold is the application's, and a missing evaluation is UNAVAILABLE, not a pass | `live.GuardrailChecks` |
+| `bedrock-runtime:ApplyGuardrail` (AR policy) | formal-logic findings over the answer text: a claim the team's rule-change policy contradicts comes back `INVALID` with the rule it breaks, a supported claim `VALID`; `action` is `NONE` both times (detect mode) | stage code |
+| `bedrock-agentcore-control:CreatePolicy` under `FAIL_ON_ANY_FINDINGS` | Cedar is machine-checked before anything could enforce it: the parser refuses an unconstrained resource synchronously; everything else settles asynchronously to `ACTIVE` or `CREATE_FAILED` with `statusReasons`, and the gate reads the verdict from that terminal state | `live.CedarPolicyGate` |
 
-The policy step creates a throwaway engine with no gateway attached and expects two
-rejections with the service's own reasons: `permit(principal, action, resource);` from
-semantic validation (overly permissive) and a policy naming a tool no gateway defines from
-the schema check. These are the documented behaviours; the stage asserts them and the
-`SEC310_LIVE=1` test checks them against the real service, so treat them as expected until
-you have seen them on your account. An *accepted* policy must name a tool that an attached
-gateway defines, so acceptance is opt-in and runs on *your* engine: set
-`SEC310_POLICY_ENGINE_ID` to an engine with your gateway attached and
-`SEC310_CEDAR_POLICY_FILE` to a statement for one of its tools. The sample deletes the policy
-it created there and never touches your engine. Transport and service failures are raised as
-`PolicyGateError`, never reported as a verdict. Cleanup waits for each deletion to be
-confirmed and prints anything it could not remove.
+Two things the live run taught us, both encoded in the code: the prompt-attack classifier
+scores an instruction-shaped wrapper such as `proposed tool call: ...` as an attack on its own
+(0.8), so only the argument values are screened; and a capable model wraps JSON in a Markdown
+fence unless the shape is requested at the API, so the live model is asked for it with a
+forced tool call. Validation stays strict either way.
+
+The policy step creates a throwaway engine with no gateway attached and expects four
+rejections with the service's own reasons: `permit(principal, action, resource);` from the
+parser (wildcard resource), `permit(... resource is AgentCore::Gateway)` from semantic
+validation (overly permissive), its `forbid` twin (overly restrictive), and a policy that
+conditions on `context.input.account_id` from the schema check (no attached gateway defines
+it). An *accepted* policy must name a tool that an attached gateway defines, so acceptance is
+opt-in and runs on *your* engine: set `SEC310_POLICY_ENGINE_ID` to an engine with your gateway
+attached and `SEC310_CEDAR_POLICY_FILE` to a statement for one of its tools. The sample
+deletes the policy it created there and never touches your engine. Engine and policy names
+must match `^[A-Za-z][A-Za-z0-9_]*$`; the gate checks that before calling. Transport and
+service failures are raised as `PolicyGateError`, never reported as a verdict. Cleanup waits
+for each deletion to be confirmed and prints anything it could not remove.
+
+`--live` on the other stages uses the real model for proposals while the write path stays
+local. A real model is not the scripted gullible one: it may decline the injected instruction,
+so those stages say what actually happened instead of narrating the scripted outcome, and
+the behavioural corpus (`telemetry` stage) passes 12/12 against it.
 
 Unit tests use `botocore.stub.Stubber` and small fake clients and run offline (the stage runs
 end to end against fakes); `SEC310_LIVE=1 uv run pytest tests/test_live_services.py` adds
