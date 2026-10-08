@@ -110,7 +110,7 @@ class BedrockGuardrail:
             return GuardrailDecision(GuardrailAction.NONE, source)
         # A missing or unknown action is not evidence that the text passed.
         return GuardrailDecision(
-            GuardrailAction.UNAVAILABLE, source, (f"unexpected_action:{action}",)
+            GuardrailAction.UNAVAILABLE, source, (f"unexpected_action:{action or 'missing'}",)
         )
 
 

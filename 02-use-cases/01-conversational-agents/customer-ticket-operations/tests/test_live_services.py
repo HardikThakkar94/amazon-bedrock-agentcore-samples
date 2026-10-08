@@ -801,7 +801,7 @@ def test_stage_passes_when_every_expected_outcome_holds(monkeypatch, capsys):
     assert "deleted policy engine" in out and "NOT deleted" not in out
     assert "an accepted policy needs your gateway" in out
     assert "****1234" in out and "fake-account-1234" not in out
-    assert "every live check ran" in out
+    assert "every configured live check passed" in out
 
 
 def test_stage_fails_when_checks_are_unavailable(monkeypatch, capsys):
@@ -847,7 +847,7 @@ def test_stage_fails_on_any_unexpected_evaluated_outcome(monkeypatch, capsys, ov
     code, out = _run_stage(monkeypatch, capsys, _Fake(**override))
     assert code == 1, out
     assert marker in out and "(unexpected)" in out
-    assert "every live check ran" not in out
+    assert "every configured live check passed" not in out
 
 
 def test_stage_checks_both_ar_claims(monkeypatch, capsys):
@@ -887,7 +887,7 @@ def test_stage_fails_on_an_ambiguous_or_enforcing_ar_result(monkeypatch, capsys,
     assert marker in out
     if "ar_action" in override:  # the detect-mode remark is derived from the actions actually seen
         assert "action=NONE every time" not in out
-    assert "every live check ran" not in out
+    assert "every configured live check passed" not in out
 
 
 @pytest.mark.parametrize(
@@ -901,8 +901,9 @@ def test_stage_fails_when_the_ordinary_guardrail_response_is_incomplete(
     # An incomplete ApplyGuardrail response is not evidence that the text passed.
     code, out = _run_stage(monkeypatch, capsys, _Fake(ordinary_guardrail_response=response))
     assert code == 1, out
-    assert "✖ ordinary input: UNAVAILABLE" in out and "unexpected_action:" in out
-    assert "every live check ran" not in out
+    assert "✖ ordinary input: UNAVAILABLE reasons=['unexpected_action:" in out
+    assert "UNAVAILABLE UNAVAILABLE" not in out
+    assert "every configured live check passed" not in out
 
 
 def test_stage_fails_when_configured_ar_guardrail_returns_no_findings(monkeypatch, capsys):

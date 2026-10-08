@@ -482,7 +482,9 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
         expect(
             label,
             d.intervened == should_intervene,
-            f"{d.action} reasons={list(d.reasons)}",
+            f"reasons={list(d.reasons)}"
+            if d.unavailable
+            else f"{d.action} reasons={list(d.reasons)}",
             unavailable=d.unavailable,
         )
 
@@ -659,7 +661,7 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
         for p in problems:
             denied(p)
         return 1
-    ok("every live check ran and every outcome was the expected one")
+    ok("every configured live check passed; skipped steps are noted above")
     return 0
 
 
