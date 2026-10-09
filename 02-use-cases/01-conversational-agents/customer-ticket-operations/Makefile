@@ -21,6 +21,7 @@ check-tags:
 
 lint:
 	uv run --with 'ruff==0.16.8' ruff check src tests scripts && uv run --with 'ruff==0.16.8' ruff format --check src tests scripts
+	sh -n scripts/live_setup.sh scripts/live_teardown.sh scripts/check_tags.sh
 
 preflight: test lint
 	$(PY) scripts/scan_identifiers.py $(if $(DENYLIST),--denylist $(DENYLIST)) .

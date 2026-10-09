@@ -64,6 +64,24 @@ def test_public_aws_docs_hosts_are_allowed(scanner, tmp_path, capsys):
     assert "no denylist" in capsys.readouterr().out
 
 
+def test_account_free_and_templated_arns_are_allowed_but_real_ones_are_not(
+    scanner, tmp_path, capsys
+):
+    tree = tmp_path / "repo"
+    tree.mkdir()
+    (tree / "ok.py").write_text(
+        'MANAGED = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"\n'
+        'prefix = f"arn:aws:bedrock-agentcore:{region}:{account}"\n'
+    )
+    assert scanner.main([str(tree)]) == 0
+
+    real_arn = "arn:" + "aws:iam::" + "1234567890" + "12:role/some-role"  # concatenated: see above
+    (tree / "leak.py").write_text(f'ROLE = "{real_arn}"\n')
+    assert scanner.main([str(tree)]) == 1
+    out = capsys.readouterr().out
+    assert "leak.py:1" in out and "ok.py" not in out
+
+
 def test_scanner_skips_itself_and_ignored_dirs(scanner, tmp_path):
     tree = tmp_path / "repo"
     (tree / ".venv").mkdir(parents=True)

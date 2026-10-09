@@ -443,9 +443,10 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
         PERMIT_ALL_GATEWAYS_CEDAR,
         SCOPED_WITHOUT_GATEWAY_CEDAR,
         CedarPolicyGate,
+        GatewayClient,
         GuardrailChecks,
         ar_guardrail_id,
-        presenter_policy,
+        gateway_url,
     )
     from sec310_sample.model import BedrockModel
 
@@ -632,29 +633,80 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
     finally:
         report_cleanup(throwaway.cleanup(), problems)
 
-    presenter = presenter_policy()
-    if presenter:
-        on_presenter = CedarPolicyGate(client=control)
-        try:
-            note(
-                f"presenter policy engine: {on_presenter.attach(presenter.engine_id)}  (yours; not deleted)"
-            )
-            verify_expecting(
-                on_presenter,
-                "presenter_policy",
-                presenter.statement,
-                "ACTIVE",
-                "names a tool the attached gateway defines",
-            )
-        finally:
-            report_cleanup(on_presenter.cleanup(), problems)
-    else:
-        note(
-            "an accepted policy needs your gateway: set SEC310_POLICY_ENGINE_ID and SEC310_CEDAR_POLICY_FILE"
-        )
     note(
-        "Validation here is a release gate, in AWS's own control plane. Enforcement happens at the gateway."
+        "Validation is the release gate, in AWS's own control plane. Enforcement happens at the gateway:"
     )
+
+    step(
+        "Enforcement at an AgentCore Gateway: Cedar scope + Dogwood session history decide each tool call"
+    )
+    url = gateway_url()
+    if not url:
+        note("skipped: `uv run python scripts/live_gateway.py up`, then set SEC310_GATEWAY_URL")
+    else:
+        import uuid
+
+        gw = GatewayClient(url)
+        tools = gw.list_tools(str(uuid.uuid4()))
+        expect(
+            "gateway tools",
+            sorted(tools) == [f"{t}___read_evidence", f"{t}___update_rule"]
+            if (t := "EvidenceTools")
+            else False,
+            f"{tools}",
+        )
+        note(
+            "policies on the engine: read any acct-*; forbid writes outside acct-a; permit a write only after"
+        )
+        note(
+            "this session read the same account (Dogwood: `formerly within 1h read_evidence::response`)"
+        )
+        read, write = "EvidenceTools___read_evidence", "EvidenceTools___update_rule"
+        s1, s2 = str(uuid.uuid4()), str(uuid.uuid4())
+        script = (
+            (
+                "write before any read",
+                write,
+                {"account_id": "acct-a", "rule_id": "rule-42", "enabled": True},
+                s1,
+                False,
+            ),
+            ("read acct-a", read, {"account_id": "acct-a"}, s1, True),
+            (
+                "write acct-a after reading it",
+                write,
+                {"account_id": "acct-a", "rule_id": "rule-42", "enabled": True},
+                s1,
+                True,
+            ),
+            ("read acct-b", read, {"account_id": "acct-b"}, s1, True),
+            (
+                "write acct-b after reading it",
+                write,
+                {"account_id": "acct-b", "rule_id": "rule-77", "enabled": False},
+                s1,
+                False,
+            ),
+            ("new session: read acct-b", read, {"account_id": "acct-b"}, s2, True),
+            (
+                "new session: write acct-a having read only acct-b",
+                write,
+                {"account_id": "acct-a", "rule_id": "rule-42", "enabled": True},
+                s2,
+                False,
+            ),
+            ("no session id at all", read, {"account_id": "acct-a"}, None, False),
+        )
+        for label, tool, args, session, should_allow in script:
+            d = gw.call_tool(tool, args, session)
+            outcome = "ALLOW" if d.allowed else "DENY"
+            expect(label, d.allowed == should_allow, f"{outcome}  {d.detail[:110]}")
+        note(
+            "Every denial came from the policy engine, before the tool ran. The agent never saw a choice."
+        )
+        note(
+            "The scope is a forbid, not a second permit: permits combine with OR, and a forbid overrides them all."
+        )
 
     if problems:
         step("Live proof incomplete")
@@ -693,7 +745,7 @@ def main(argv: list[str] | None = None) -> int:
             denied(f"live stage stopped: {exc}")
             note(
                 "needs AWS credentials in the default chain plus SEC310_MODEL_ID and "
-                "SEC310_GUARDRAIL_ID (optional: SEC310_AR_GUARDRAIL_ID, SEC310_POLICY_ENGINE_ID + SEC310_CEDAR_POLICY_FILE)"
+                "SEC310_GUARDRAIL_ID (optional: SEC310_AR_GUARDRAIL_ID, SEC310_GATEWAY_URL)"
             )
             return 2
         print()

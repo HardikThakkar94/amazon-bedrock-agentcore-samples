@@ -28,6 +28,10 @@ BUILTIN_PATTERNS: dict[str, re.Pattern[str]] = {
     "jwt-like": re.compile(r"\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}\b"),
 }
 ALLOWED_HOSTS = {"docs.aws.amazon.com", "aws.amazon.com", "github.com"}
+# ARNs that disclose nothing: AWS-managed policies carry no account, and a template whose
+# region slot is a placeholder is filled in at runtime from the caller's own account.
+ALLOWED_ARN_PREFIXES = ("arn:aws:iam::aws:policy/",)
+TEMPLATED_ARN = re.compile(r"arn:aws[a-z-]*:[a-z0-9-]*:\{", re.IGNORECASE)
 SKIP_DIRS = {
     ".git",
     ".venv",
@@ -97,11 +101,18 @@ def scan(
                 for match in pattern.finditer(line):
                     if name == "internal-host" and match.group(0).lower() in ALLOWED_HOSTS:
                         continue
+                    if name == "arn" and _harmless_arn(line, match.start()):
+                        continue
                     hits.append((path, lineno, name, match.group(0)))
             for term, pattern in deny_res:
                 if pattern.search(line):
                     hits.append((path, lineno, "denylist", term))
     return hits
+
+
+def _harmless_arn(line: str, start: int) -> bool:
+    rest = line[start:]
+    return rest.lower().startswith(ALLOWED_ARN_PREFIXES) or bool(TEMPLATED_ARN.match(rest))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -25,13 +25,23 @@ from the environment (see ``model.BedrockModel`` and ``guardrails.BedrockGuardra
     failure (throttling, access, transport) is an operational error, never a verdict. The
     throwaway engine and policies are deleted afterwards and anything left behind is
     reported, not hidden.
+
+``GatewayClient``
+    Signed MCP calls to an AgentCore Gateway whose policy engine is in ENFORCE mode (set up by
+    ``scripts/live_gateway.py``). This is where Cedar and Dogwood decide: the same tool call is
+    allowed or denied depending on the arguments and on what happened earlier in the policy
+    session. Each decision comes back as an MCP result or a JSON-RPC error; the client reports
+    both faithfully and never retries.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -147,8 +157,8 @@ class CleanupReport:
 # Cedar for AgentCore Policy, as the service judged them on an engine with no gateway attached
 # (observed 2026-10-08, us-east-1). Actions are gateway tools and resources are gateways, so a
 # bare engine has no tool schema: only gateway-wide statements get as far as semantic
-# validation, and anything that touches tool arguments fails the schema check. An *accepted*
-# policy therefore needs the presenter's own engine with a gateway attached.
+# validation, and anything that touches tool arguments fails the schema check. Accepted,
+# enforced policies live on the engine that ``scripts/live_gateway.py`` attaches to a real gateway.
 PERMIT_ALL_CEDAR = "permit(principal, action, resource);"
 """Rejected synchronously by the parser: an unconstrained resource is not allowed."""
 PERMIT_ALL_GATEWAYS_CEDAR = "permit(principal, action, resource is AgentCore::Gateway);"
@@ -213,7 +223,7 @@ class CedarPolicyGate:
         return self._engine_id
 
     def attach(self, engine_id: str) -> str:
-        """Use an existing engine (the presenter's, with a gateway attached). Never deleted here.
+        """Use an existing engine (one with a gateway attached). Never deleted here.
 
         Schema checks run against the gateways associated with an engine, so an *accepted*
         policy that names a tool can only be shown on an engine that has that gateway.
@@ -356,6 +366,110 @@ class CedarPolicyGate:
             self._sleep(self._poll_s)
 
 
+@dataclass(frozen=True)
+class GatewayDecision:
+    """One tool call as the gateway decided it."""
+
+    allowed: bool
+    http_status: int
+    detail: str  # tool output when allowed; the gateway's reason when not
+
+    @property
+    def denied_by_policy(self) -> bool:
+        return not self.allowed and "policy" in self.detail.lower()
+
+
+class GatewayClient:
+    """SigV4-signed MCP client for one AgentCore Gateway (AWS_IAM inbound authorization)."""
+
+    PROTOCOL_VERSION = "2025-03-26"  # the version the gateway accepted on 2026-10-08
+    SESSION_HEADER = "x-amzn-bedrock-agentcore-policy-session-id"
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        session=None,
+        transport: Callable[[urllib.request.Request], tuple[int, bytes]] | None = None,
+    ) -> None:
+        self.url = url
+        if transport is None:
+            import boto3  # lazy
+
+            session = session or boto3.session.Session()
+            self._credentials = session.get_credentials()
+            self._region = session.region_name
+        self._transport = transport or self._send
+        self._ids = 0
+
+    def list_tools(self, policy_session: str | None) -> list[str]:
+        status, body = self._rpc("tools/list", {}, policy_session)
+        if "error" in body:
+            raise RuntimeError(f"tools/list failed ({status}): {body['error']}")
+        return [t["name"] for t in body.get("result", {}).get("tools", [])]
+
+    def call_tool(self, name: str, arguments: dict, policy_session: str | None) -> GatewayDecision:
+        status, body = self._rpc(
+            "tools/call", {"name": name, "arguments": arguments}, policy_session
+        )
+        if "error" in body:
+            err = body["error"]
+            return GatewayDecision(False, status, f"{err.get('code')}: {err.get('message', '')}")
+        result = body.get("result", {})
+        text = " ".join(
+            c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"
+        )
+        return GatewayDecision(not result.get("isError", False), status, text or json.dumps(result))
+
+    # -- plumbing -----------------------------------------------------------------------------
+    def _rpc(self, method: str, params: dict, policy_session: str | None) -> tuple[int, dict]:
+        self._ids += 1
+        data = json.dumps(
+            {"jsonrpc": "2.0", "id": self._ids, "method": method, "params": params}
+        ).encode()
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": self.PROTOCOL_VERSION,
+        }
+        if policy_session:
+            headers[self.SESSION_HEADER] = policy_session
+        request = urllib.request.Request(self.url, data=data, headers=headers, method="POST")
+        status, raw = self._transport(request)
+        try:
+            return status, json.loads(raw.decode())
+        except ValueError:
+            return status, {
+                "error": {"code": status, "message": raw.decode(errors="replace")[:300]}
+            }
+
+    def _send(self, request: urllib.request.Request) -> tuple[int, bytes]:
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        signed = AWSRequest(
+            method="POST",
+            url=request.full_url,
+            data=request.data,
+            headers=dict(request.header_items()),
+        )
+        SigV4Auth(
+            self._credentials.get_frozen_credentials(), "bedrock-agentcore", self._region
+        ).add_auth(signed)
+        for k, v in signed.headers.items():
+            request.add_header(k, v)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+
+def gateway_url() -> str | None:
+    """MCP endpoint of the enforcement gateway created by ``scripts/live_gateway.py``."""
+    return os.environ.get("SEC310_GATEWAY_URL")
+
+
 def _error_code(exc: BaseException) -> str:
     """Service error code when the SDK supplies one, else the exception type name."""
     response = getattr(exc, "response", None)
@@ -378,36 +492,3 @@ def _error_message(exc: BaseException) -> str:
 def ar_guardrail_id() -> str | None:
     """Guardrail with an Automated Reasoning policy attached, if the presenter created one."""
     return os.environ.get("SEC310_AR_GUARDRAIL_ID")
-
-
-@dataclass(frozen=True)
-class PresenterPolicy:
-    engine_id: str
-    statement: str
-
-
-def presenter_policy() -> PresenterPolicy | None:
-    """The accepted-policy example, if the presenter configured one.
-
-    ``SEC310_POLICY_ENGINE_ID`` names an engine the presenter owns that has a gateway attached;
-    ``SEC310_CEDAR_POLICY_FILE`` holds one statement naming a tool that gateway defines. Both
-    are required: schema checks run against the engine's gateways, so a fresh engine cannot
-    accept a tool policy. The engine is never deleted by the sample.
-    """
-    engine_id = os.environ.get("SEC310_POLICY_ENGINE_ID")
-    path = os.environ.get("SEC310_CEDAR_POLICY_FILE")
-    if not engine_id and not path:
-        return None
-    if not (engine_id and path):
-        raise PolicyGateError(
-            "SEC310_POLICY_ENGINE_ID and SEC310_CEDAR_POLICY_FILE must be set together: an accepted "
-            "tool policy needs an engine with a gateway attached"
-        )
-    try:
-        with open(path, encoding="utf-8") as fh:
-            statement = fh.read().strip()
-    except OSError as exc:
-        raise PolicyGateError(f"cannot read SEC310_CEDAR_POLICY_FILE {path}: {exc}") from exc
-    if not statement:
-        raise PolicyGateError(f"{path} is empty")
-    return PresenterPolicy(engine_id=engine_id, statement=statement)

@@ -81,7 +81,8 @@ scripts/scan_identifiers.py   disclosure scan (run before publishing anything)
 scripts/check_tags.sh         every tag builds + passes from a fresh checkout
 scripts/live_setup.sh         AWS resources for the live stage (guardrails, AR policy); prints exports
 scripts/live_teardown.sh      removes them, plus any sec310_demo* policy engine left behind
-scripts/live/                 the natural-language source the Automated Reasoning policy is built from
+scripts/live_gateway.py       up/down: gateway + Lambda tools + policy engine (ENFORCE) + Cedar/Dogwood policies
+scripts/live/                 the AR policy's natural-language source and the tool Lambda's code
 ```
 
 ## Live mode (optional)
@@ -99,15 +100,18 @@ the same, which is rather the point.
 ### The `live` stage: the same controls against real services
 
 ```bash
-uv sync --extra aws                 # boto3 with the agentic guardrail and policy APIs
-eval "$(sh scripts/live_setup.sh)"  # creates the guardrails + an Automated Reasoning policy (~2 min) and exports their ids
+uv sync --extra aws                                   # boto3 with the agentic guardrail and policy APIs
+eval "$(sh scripts/live_setup.sh)"                    # guardrails + an Automated Reasoning policy (~2 min); exports their ids
+eval "$(uv run python scripts/live_gateway.py up)"    # gateway + tool Lambda + policy engine in ENFORCE (~1 min); exports its URL
 uv run python -m sec310_sample.demo live
-sh scripts/live_teardown.sh         # removes everything the setup created
+uv run python scripts/live_gateway.py down            # removes the gateway, engine, policies, function, roles
+sh scripts/live_teardown.sh                           # removes the guardrails and the AR policy
 ```
 
 `live` is not part of `all`. It needs credentials in the default AWS SDK chain plus the
 variables the setup script prints (`SEC310_MODEL_ID`, `SEC310_GUARDRAIL_ID`,
-`SEC310_AR_GUARDRAIL_ID`). It stops with an explicit message (exit 2) when they are missing,
+`SEC310_AR_GUARDRAIL_ID`). It stops with an explicit message (exit 2) when they are missing (`SEC310_GATEWAY_URL` is optional and
+switches on the enforcement step),
 and exits 0 only when every check ran and every outcome was the expected one; an unavailable
 dependency or an unexpected verdict is listed under "Live proof incomplete" with exit 1. A
 live proof that proved nothing must not look like one that did. Everything below was run
@@ -120,6 +124,7 @@ against a real account on 2026-10-08 (us-east-1); the whole stage takes about 75
 | `bedrock-runtime:InvokeGuardrailChecks` | prompt-attack severity scores for the argument *values* of a proposed tool call, before it runs; the threshold is the application's, and a missing evaluation is UNAVAILABLE, not a pass | `live.GuardrailChecks` |
 | `bedrock-runtime:ApplyGuardrail` (AR policy) | formal-logic findings over the answer text: a claim the team's rule-change policy contradicts comes back `INVALID` with the rule it breaks, a supported claim `VALID`; `action` is `NONE` both times (detect mode) | stage code |
 | `bedrock-agentcore-control:CreatePolicy` under `FAIL_ON_ANY_FINDINGS` | Cedar is machine-checked before anything could enforce it: the parser refuses an unconstrained resource synchronously; everything else settles asynchronously to `ACTIVE` or `CREATE_FAILED` with `statusReasons`, and the gate reads the verdict from that terminal state | `live.CedarPolicyGate` |
+| signed MCP `tools/call` to an AgentCore Gateway with a policy engine in `ENFORCE` | **Cedar and Dogwood deciding real tool calls**: a Cedar `forbid` keeps writes inside one account, and a Dogwood temporal `permit` allows a write only after the same policy session read that account's evidence; the same `update_rule` call is DENY, then ALLOW, then DENY, and a request without a session id is rejected outright | `live.GatewayClient`, `scripts/live_gateway.py` |
 
 Two things the live run taught us, both encoded in the code: the prompt-attack classifier
 scores an instruction-shaped wrapper such as `proposed tool call: ...` as an attack on its own
@@ -132,11 +137,17 @@ rejections with the service's own reasons: `permit(principal, action, resource);
 parser (wildcard resource), `permit(... resource is AgentCore::Gateway)` from semantic
 validation (overly permissive), its `forbid` twin (overly restrictive), and a policy that
 conditions on `context.input.account_id` from the schema check (no attached gateway defines
-it). An *accepted* policy must name a tool that an attached gateway defines, so acceptance is
-opt-in and runs on *your* engine: set `SEC310_POLICY_ENGINE_ID` to an engine with your gateway
-attached and `SEC310_CEDAR_POLICY_FILE` to a statement for one of its tools. The sample
-deletes the policy it created there and never touches your engine. Engine and policy names
-must match `^[A-Za-z][A-Za-z0-9_]*$`; the gate checks that before calling. Transport and
+it). Accepted, *enforced* policies live on the engine that `scripts/live_gateway.py` attaches to
+a real gateway (AWS_IAM inbound auth, one Lambda target with `read_evidence` and `update_rule`).
+Three things the service taught us there, all encoded in the script: an unconditional `permit`
+for a tool is flagged "Overly Permissive", so the read permit names the account space it covers
+(`like "acct-*"`); permits combine with OR, so an account scope written as a second permit let
+writes to other accounts through once anything had been read, and the scope is a `forbid`; and
+validation is engine-wide, so that `forbid` is "Overly Restrictive" until a write permit exists,
+which fixes the creation order. Engine and policy names must match `^[A-Za-z][A-Za-z0-9_]*$`
+while gateway names take hyphens and refuse underscores; the scripts know. Temporal policies
+need the `x-amzn-bedrock-agentcore-policy-session-id` header on every call, and changing a
+temporal policy invalidates open sessions. Transport and
 service failures are raised as `PolicyGateError`, never reported as a verdict. Cleanup waits
 for each deletion to be confirmed and prints anything it could not remove.
 

@@ -7,6 +7,7 @@ models; small fake clients drive the ``live`` stage end to end. Real services on
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -17,10 +18,9 @@ from sec310_sample.live import (
     PERMIT_ALL_GATEWAYS_CEDAR,
     SCOPED_WITHOUT_GATEWAY_CEDAR,
     CedarPolicyGate,
+    GatewayClient,
     GuardrailChecks,
     PolicyGateError,
-    PresenterPolicy,
-    presenter_policy,
 )
 
 boto3 = pytest.importorskip("boto3", reason="aws extra not installed")
@@ -552,25 +552,6 @@ class TestCedarPolicyGate:
         assert gate.engine_id == ENGINE_ID  # retained for the presenter to clean up
 
 
-def test_presenter_policy_requires_engine_and_statement(tmp_path, monkeypatch):
-    monkeypatch.delenv("SEC310_CEDAR_POLICY_FILE", raising=False)
-    monkeypatch.delenv("SEC310_POLICY_ENGINE_ID", raising=False)
-    assert presenter_policy() is None
-    f = tmp_path / "p.cedar"
-    f.write_text("  permit(principal, action, resource);\n")
-    monkeypatch.setenv("SEC310_CEDAR_POLICY_FILE", str(f))
-    with pytest.raises(PolicyGateError, match="must be set together"):
-        presenter_policy()  # a statement without an engine cannot be accepted anywhere
-    monkeypatch.setenv("SEC310_POLICY_ENGINE_ID", "yours-0123456789ab")
-    assert presenter_policy() == PresenterPolicy("yours-0123456789ab", PERMIT_ALL_CEDAR)
-    f.write_text("\n")
-    with pytest.raises(PolicyGateError, match="empty"):
-        presenter_policy()
-    monkeypatch.setenv("SEC310_CEDAR_POLICY_FILE", str(tmp_path / "missing.cedar"))
-    with pytest.raises(PolicyGateError, match="cannot read"):
-        presenter_policy()  # a guided exit 2 from main(), not a traceback
-
-
 class TestCleanupTerminalFailures:
     def test_delete_failed_is_reported_and_engine_kept(self):
         client = _control_client()
@@ -652,7 +633,9 @@ class TestAttachedEngine:
 
 
 # -- the stage, end to end, with fake clients -------------------------------------------------
-PRESENTER_ENGINE = "yours-0123456789ab"
+ATTACHED_ENGINE = (
+    "yours-0123456789ab"  # an engine with a gateway attached: tool policies are accepted there
+)
 
 
 class _Fake:
@@ -743,7 +726,7 @@ class _Fake:
             raise _not_found()
         name = self.names[kw["policyId"]]
         # The presenter's engine has a gateway, so a tool policy is accepted there.
-        if self.accept_everything or kw["policyEngineId"] == PRESENTER_ENGINE:
+        if self.accept_everything or kw["policyEngineId"] == ATTACHED_ENGINE:
             return _policy("ACTIVE", name=name)
         return _policy(self.rejected_status, [f"Validation failed for {name}"], name=name)
 
@@ -775,7 +758,7 @@ def _run_stage(monkeypatch, capsys, fake, env=None) -> tuple[int, str]:
 
     monkeypatch.setenv("SEC310_MODEL_ID", "test-model")
     monkeypatch.setenv("SEC310_GUARDRAIL_ID", "test-guardrail")
-    for k in ("SEC310_AR_GUARDRAIL_ID", "SEC310_CEDAR_POLICY_FILE", "SEC310_POLICY_ENGINE_ID"):
+    for k in ("SEC310_AR_GUARDRAIL_ID", "SEC310_GATEWAY_URL"):
         monkeypatch.delenv(k, raising=False)
     for k, v in (env or {}).items():
         monkeypatch.setenv(k, v)
@@ -799,7 +782,7 @@ def test_stage_passes_when_every_expected_outcome_holds(monkeypatch, capsys):
     assert "✔ policy scoped_without_gateway: status=CREATE_FAILED accepted=False" in out
     assert "finding: Validation failed for permit_all_gateways" in out
     assert "deleted policy engine" in out and "NOT deleted" not in out
-    assert "an accepted policy needs your gateway" in out
+    assert "skipped: `uv run python scripts/live_gateway.py up`" in out
     assert "****1234" in out and "fake-account-1234" not in out
     assert "every configured live check passed" in out
 
@@ -940,37 +923,6 @@ def test_stage_transport_failure_is_not_a_verdict(monkeypatch, capsys):
     assert "accepted=False" not in out  # no rejection line was ever printed
 
 
-def test_stage_runs_presenter_policy_on_their_engine_and_keeps_it(monkeypatch, capsys, tmp_path):
-    statement = tmp_path / "mine.cedar"
-    statement.write_text(SCOPED_WITHOUT_GATEWAY_CEDAR)
-    fake = _Fake()
-    code, out = _run_stage(
-        monkeypatch,
-        capsys,
-        fake,
-        env={
-            "SEC310_POLICY_ENGINE_ID": PRESENTER_ENGINE,
-            "SEC310_CEDAR_POLICY_FILE": str(statement),
-        },
-    )
-    assert code == 0, out
-    assert "✔ policy presenter_policy: status=ACTIVE accepted=True" in out
-    assert fake.created_on[_policy_id("presenter_policy")] == PRESENTER_ENGINE
-    assert fake.created_on[_policy_id("permit_all_gateways")] != PRESENTER_ENGINE
-    assert _policy_id("presenter_policy") in fake.deleted  # our policy on their engine: removed
-    assert PRESENTER_ENGINE not in fake.deleted  # their engine: kept
-    assert (
-        fake.created_on[_policy_id("permit_all_gateways")] in fake.deleted
-    )  # our throwaway engine: removed
-
-
-def test_stage_requires_engine_with_policy_file(monkeypatch, capsys, tmp_path):
-    statement = tmp_path / "mine.cedar"
-    statement.write_text(SCOPED_WITHOUT_GATEWAY_CEDAR)
-    with pytest.raises(PolicyGateError, match="must be set together"):
-        _run_stage(monkeypatch, capsys, _Fake(), env={"SEC310_CEDAR_POLICY_FILE": str(statement)})
-
-
 def test_main_maps_live_failures_to_exit_2(monkeypatch, capsys):
     from sec310_sample.demo import __main__ as demo
 
@@ -980,7 +932,209 @@ def test_main_maps_live_failures_to_exit_2(monkeypatch, capsys):
     monkeypatch.setattr(demo, "stage_live", failing_stage)
     assert demo.main(["live"]) == 2
     out = capsys.readouterr().out
-    assert "live stage stopped: ThrottlingException" in out and "SEC310_POLICY_ENGINE_ID" in out
+    assert "live stage stopped: ThrottlingException" in out and "SEC310_GATEWAY_URL" in out
+
+
+# -- the gateway client against a scripted transport -------------------------------------------
+def _gateway_transport(responses):
+    """Fake transport: records requests, replays (status, body) pairs in order."""
+    seen = []
+
+    def send(request):
+        seen.append(
+            {"headers": dict(request.header_items()), "body": json.loads(request.data.decode())}
+        )
+        status, body = responses.pop(0)
+        return status, json.dumps(body).encode()
+
+    send.seen = seen
+    return send
+
+
+def _ok(text: str) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"isError": False, "content": [{"type": "text", "text": text}]},
+    }
+
+
+def _denied(code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": 1, "error": {"code": code, "message": message}}
+
+
+class TestGatewayClient:
+    def test_tool_call_is_signed_shape_with_session_header(self):
+        send = _gateway_transport([(200, _ok('{"status":"ok"}'))])
+        gw = GatewayClient("https://example.invalid/mcp", transport=send)
+        d = gw.call_tool("EvidenceTools___update_rule", {"account_id": "acct-a"}, "session-1")
+        assert d.allowed and d.http_status == 200 and d.detail == '{"status":"ok"}'
+        req = send.seen[0]
+        assert req["headers"]["X-amzn-bedrock-agentcore-policy-session-id"] == "session-1"
+        assert req["headers"]["Mcp-protocol-version"] == "2025-03-26"
+        assert req["body"]["method"] == "tools/call"
+        assert req["body"]["params"] == {
+            "name": "EvidenceTools___update_rule",
+            "arguments": {"account_id": "acct-a"},
+        }
+
+    def test_policy_denial_is_reported_not_retried(self):
+        send = _gateway_transport(
+            [
+                (
+                    200,
+                    _denied(
+                        -32002,
+                        "Tool Execution Denied: Tool call not allowed due to policy enforcement [No policy applies to the request (denied by default).]",
+                    ),
+                )
+            ]
+        )
+        d = GatewayClient("https://example.invalid/mcp", transport=send).call_tool(
+            "EvidenceTools___update_rule", {}, "s"
+        )
+        assert not d.allowed and d.denied_by_policy
+        assert d.detail.startswith("-32002: Tool Execution Denied")
+        assert len(send.seen) == 1  # one request, no retry
+
+    def test_missing_session_header_is_omitted_and_rejection_surfaces(self):
+        send = _gateway_transport(
+            [(200, _denied(-32006, "sessionId is required when temporal policies are enabled"))]
+        )
+        d = GatewayClient("https://example.invalid/mcp", transport=send).call_tool(
+            "EvidenceTools___read_evidence", {}, None
+        )
+        assert not d.allowed and "sessionId is required" in d.detail
+        assert "X-amzn-bedrock-agentcore-policy-session-id" not in send.seen[0]["headers"]
+
+    def test_tool_error_is_not_allowed(self):
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"isError": True, "content": [{"type": "text", "text": "boom"}]},
+        }
+        d = GatewayClient(
+            "https://example.invalid/mcp", transport=_gateway_transport([(200, body)])
+        ).call_tool("t", {}, "s")
+        assert not d.allowed and d.detail == "boom" and not d.denied_by_policy
+
+    def test_non_json_body_becomes_an_error_decision(self):
+        def send(request):
+            return 502, b"<html>bad gateway</html>"
+
+        d = GatewayClient("https://example.invalid/mcp", transport=send).call_tool("t", {}, "s")
+        assert not d.allowed and d.http_status == 502 and "bad gateway" in d.detail
+
+    def test_list_tools(self):
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"tools": [{"name": "A___x"}, {"name": "A___y"}]},
+        }
+        assert GatewayClient(
+            "https://example.invalid/mcp", transport=_gateway_transport([(200, body)])
+        ).list_tools("s") == ["A___x", "A___y"]
+        with pytest.raises(RuntimeError, match="tools/list failed"):
+            GatewayClient(
+                "https://example.invalid/mcp",
+                transport=_gateway_transport([(403, _denied(-32000, "nope"))]),
+            ).list_tools("s")
+
+
+class _FakeGateway:
+    """Replays the policy engine's decisions for the stage's script: a forbid outside acct-a and a
+    'read the same account first' temporal permit, per policy session."""
+
+    def __init__(self, *, deny_everything=False, allow_everything=False):
+        self.reads: dict[str, set[str]] = {}
+        self.deny_everything = deny_everything
+        self.allow_everything = allow_everything
+
+    def __call__(self, request):
+        body = json.loads(request.data.decode())
+        session = dict(request.header_items()).get("X-amzn-bedrock-agentcore-policy-session-id")
+        if body["method"] == "tools/list":
+            return 200, json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "tools": [
+                            {"name": "EvidenceTools___read_evidence"},
+                            {"name": "EvidenceTools___update_rule"},
+                        ]
+                    },
+                }
+            ).encode()
+        name, args = body["params"]["name"], body["params"]["arguments"]
+        if session is None:
+            verdict = _denied(
+                -32006,
+                "Tool Execution Denied: Policy Evaluation rejected the request as invalid [sessionId is required when temporal policies are enabled]",
+            )
+        elif self.allow_everything:
+            verdict = _ok('{"status":"ok"}')
+        elif self.deny_everything:
+            verdict = _denied(
+                -32002,
+                "Tool Execution Denied: Tool call not allowed due to policy enforcement [No policy applies to the request (denied by default).]",
+            )
+        elif name.endswith("read_evidence"):
+            self.reads.setdefault(session, set()).add(args["account_id"])
+            verdict = _ok(json.dumps({"account_id": args["account_id"], "finding_count": 1}))
+        elif args["account_id"] != "acct-a":
+            verdict = _denied(
+                -32002,
+                "Tool Execution Denied: Tool call not allowed due to policy enforcement [Policy evaluation denied due to no_writes_outside_acct_a-abc]",
+            )
+        elif args["account_id"] in self.reads.get(session, set()):
+            verdict = _ok(
+                '{"status":"ok","account_id":"acct-a","rule_id":"rule-42","enabled":true}'
+            )
+        else:
+            verdict = _denied(
+                -32002,
+                "Tool Execution Denied: Tool call not allowed due to policy enforcement [No policy applies to the request (denied by default).]",
+            )
+        return 200, json.dumps(verdict).encode()
+
+
+def test_stage_enforcement_script_passes_against_a_faithful_gateway(monkeypatch, capsys):
+    import sec310_sample.live as live
+
+    fake_gw = _FakeGateway()
+    monkeypatch.setattr(
+        live, "GatewayClient", lambda url, **kw: GatewayClient(url, transport=fake_gw)
+    )
+    code, out = _run_stage(
+        monkeypatch, capsys, _Fake(), env={"SEC310_GATEWAY_URL": "https://example.invalid/mcp"}
+    )
+    assert code == 0, out
+    for line in (
+        "✔ write before any read: DENY",
+        "✔ read acct-a: ALLOW",
+        "✔ write acct-a after reading it: ALLOW",
+        "✔ write acct-b after reading it: DENY",
+        "✔ new session: write acct-a having read only acct-b: DENY",
+        "✔ no session id at all: DENY",
+    ):
+        assert line in out, line
+    assert "every configured live check passed" in out
+
+
+@pytest.mark.parametrize("behaviour", ["allow_everything", "deny_everything"])
+def test_stage_fails_when_the_gateway_decides_differently(monkeypatch, capsys, behaviour):
+    import sec310_sample.live as live
+
+    fake_gw = _FakeGateway(**{behaviour: True})
+    monkeypatch.setattr(
+        live, "GatewayClient", lambda url, **kw: GatewayClient(url, transport=fake_gw)
+    )
+    code, out = _run_stage(
+        monkeypatch, capsys, _Fake(), env={"SEC310_GATEWAY_URL": "https://example.invalid/mcp"}
+    )
+    assert code == 1, out
+    assert "(unexpected)" in out and "every configured live check passed" not in out
 
 
 @LIVE

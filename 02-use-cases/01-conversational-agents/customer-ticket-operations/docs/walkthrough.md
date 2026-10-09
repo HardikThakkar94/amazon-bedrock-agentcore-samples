@@ -124,18 +124,18 @@ Show `telemetry.py::Tracer.__call__` (hash, drop `detail`), `Tracer.assert_redac
 (redaction is a test), `corpus/regression.json` (expectations are tokens). Say: this is
 recommended practice; present it as the gate you *should* have, not one you already had.
 
-## Optional · `live`: the same controls against real services (3–4 min, if time and network allow)
+## Optional · `live`: the same controls against real services (4–5 min, if time and network allow)
 
 ```bash
-sh scripts/live_setup.sh      # the day before: guardrails + Automated Reasoning policy, ~2 min
+eval "$(sh scripts/live_setup.sh)"                   # the day before: guardrails + AR policy, ~2 min
+eval "$(uv run python scripts/live_gateway.py up)"   # the day before: gateway + policy engine, ~1 min
 uv run python -m sec310_sample.demo live
 ```
 
-Needs credentials plus the exports the setup script prints (`SEC310_MODEL_ID`,
-`SEC310_GUARDRAIL_ID`, `SEC310_AR_GUARDRAIL_ID`; optional together `SEC310_POLICY_ENGINE_ID` +
-`SEC310_CEDAR_POLICY_FILE` for the accepted-policy case on your own gateway). It stops with
-an explicit message otherwise, and exits 1 if any check was unavailable or any outcome was
-not the expected one. Rehearsed end to end on 2026-10-08: about 75 seconds, all green.
+Needs credentials plus the exports the two setup scripts print (`SEC310_MODEL_ID`,
+`SEC310_GUARDRAIL_ID`, `SEC310_AR_GUARDRAIL_ID`, `SEC310_GATEWAY_URL`). It stops with an explicit
+message otherwise, and exits 1 if any check was unavailable or any outcome was not the expected
+one. Rehearsed end to end on 2026-10-08: about 60 seconds, all 21 checks green.
 
 Beats, each mapped to a control the offline stages already proved: `Converse` (proposals
 only; say that the typed shape is requested as a forced tool call and *still* validated),
@@ -144,15 +144,21 @@ proposed tool call (say out loud that the threshold is ours, that a missing eval
 UNAVAILABLE, and that the classifier flagged our own "proposed tool call:" wrapper as an
 attack when we first tried it), `ApplyGuardrail` with the Automated Reasoning policy (one
 claim the rule-change policy contradicts, one it supports; read the premises and the
-contradicted rule aloud; point at `action=NONE`: detect mode), and AgentCore Policy
-`CreatePolicy` under `FAIL_ON_ANY_FINDINGS`. The policy step is the slow one: creation is
-asynchronous and the gate polls to the terminal state, then prints the service's own
-`statusReasons` for four rejections (parser, overly permissive, overly restrictive, schema).
-Say: every one of these is a signal the application acts on; none is a permission;
-validation is the release gate, enforcement happens at the gateway. Have the offline
-recording ready if the network fails; the outcomes are the same, which is the point. Slot it
-after Patch 3 or after Patch 5, never in the cold open. Run `sh scripts/live_teardown.sh`
-afterwards.
+contradicted rule aloud; point at `action=NONE`: detect mode), AgentCore Policy
+`CreatePolicy` under `FAIL_ON_ANY_FINDINGS` (asynchronous; the gate polls to the terminal state
+and prints the service's own `statusReasons` for four rejections: parser, overly permissive,
+overly restrictive, schema), and then the payoff: eight signed tool calls against a real
+gateway whose policy engine is in ENFORCE. Read the sequence aloud: write before any read,
+DENY; read, then write the same account, ALLOW; write another account even after reading it,
+DENY (the Cedar `forbid`); a new session that read the wrong account, DENY (Dogwood
+correlates on the account, not on "any read"); no session id, rejected outright. Two lines to
+say: every denial came from the policy engine before the tool ran, and the scope is a
+`forbid` because permits OR together (we learned that live, and it is worth telling). Close
+with: validation is the release gate, enforcement happens at the gateway, and every signal
+above is something the application acts on; none is a permission. Have the offline recording
+ready if the network fails; the outcomes are the same, which is the point. Slot it after
+Patch 3 or after Patch 5, never in the cold open. Afterwards run
+`uv run python scripts/live_gateway.py down` and `sh scripts/live_teardown.sh`.
 
 ## ~48:00–52:00 · Close, then stay for questions
 
