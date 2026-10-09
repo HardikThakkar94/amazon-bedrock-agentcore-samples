@@ -117,7 +117,14 @@ def stage_unsafe(model: Model, guardrail: Guardrail) -> None:
     )
     acct_b_before = store.rules("acct-b")
 
-    result = agent.handle(fixture("indirect-injection")["request"])
+    try:
+        result = agent.handle(fixture("indirect-injection")["request"])
+    except Exception as exc:  # noqa: BLE001 - v0 has no output contract; a live model can break it
+        denied(f"v0 crashed on the model's output: {type(exc).__name__}: {str(exc)[:120]}")
+        note(
+            "No schema, no validation, no failure policy: a prototype that works until the model varies."
+        )
+        return
 
     step("The agent answered correctly...")
     ok(result["answer"])
@@ -729,6 +736,49 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
     return 0
 
 
+def stage_observe(make_client: Callable[[str], object] | None = None) -> int:
+    """What happened? Ask the platform. AgentCore Policy publishes its decisions to CloudWatch
+    by default, per engine and per policy: the hashed decision events of Patch 5, emitted for you.
+    Metrics lag the calls by a few minutes, so this runs after `live`, not inside it."""
+    banner("Observe  The platform's own record of what the policy engine decided")
+    if make_client is None:
+        import boto3
+
+        make_client = boto3.client
+    from sec310_sample.live import (
+        PolicyObserver,
+        gateway_id_from_url,
+        gateway_url,
+        policy_engine_id,
+    )
+
+    engine = policy_engine_id()
+    if not engine:
+        denied("set SEC310_POLICY_ENGINE_ID (printed by `scripts/live_gateway.py up`)")
+        return 2
+    gateway = gateway_id_from_url(gateway_url())
+    counts = PolicyObserver(client=make_client("cloudwatch")).decisions(engine, gateway_id=gateway)
+    step(f"AWS/Bedrock-AgentCore · AuthorizeAction · engine {engine} · last 3 hours")
+    if counts.total == 0 and not counts.by_policy:
+        note(
+            "no decisions recorded yet: CloudWatch metrics lag by a few minutes; run this again shortly"
+        )
+        return 1
+    ok(
+        f"ALLOW {counts.allow}   DENY {counts.deny}   of which deny-by-default (no determining policy) {counts.no_determining_policy}"
+    )
+    step(f"Per policy: which rule made each decision{f' on gateway {gateway}' if gateway else ''}")
+    for policy_id, c in sorted(counts.by_policy.items()):
+        note(f"{policy_id:<44} allow={c['allow']:<4} deny={c['deny']}")
+    note(
+        "Same shape as the sample's DecisionEvent: who decided, what, how often. Nobody had to instrument the agent."
+    )
+    note(
+        "Per-request detail (reason, determining policies, temporal latency) is in the gateway's traces when enabled."
+    )
+    return 0
+
+
 def report_cleanup(report, problems: list[str]) -> None:
     for item in report.deleted:
         note(f"deleted {item}")
@@ -740,7 +790,7 @@ def report_cleanup(report, problems: list[str]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m sec310_sample.demo", description=__doc__)
-    parser.add_argument("stage", choices=[*STAGES, "all", "live"])
+    parser.add_argument("stage", choices=[*STAGES, "all", "live", "observe"])
     parser.add_argument(
         "--live",
         action="store_true",
@@ -748,11 +798,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.stage == "live":
+    if args.stage in ("live", "observe"):
         from botocore.exceptions import BotoCoreError, ClientError
 
         try:
-            code = stage_live()
+            code = stage_live() if args.stage == "live" else stage_observe()
         except (RuntimeError, BotoCoreError, ClientError) as exc:
             denied(f"live stage stopped: {exc}")
             note(

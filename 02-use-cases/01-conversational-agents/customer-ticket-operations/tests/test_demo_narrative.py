@@ -75,6 +75,23 @@ class TestUnsafeStageTellsTheTruthAboutTenantB:
         assert "unchanged" not in out and "did not act" not in out
 
 
+class TestUnsafeStageSurvivesABrokenModel:
+    def test_non_json_output_is_reported_as_a_crash_not_a_traceback(self, capsys):
+        class Garbage:
+            version = "garbage/1"
+
+            def complete(self, prompt):
+                return "<model output truncated: stopReason=max_tokens>"
+
+            def stream(self, prompt):
+                yield self.complete(prompt)
+
+        demo.stage_unsafe(Garbage(), LocalGuardrail())
+        out = capsys.readouterr().out
+        assert "✖ v0 crashed on the model's output: JSONDecodeError" in out
+        assert "No schema, no validation, no failure policy" in out
+
+
 class TestUntrustedStageWithAModelThatDeclines:
     def test_declining_model_is_reported_not_narrated(self, capsys):
         demo.stage_untrusted(_quiet(), LocalGuardrail())

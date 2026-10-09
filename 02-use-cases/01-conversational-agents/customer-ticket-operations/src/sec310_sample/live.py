@@ -491,9 +491,155 @@ class GatewayClient:
             return exc.code, exc.read()
 
 
+@dataclass(frozen=True)
+class PolicyDecisionCounts:
+    """What the policy engine itself reports having decided, from CloudWatch."""
+
+    allow: int
+    deny: int
+    no_determining_policy: int
+    by_policy: dict[str, dict[str, int]]  # policy id -> {"allow": n, "deny": n}
+
+    @property
+    def total(self) -> int:
+        return self.allow + self.deny
+
+
+class PolicyObserver:
+    """Reads AgentCore Policy's own decision metrics (published by default, no setup).
+
+    Namespace ``AWS/Bedrock-AgentCore``, operation ``AuthorizeAction``: ``AllowDecisions``,
+    ``DenyDecisions`` and ``NoDeterminingPolicies`` per policy engine, and ``AllowDecisions`` /
+    ``DenyDecisions`` per policy id. Metrics lag the calls by a few minutes; the caller says so.
+    """
+
+    NAMESPACE = "AWS/Bedrock-AgentCore"
+
+    def __init__(self, client=None) -> None:
+        if client is None:
+            import boto3  # lazy
+
+            client = boto3.client("cloudwatch")
+        self._client = client
+
+    def decisions(
+        self,
+        engine_id: str,
+        *,
+        gateway_id: str | None = None,
+        hours: float = 3.0,
+        now: float | None = None,
+    ) -> PolicyDecisionCounts:
+        import datetime as dt
+
+        end = (
+            dt.datetime.fromtimestamp(now, tz=dt.UTC)
+            if now is not None
+            else dt.datetime.now(dt.UTC)
+        )
+        start = end - dt.timedelta(hours=hours)
+        period = int(hours * 3600)
+        engine_dims = [
+            {"Name": "OperationName", "Value": "AuthorizeAction"},
+            {"Name": "PolicyEngine", "Value": engine_id},
+        ]
+        queries = [
+            {
+                "Id": "allow",
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": self.NAMESPACE,
+                        "MetricName": "AllowDecisions",
+                        "Dimensions": engine_dims,
+                    },
+                    "Period": period,
+                    "Stat": "Sum",
+                },
+            },
+            {
+                "Id": "deny",
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": self.NAMESPACE,
+                        "MetricName": "DenyDecisions",
+                        "Dimensions": engine_dims,
+                    },
+                    "Period": period,
+                    "Stat": "Sum",
+                },
+            },
+            {
+                "Id": "nodet",
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": self.NAMESPACE,
+                        "MetricName": "NoDeterminingPolicies",
+                        "Dimensions": engine_dims,
+                    },
+                    "Period": period,
+                    "Stat": "Sum",
+                },
+            },
+        ]
+        by_policy: dict[str, dict[str, int]] = {}
+        policy_queries: list[tuple[str, str, str]] = []  # (query id, policy id, kind)
+        for metric, kind in (("AllowDecisions", "allow"), ("DenyDecisions", "deny")):
+            for page in self._client.get_paginator("list_metrics").paginate(
+                Namespace=self.NAMESPACE,
+                MetricName=metric,
+                Dimensions=[{"Name": "OperationName", "Value": "AuthorizeAction"}],
+            ):
+                for m in page.get("Metrics", []):
+                    dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+                    if "Policy" in dims and "TargetResource" in dims and len(dims) == 3:
+                        if gateway_id and dims["TargetResource"] != gateway_id:
+                            continue
+                        qid = f"p{len(policy_queries)}"
+                        policy_queries.append((qid, dims["Policy"], kind))
+                        queries.append(
+                            {
+                                "Id": qid,
+                                "MetricStat": {
+                                    "Metric": {
+                                        "Namespace": self.NAMESPACE,
+                                        "MetricName": metric,
+                                        "Dimensions": m["Dimensions"],
+                                    },
+                                    "Period": period,
+                                    "Stat": "Sum",
+                                },
+                            }
+                        )
+        sums: dict[str, int] = {}
+        for i in range(0, len(queries), 100):  # GetMetricData takes at most 100 queries
+            resp = self._client.get_metric_data(
+                MetricDataQueries=queries[i : i + 100], StartTime=start, EndTime=end
+            )
+            for r in resp.get("MetricDataResults", []):
+                sums[r["Id"]] = int(sum(r.get("Values", [])))
+        for qid, policy_id, kind in policy_queries:
+            by_policy.setdefault(policy_id, {"allow": 0, "deny": 0})[kind] += sums.get(qid, 0)
+        return PolicyDecisionCounts(
+            sums.get("allow", 0), sums.get("deny", 0), sums.get("nodet", 0), by_policy
+        )
+
+
 def gateway_url() -> str | None:
     """MCP endpoint of the enforcement gateway created by ``scripts/live_gateway.py``."""
     return os.environ.get("SEC310_GATEWAY_URL")
+
+
+def policy_engine_id() -> str | None:
+    """Policy engine behind that gateway, for reading its decision metrics back."""
+    return os.environ.get("SEC310_POLICY_ENGINE_ID")
+
+
+def gateway_id_from_url(url: str | None) -> str | None:
+    """``https://<gatewayId>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp`` -> gatewayId."""
+    if not url:
+        return None
+    host = url.split("//", 1)[-1].split("/", 1)[0]
+    return host.split(".", 1)[0] if ".gateway." in host else None
 
 
 def _error_code(exc: BaseException) -> str:

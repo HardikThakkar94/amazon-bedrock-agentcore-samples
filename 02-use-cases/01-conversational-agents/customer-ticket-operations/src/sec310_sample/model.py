@@ -123,13 +123,28 @@ def _response_tool() -> dict:
     """
     from sec310_sample.schemas import AssistantResponse  # local: keep module import light
 
+    schema = AssistantResponse.model_json_schema()
+    # Pydantic leaves fields with defaults out of `required`; Sonnet 5 then omits an empty
+    # proposed_actions/links (observed 2026-10-09) while Haiku 4.5 always sent them. Ask for the
+    # whole shape every time so every consumer sees the same keys.
+    schema["required"] = sorted(schema["properties"])
     return {
         "toolSpec": {
             "name": "respond",
             "description": "Return the assistant response in the required shape.",
-            "inputSchema": {"json": AssistantResponse.model_json_schema()},
+            "inputSchema": {"json": schema},
         }
     }
+
+
+def _rejects_forced_tool_choice(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None)
+    if (
+        not isinstance(response, dict)
+        or response.get("Error", {}).get("Code") != "ValidationException"
+    ):
+        return False
+    return "tool_choice" in str(response.get("Error", {}).get("Message", ""))
 
 
 class BedrockModel:
@@ -151,22 +166,38 @@ class BedrockModel:
 
             client = boto3.client("bedrock-runtime")
         self._client = client
+        # Some models (Opus 5.5, observed 2026-10-09) reject a forced tool choice with a
+        # ValidationException; they still call the one offered tool under "auto". The adapter
+        # starts strict and relaxes only after the service says so, once per instance.
+        self._tool_choice: dict = {"tool": {"name": "respond"}}
 
     def _request(self, prompt: str) -> dict:
         return {
             "modelId": self.model_id,
             "system": [{"text": _SYSTEM}],
             "messages": [{"role": "user", "content": [{"text": prompt}]}],
-            "toolConfig": {
-                "tools": [_response_tool()],
-                "toolChoice": {"tool": {"name": "respond"}},
-            },
-            # maxTokens only: some models reject sampling parameters such as temperature.
-            "inferenceConfig": {"maxTokens": 800},
+            "toolConfig": {"tools": [_response_tool()], "toolChoice": self._tool_choice},
+            # maxTokens only: some models reject sampling parameters such as temperature. 800 was
+            # too small for Sonnet 5 / Opus 5 (observed 2026-10-09: the tool input came back
+            # truncated to {} with stopReason max_tokens); 2000 leaves room for a long answer.
+            "inferenceConfig": {"maxTokens": 2000},
         }
 
+    def _call(self, operation, prompt: str):
+        try:
+            return operation(**self._request(prompt))
+        except Exception as exc:  # noqa: BLE001 - only the documented tool_choice rejection is handled
+            if _rejects_forced_tool_choice(exc) and self._tool_choice != {"auto": {}}:
+                self._tool_choice = {"auto": {}}
+                return operation(**self._request(prompt))
+            raise
+
     def complete(self, prompt: str) -> str:
-        resp = self._client.converse(**self._request(prompt))
+        resp = self._call(self._client.converse, prompt)
+        if resp.get("stopReason") == "max_tokens":
+            # A truncated tool input arrives as {} and would otherwise look like an empty but
+            # well-formed reply. Hand back something the strict parser rejects, and that says why.
+            return f"<model output truncated: stopReason=max_tokens, usage={resp.get('usage')}>"
         blocks = resp["output"]["message"]["content"]
         for block in blocks:
             if "toolUse" in block:
@@ -176,7 +207,7 @@ class BedrockModel:
         return "".join(block.get("text", "") for block in blocks)
 
     def stream(self, prompt: str) -> Iterator[str]:
-        resp = self._client.converse_stream(**self._request(prompt))
+        resp = self._call(self._client.converse_stream, prompt)
         for event in resp["stream"]:
             delta = event.get("contentBlockDelta", {}).get("delta", {})
             if "toolUse" in delta:

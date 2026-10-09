@@ -21,6 +21,8 @@ from sec310_sample.live import (
     GatewayClient,
     GuardrailChecks,
     PolicyGateError,
+    PolicyObserver,
+    gateway_id_from_url,
 )
 
 boto3 = pytest.importorskip("boto3", reason="aws extra not installed")
@@ -275,13 +277,18 @@ class TestBedrockModel:
                                 "toolSpec": {
                                     "name": "respond",
                                     "description": ANY,
-                                    "inputSchema": {"json": AssistantResponse.model_json_schema()},
+                                    "inputSchema": {
+                                        "json": {
+                                            **AssistantResponse.model_json_schema(),
+                                            "required": ["answer", "links", "proposed_actions"],
+                                        }
+                                    },
                                 }
                             }
                         ],
                         "toolChoice": {"tool": {"name": "respond"}},
                     },
-                    "inferenceConfig": {"maxTokens": 800},  # no temperature: some models reject it
+                    "inferenceConfig": {"maxTokens": 2000},  # no temperature: some models reject it
                 },
             )
             text = BedrockModel(model_id="test-model", client=client).complete("prompt")
@@ -312,6 +319,82 @@ class TestBedrockModel:
             )
             text = BedrockModel(model_id="test-model", client=client).complete("prompt")
         assert text == "Sure! Here is prose."
+        with pytest.raises(OutputValidationError, match="malformed_output"):
+            parse_model_output(text)
+
+    def test_forced_tool_choice_falls_back_to_auto_only_when_the_model_rejects_it(self):
+        from sec310_sample.model import BedrockModel
+
+        client = _runtime_client()
+        auto = {
+            "modelId": "test-model",
+            "system": ANY,
+            "messages": ANY,
+            "inferenceConfig": ANY,
+            "toolConfig": {"tools": ANY, "toolChoice": {"auto": {}}},
+        }
+        with Stubber(client) as stub:
+            stub.add_client_error(
+                "converse",
+                service_error_code="ValidationException",
+                service_message='The model returned the following errors: tool_choice: type "tool" and "any" are not supported for this model.',
+            )
+            stub.add_response(
+                "converse",
+                self._tool_use_response({"answer": "ok", "proposed_actions": [], "links": []}),
+                expected_params=auto,
+            )
+            # the relaxed choice sticks for the instance: the next call does not retry the forced form
+            stub.add_response(
+                "converse",
+                self._tool_use_response({"answer": "again", "proposed_actions": [], "links": []}),
+                expected_params=auto,
+            )
+            model = BedrockModel(model_id="test-model", client=client)
+            assert json.loads(model.complete("p"))["answer"] == "ok"
+            assert json.loads(model.complete("p"))["answer"] == "again"
+            stub.assert_no_pending_responses()
+
+    def test_other_validation_errors_are_not_swallowed(self):
+        from botocore.exceptions import ClientError
+
+        from sec310_sample.model import BedrockModel
+
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            stub.add_client_error(
+                "converse",
+                service_error_code="ValidationException",
+                service_message="`temperature` is deprecated for this model.",
+            )
+            with pytest.raises(ClientError, match="temperature"):
+                BedrockModel(model_id="test-model", client=client).complete("p")
+
+    def test_truncated_tool_input_is_handed_to_the_parser_as_malformed(self):
+        from sec310_sample.errors import OutputValidationError
+        from sec310_sample.model import BedrockModel
+        from sec310_sample.schemas import parse_model_output
+
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            stub.add_response(
+                "converse",
+                {
+                    "output": {
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"toolUse": {"toolUseId": "t1", "name": "respond", "input": {}}}
+                            ],
+                        }
+                    },
+                    "stopReason": "max_tokens",
+                    "usage": {"inputTokens": 1, "outputTokens": 2000, "totalTokens": 2001},
+                    "metrics": {"latencyMs": 1},
+                },
+            )
+            text = BedrockModel(model_id="test-model", client=client).complete("prompt")
+        assert text.startswith("<model output truncated: stopReason=max_tokens")
         with pytest.raises(OutputValidationError, match="malformed_output"):
             parse_model_output(text)
 
@@ -353,7 +436,7 @@ class TestBedrockModel:
         chunks = list(BedrockModel(model_id="test-model", client=Client()).stream("prompt"))
         assert "".join(chunks) == '{"answer": "ok", "proposed_actions": [], "links": []}'
         assert seen["toolConfig"]["toolChoice"] == {"tool": {"name": "respond"}}
-        assert seen["inferenceConfig"] == {"maxTokens": 800}
+        assert seen["inferenceConfig"] == {"maxTokens": 2000}
 
 
 class TestCedarPolicyGate:
@@ -1197,6 +1280,179 @@ def test_stage_fails_when_the_gateway_decides_differently(monkeypatch, capsys, b
         )
     else:
         assert "(unexpected)" in out
+
+
+# -- the observer against stubbed CloudWatch ----------------------------------------------------
+def _cw():
+    return boto3.client("cloudwatch", region_name="us-east-1")
+
+
+def _metric(name, policy=None, gateway="gw-0123456789"):
+    dims = [{"Name": "OperationName", "Value": "AuthorizeAction"}]
+    if policy:
+        dims += [{"Name": "Policy", "Value": policy}, {"Name": "TargetResource", "Value": gateway}]
+    return {"Namespace": "AWS/Bedrock-AgentCore", "MetricName": name, "Dimensions": dims}
+
+
+class TestPolicyObserver:
+    def test_counts_engine_totals_and_per_policy_for_the_current_gateway_only(self):
+        client = _cw()
+        with Stubber(client) as stub:
+            # per-policy discovery pages: one page per metric name, with a stray other-gateway policy
+            stub.add_response(
+                "list_metrics",
+                {
+                    "Metrics": [
+                        _metric("AllowDecisions", "look_before_you_write-abc"),
+                        _metric("AllowDecisions", "read_known_accounts-def"),
+                        _metric("AllowDecisions", "old_policy-xyz", gateway="other-0123456789"),
+                    ],
+                    "NextToken": "n",
+                },
+            )
+            stub.add_response(
+                "list_metrics",
+                {"Metrics": []},
+                expected_params={
+                    "Namespace": "AWS/Bedrock-AgentCore",
+                    "MetricName": "AllowDecisions",
+                    "Dimensions": [{"Name": "OperationName", "Value": "AuthorizeAction"}],
+                    "NextToken": "n",
+                },
+            )
+            stub.add_response(
+                "list_metrics",
+                {"Metrics": [_metric("DenyDecisions", "no_writes_outside_acct_a-ghi")]},
+            )
+            stub.add_response(
+                "get_metric_data",
+                {
+                    "MetricDataResults": [
+                        {"Id": "allow", "Values": [30.0]},
+                        {"Id": "deny", "Values": [23.0]},
+                        {"Id": "nodet", "Values": [16.0]},
+                        {"Id": "p0", "Values": [8.0]},
+                        {"Id": "p1", "Values": [22.0]},
+                        {"Id": "p2", "Values": [7.0]},
+                    ]
+                },
+            )
+            counts = PolicyObserver(client=client).decisions(
+                "eng-1", gateway_id="gw-0123456789", now=1_800_000_000.0
+            )
+            stub.assert_no_pending_responses()
+        assert (counts.allow, counts.deny, counts.no_determining_policy, counts.total) == (
+            30,
+            23,
+            16,
+            53,
+        )
+        assert counts.by_policy == {
+            "look_before_you_write-abc": {"allow": 8, "deny": 0},
+            "read_known_accounts-def": {"allow": 22, "deny": 0},
+            "no_writes_outside_acct_a-ghi": {"allow": 0, "deny": 7},
+        }
+
+    def test_no_data_yet_is_zero_not_an_error(self):
+        client = _cw()
+        with Stubber(client) as stub:
+            stub.add_response("list_metrics", {"Metrics": []})
+            stub.add_response("list_metrics", {"Metrics": []})
+            stub.add_response(
+                "get_metric_data",
+                {
+                    "MetricDataResults": [
+                        {"Id": "allow", "Values": []},
+                        {"Id": "deny", "Values": []},
+                        {"Id": "nodet", "Values": []},
+                    ]
+                },
+            )
+            counts = PolicyObserver(client=client).decisions("eng-1", now=1_800_000_000.0)
+        assert counts.total == 0 and counts.by_policy == {}
+
+
+def test_gateway_id_from_url():
+    assert (
+        gateway_id_from_url(
+            "https://sec310-demo-gateway-abc123.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
+        )
+        == "sec310-demo-gateway-abc123"
+    )
+    assert gateway_id_from_url("https://example.invalid/mcp") is None
+    assert gateway_id_from_url(None) is None
+
+
+class _FakeCloudWatch:
+    def __init__(self, empty=False):
+        self.empty = empty
+
+    def get_paginator(self, op):
+        assert op == "list_metrics"
+        fake = self
+
+        class P:
+            def paginate(self, **kw):
+                if fake.empty:
+                    return [{"Metrics": []}]
+                policy = (
+                    "look_before_you_write-abc"
+                    if kw["MetricName"] == "AllowDecisions"
+                    else "no_writes_outside_acct_a-ghi"
+                )
+                return [{"Metrics": [_metric(kw["MetricName"], policy)]}]
+
+        return P()
+
+    def get_metric_data(self, **kw):
+        if self.empty:
+            return {
+                "MetricDataResults": [
+                    {"Id": q["Id"], "Values": []} for q in kw["MetricDataQueries"]
+                ]
+            }
+        values = {"allow": 5.0, "deny": 3.0, "nodet": 2.0, "p0": 2.0, "p1": 3.0}
+        return {
+            "MetricDataResults": [
+                {"Id": q["Id"], "Values": [values.get(q["Id"], 0.0)]}
+                for q in kw["MetricDataQueries"]
+            ]
+        }
+
+
+def test_observe_stage_reports_the_engines_decisions(monkeypatch, capsys):
+    from sec310_sample.demo.__main__ import stage_observe
+
+    monkeypatch.setenv("SEC310_POLICY_ENGINE_ID", "eng-1")
+    monkeypatch.setenv(
+        "SEC310_GATEWAY_URL",
+        "https://gw-0123456789.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+    )
+    code = stage_observe(make_client=lambda svc: _FakeCloudWatch())
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "✔ ALLOW 5   DENY 3   of which deny-by-default (no determining policy) 2" in out
+    assert "look_before_you_write-abc" in out and "allow=2" in out
+    assert "no_writes_outside_acct_a-ghi" in out and "deny=3" in out
+    assert "on gateway gw-0123456789" in out
+
+
+def test_observe_stage_says_when_metrics_have_not_arrived(monkeypatch, capsys):
+    from sec310_sample.demo.__main__ import stage_observe
+
+    monkeypatch.setenv("SEC310_POLICY_ENGINE_ID", "eng-1")
+    monkeypatch.delenv("SEC310_GATEWAY_URL", raising=False)
+    code = stage_observe(make_client=lambda svc: _FakeCloudWatch(empty=True))
+    out = capsys.readouterr().out
+    assert code == 1 and "no decisions recorded yet" in out and "✔" not in out
+
+
+def test_observe_stage_needs_the_engine_id(monkeypatch, capsys):
+    from sec310_sample.demo.__main__ import stage_observe
+
+    monkeypatch.delenv("SEC310_POLICY_ENGINE_ID", raising=False)
+    assert stage_observe(make_client=lambda svc: _FakeCloudWatch()) == 2
+    assert "set SEC310_POLICY_ENGINE_ID" in capsys.readouterr().out
 
 
 @LIVE

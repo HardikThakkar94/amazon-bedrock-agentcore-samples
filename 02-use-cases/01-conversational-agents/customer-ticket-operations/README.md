@@ -104,6 +104,7 @@ uv sync --extra aws                                   # boto3 with the agentic g
 eval "$(sh scripts/live_setup.sh)"                    # guardrails + an Automated Reasoning policy (~2 min); exports their ids
 eval "$(uv run python scripts/live_gateway.py up)"    # gateway + tool Lambda + policy engine in ENFORCE (~1 min); exports its URL
 uv run python -m sec310_sample.demo live
+uv run python -m sec310_sample.demo observe           # a few minutes later: the engine's own decision counts from CloudWatch
 uv run python scripts/live_gateway.py down            # removes the gateway, engine, policies, function, roles
 sh scripts/live_teardown.sh                           # removes the guardrails and the AR policy
 ```
@@ -124,6 +125,7 @@ against a real account on 2026-10-08 (us-east-1); the whole stage takes about 75
 | `bedrock-runtime:InvokeGuardrailChecks` | prompt-attack severity scores for the argument *values* of a proposed tool call, before it runs; the threshold is the application's, and a missing evaluation is UNAVAILABLE, not a pass | `live.GuardrailChecks` |
 | `bedrock-runtime:ApplyGuardrail` (AR policy) | formal-logic findings over the answer text: a claim the team's rule-change policy contradicts comes back `INVALID` with the rule it breaks, a supported claim `VALID`; `action` is `NONE` both times (detect mode) | stage code |
 | `bedrock-agentcore-control:CreatePolicy` under `FAIL_ON_ANY_FINDINGS` | Cedar is machine-checked before anything could enforce it: the parser refuses an unconstrained resource synchronously; everything else settles asynchronously to `ACTIVE` or `CREATE_FAILED` with `statusReasons`, and the gate reads the verdict from that terminal state | `live.CedarPolicyGate` |
+| `cloudwatch:GetMetricData` on `AWS/Bedrock-AgentCore` (`demo observe`) | the platform's own record of what the engine decided: ALLOW / DENY / deny-by-default per engine and per policy, published with no instrumentation — the hashed decision events of Patch 5, emitted for you | `live.PolicyObserver` |
 | signed MCP `tools/call` to an AgentCore Gateway with a policy engine in `ENFORCE` | **Cedar and Dogwood deciding real tool calls**: a Cedar `forbid` keeps writes inside one account, and a Dogwood temporal `permit` allows a write only after the same policy session read that account's evidence; the same `update_rule` call is DENY, then ALLOW, then DENY, and a request without a session id is rejected outright | `live.GatewayClient`, `scripts/live_gateway.py` |
 
 Two things the live run taught us, both encoded in the code: the prompt-attack classifier
@@ -154,7 +156,14 @@ for each deletion to be confirmed and prints anything it could not remove.
 `--live` on the other stages uses the real model for proposals while the write path stays
 local. A real model is not the scripted gullible one: it may decline the injected instruction,
 so those stages say what actually happened instead of narrating the scripted outcome, and
-the behavioural corpus (`telemetry` stage) is the deterministic regression gate and always runs on the scripted model, which its events say.
+the behavioural corpus (`telemetry` stage) is the deterministic regression gate and always runs
+on the scripted model, which its events say. Run on 2026-10-09 with Haiku 4.5, Sonnet 5, Opus 5
+and Opus 5.5 (`global.anthropic.*` inference profiles, us-east-1): all four pass `live` and
+`all --live`; none followed the injection. Three model differences are handled explicitly in
+`model.BedrockModel`: the typed shape is requested as a forced tool call with every field
+required (Sonnet 5 otherwise omits empty lists), a forced tool choice falls back to `auto` only
+when the service rejects it (Opus 5.5), and a `max_tokens` stop is handed to the strict parser
+as a truncated, malformed reply rather than an empty one.
 
 Unit tests use `botocore.stub.Stubber` and small fake clients and run offline (the stage runs
 end to end against fakes); `SEC310_LIVE=1 uv run pytest tests/test_live_services.py` adds
