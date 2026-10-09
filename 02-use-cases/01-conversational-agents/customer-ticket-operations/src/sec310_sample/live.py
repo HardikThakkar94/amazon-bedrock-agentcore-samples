@@ -493,16 +493,28 @@ class GatewayClient:
 
 @dataclass(frozen=True)
 class PolicyDecisionCounts:
-    """What the policy engine itself reports having decided, from CloudWatch."""
+    """What the policy engine itself reports having decided, from CloudWatch.
+
+    ``datapoints`` is the number of real datapoints CloudWatch returned in the window. Zero
+    means "nothing recorded yet" (metrics lag the calls by a few minutes); it is not the same
+    as counts that are zero, and discovering a policy's historical series does not count.
+    ``by_policy`` lists only policies with at least one datapoint in the window.
+    """
 
     allow: int
     deny: int
     no_determining_policy: int
     by_policy: dict[str, dict[str, int]]  # policy id -> {"allow": n, "deny": n}
+    datapoints: int
 
     @property
     def total(self) -> int:
         return self.allow + self.deny
+
+
+class MetricReadError(RuntimeError):
+    """CloudWatch answered, but not with a complete result: an in-band error status, a
+    PartialData result with no way to continue, or an operation-level message. Never a count."""
 
 
 class PolicyObserver:
@@ -510,7 +522,9 @@ class PolicyObserver:
 
     Namespace ``AWS/Bedrock-AgentCore``, operation ``AuthorizeAction``: ``AllowDecisions``,
     ``DenyDecisions`` and ``NoDeterminingPolicies`` per policy engine, and ``AllowDecisions`` /
-    ``DenyDecisions`` per policy id. Metrics lag the calls by a few minutes; the caller says so.
+    ``DenyDecisions`` per policy id. The per-policy series carry the engine as a dimension
+    (observed 2026-10-09: OperationName, Policy, PolicyEngine, TargetResource), so every row
+    here belongs to the same engine as the totals. Metrics lag the calls by a few minutes.
     """
 
     NAMESPACE = "AWS/Bedrock-AgentCore"
@@ -583,15 +597,14 @@ class PolicyObserver:
         ]
         by_policy: dict[str, dict[str, int]] = {}
         policy_queries: list[tuple[str, str, str]] = []  # (query id, policy id, kind)
+        per_policy_dims = {"OperationName", "Policy", "PolicyEngine", "TargetResource"}
         for metric, kind in (("AllowDecisions", "allow"), ("DenyDecisions", "deny")):
             for page in self._client.get_paginator("list_metrics").paginate(
-                Namespace=self.NAMESPACE,
-                MetricName=metric,
-                Dimensions=[{"Name": "OperationName", "Value": "AuthorizeAction"}],
+                Namespace=self.NAMESPACE, MetricName=metric, Dimensions=engine_dims
             ):
                 for m in page.get("Metrics", []):
                     dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
-                    if "Policy" in dims and "TargetResource" in dims and len(dims) == 3:
+                    if set(dims) == per_policy_dims and dims["PolicyEngine"] == engine_id:
                         if gateway_id and dims["TargetResource"] != gateway_id:
                             continue
                         qid = f"p{len(policy_queries)}"
@@ -611,17 +624,54 @@ class PolicyObserver:
                             }
                         )
         sums: dict[str, int] = {}
+        points: dict[str, int] = {}
         for i in range(0, len(queries), 100):  # GetMetricData takes at most 100 queries
-            resp = self._client.get_metric_data(
-                MetricDataQueries=queries[i : i + 100], StartTime=start, EndTime=end
-            )
-            for r in resp.get("MetricDataResults", []):
-                sums[r["Id"]] = int(sum(r.get("Values", [])))
+            self._read_batch(queries[i : i + 100], start, end, sums, points)
         for qid, policy_id, kind in policy_queries:
-            by_policy.setdefault(policy_id, {"allow": 0, "deny": 0})[kind] += sums.get(qid, 0)
+            if points.get(qid, 0) == 0:
+                continue  # a series that exists but has no datapoints in this window
+            by_policy.setdefault(policy_id, {"allow": 0, "deny": 0})[kind] += sums[qid]
         return PolicyDecisionCounts(
-            sums.get("allow", 0), sums.get("deny", 0), sums.get("nodet", 0), by_policy
+            sums.get("allow", 0),
+            sums.get("deny", 0),
+            sums.get("nodet", 0),
+            by_policy,
+            datapoints=sum(points.values()),
         )
+
+    def _read_batch(self, batch, start, end, sums: dict[str, int], points: dict[str, int]) -> None:
+        """One GetMetricData query batch, every page. Values accumulate per query id; the final
+        status of every result must be Complete, and any operation-level message is an error."""
+        kwargs = {"MetricDataQueries": batch, "StartTime": start, "EndTime": end}
+        status: dict[str, str] = {}
+        while True:
+            resp = self._client.get_metric_data(**kwargs)
+            if resp.get("Messages"):
+                raise MetricReadError(
+                    "GetMetricData returned messages: "
+                    + "; ".join(f"{m.get('Code')}: {m.get('Value')}" for m in resp["Messages"])
+                )
+            for r in resp.get("MetricDataResults", []):
+                values = r.get("Values", [])
+                sums[r["Id"]] = sums.get(r["Id"], 0) + int(sum(values))
+                points[r["Id"]] = points.get(r["Id"], 0) + len(values)
+                status[r["Id"]] = r.get("StatusCode", "Complete")
+                if status[r["Id"]] in ("InternalError", "Forbidden"):
+                    detail = "; ".join(
+                        f"{m.get('Code')}: {m.get('Value')}" for m in r.get("Messages", [])
+                    )
+                    raise MetricReadError(
+                        f"GetMetricData result {r['Id']} is {status[r['Id']]}: {detail or 'no detail'}"
+                    )
+            token = resp.get("NextToken")
+            if not token:
+                break
+            kwargs["NextToken"] = token
+        incomplete = sorted(qid for qid, st in status.items() if st != "Complete")
+        if incomplete:
+            raise MetricReadError(
+                f"GetMetricData ended with incomplete results and no continuation: {incomplete}"
+            )
 
 
 def gateway_url() -> str | None:

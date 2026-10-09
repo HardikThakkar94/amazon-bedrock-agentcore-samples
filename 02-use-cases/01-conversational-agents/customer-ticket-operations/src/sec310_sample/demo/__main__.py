@@ -739,7 +739,9 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
 def stage_observe(make_client: Callable[[str], object] | None = None) -> int:
     """What happened? Ask the platform. AgentCore Policy publishes its decisions to CloudWatch
     by default, per engine and per policy: the hashed decision events of Patch 5, emitted for you.
-    Metrics lag the calls by a few minutes, so this runs after `live`, not inside it."""
+    Metrics lag the calls by a few minutes, so this runs after `live`, not inside it.
+    Exit 0 with counts; 1 when no datapoint exists in the window yet; 2 without an engine id;
+    an incomplete or failed CloudWatch answer raises and is reported as the stage stopping."""
     banner("Observe  The platform's own record of what the policy engine decided")
     if make_client is None:
         import boto3
@@ -759,7 +761,7 @@ def stage_observe(make_client: Callable[[str], object] | None = None) -> int:
     gateway = gateway_id_from_url(gateway_url())
     counts = PolicyObserver(client=make_client("cloudwatch")).decisions(engine, gateway_id=gateway)
     step(f"AWS/Bedrock-AgentCore · AuthorizeAction · engine {engine} · last 3 hours")
-    if counts.total == 0 and not counts.by_policy:
+    if counts.datapoints == 0:
         note(
             "no decisions recorded yet: CloudWatch metrics lag by a few minutes; run this again shortly"
         )
@@ -804,7 +806,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             code = stage_live() if args.stage == "live" else stage_observe()
         except (RuntimeError, BotoCoreError, ClientError) as exc:
-            denied(f"live stage stopped: {exc}")
+            denied(f"{args.stage} stage stopped: {exc}")
             note(
                 "needs AWS credentials in the default chain plus SEC310_MODEL_ID and "
                 "SEC310_GUARDRAIL_ID (optional: SEC310_AR_GUARDRAIL_ID, SEC310_GATEWAY_URL)"

@@ -438,6 +438,41 @@ class TestBedrockModel:
         assert seen["toolConfig"]["toolChoice"] == {"tool": {"name": "respond"}}
         assert seen["inferenceConfig"] == {"maxTokens": 2000}
 
+    def test_stream_falls_back_to_auto_once_and_propagates_a_second_failure(self):
+        from botocore.exceptions import ClientError
+
+        from sec310_sample.model import BedrockModel
+
+        def rejection(message):
+            return ClientError(
+                {"Error": {"Code": "ValidationException", "Message": message}}, "ConverseStream"
+            )
+
+        class Client:
+            def __init__(self):
+                self.choices = []
+
+            def converse_stream(self, **kwargs):
+                self.choices.append(kwargs["toolConfig"]["toolChoice"])
+                if len(self.choices) == 1:
+                    raise rejection(
+                        'tool_choice: type "tool" and "any" are not supported for this model.'
+                    )
+                if len(self.choices) == 2:
+                    return {"stream": iter([{"messageStop": {"stopReason": "end_turn"}}])}
+                raise rejection("`temperature` is deprecated for this model.")
+
+        client = Client()
+        model = BedrockModel(model_id="test-model", client=client)
+        assert (
+            list(model.stream("p")) == []
+        )  # relaxed retry happened and produced the (empty) stream
+        with pytest.raises(
+            ClientError, match="temperature"
+        ):  # a different failure under auto: no second retry
+            list(model.stream("p"))
+        assert client.choices == [{"tool": {"name": "respond"}}, {"auto": {}}, {"auto": {}}]
+
 
 class TestCedarPolicyGate:
     def test_provision_waits_for_engine_active(self):
@@ -1287,58 +1322,89 @@ def _cw():
     return boto3.client("cloudwatch", region_name="us-east-1")
 
 
-def _metric(name, policy=None, gateway="gw-0123456789"):
+def _metric(name, policy=None, gateway="gw-0123456789", engine="eng-1"):
+    """A per-policy series as the service publishes it (2026-10-09): OperationName, Policy,
+    PolicyEngine, TargetResource. ``engine=None`` builds the engine-less variant."""
     dims = [{"Name": "OperationName", "Value": "AuthorizeAction"}]
     if policy:
         dims += [{"Name": "Policy", "Value": policy}, {"Name": "TargetResource", "Value": gateway}]
+        if engine:
+            dims.append({"Name": "PolicyEngine", "Value": engine})
     return {"Namespace": "AWS/Bedrock-AgentCore", "MetricName": name, "Dimensions": dims}
 
 
+def _result(qid, values, status="Complete", messages=None):
+    r = {"Id": qid, "Values": values, "StatusCode": status}
+    if messages:
+        r["Messages"] = messages
+    return r
+
+
+_DISCOVERY = {
+    "Namespace": "AWS/Bedrock-AgentCore",
+    "Dimensions": [
+        {"Name": "OperationName", "Value": "AuthorizeAction"},
+        {"Name": "PolicyEngine", "Value": "eng-1"},
+    ],
+}
+
+
+def _discover(stub, allow_policies=(), deny_policies=()):
+    """Two list_metrics pages per metric name: the second page is the paginator's continuation."""
+    stub.add_response(
+        "list_metrics",
+        {
+            "Metrics": [
+                _metric("AllowDecisions", *p)
+                if isinstance(p, tuple)
+                else _metric("AllowDecisions", p)
+                for p in allow_policies
+            ],
+            "NextToken": "n",
+        },
+    )
+    stub.add_response(
+        "list_metrics",
+        {"Metrics": []},
+        expected_params={**_DISCOVERY, "MetricName": "AllowDecisions", "NextToken": "n"},
+    )
+    stub.add_response(
+        "list_metrics", {"Metrics": [_metric("DenyDecisions", p) for p in deny_policies]}
+    )
+
+
 class TestPolicyObserver:
-    def test_counts_engine_totals_and_per_policy_for_the_current_gateway_only(self):
+    NOW = 1_800_000_000.0
+
+    def test_counts_engine_totals_and_per_policy_for_the_current_engine_and_gateway_only(self):
         client = _cw()
         with Stubber(client) as stub:
-            # per-policy discovery pages: one page per metric name, with a stray other-gateway policy
-            stub.add_response(
-                "list_metrics",
-                {
-                    "Metrics": [
-                        _metric("AllowDecisions", "look_before_you_write-abc"),
-                        _metric("AllowDecisions", "read_known_accounts-def"),
-                        _metric("AllowDecisions", "old_policy-xyz", gateway="other-0123456789"),
-                    ],
-                    "NextToken": "n",
-                },
-            )
-            stub.add_response(
-                "list_metrics",
-                {"Metrics": []},
-                expected_params={
-                    "Namespace": "AWS/Bedrock-AgentCore",
-                    "MetricName": "AllowDecisions",
-                    "Dimensions": [{"Name": "OperationName", "Value": "AuthorizeAction"}],
-                    "NextToken": "n",
-                },
-            )
-            stub.add_response(
-                "list_metrics",
-                {"Metrics": [_metric("DenyDecisions", "no_writes_outside_acct_a-ghi")]},
+            _discover(
+                stub,
+                allow_policies=[
+                    "look_before_you_write-abc",
+                    "read_known_accounts-def",
+                    ("old_policy-xyz", "other-0123456789"),  # another gateway
+                    ("stale_policy-uvw", "gw-0123456789", "eng-0"),  # another engine
+                    ("engineless-rst", "gw-0123456789", None),  # the engine-less series variant
+                ],
+                deny_policies=["no_writes_outside_acct_a-ghi"],
             )
             stub.add_response(
                 "get_metric_data",
                 {
                     "MetricDataResults": [
-                        {"Id": "allow", "Values": [30.0]},
-                        {"Id": "deny", "Values": [23.0]},
-                        {"Id": "nodet", "Values": [16.0]},
-                        {"Id": "p0", "Values": [8.0]},
-                        {"Id": "p1", "Values": [22.0]},
-                        {"Id": "p2", "Values": [7.0]},
+                        _result("allow", [30.0]),
+                        _result("deny", [23.0]),
+                        _result("nodet", [16.0]),
+                        _result("p0", [8.0]),
+                        _result("p1", [22.0]),
+                        _result("p2", [7.0]),
                     ]
                 },
             )
             counts = PolicyObserver(client=client).decisions(
-                "eng-1", gateway_id="gw-0123456789", now=1_800_000_000.0
+                "eng-1", gateway_id="gw-0123456789", now=self.NOW
             )
             stub.assert_no_pending_responses()
         assert (counts.allow, counts.deny, counts.no_determining_policy, counts.total) == (
@@ -1347,29 +1413,214 @@ class TestPolicyObserver:
             16,
             53,
         )
+        assert counts.datapoints == 6
         assert counts.by_policy == {
             "look_before_you_write-abc": {"allow": 8, "deny": 0},
             "read_known_accounts-def": {"allow": 22, "deny": 0},
             "no_writes_outside_acct_a-ghi": {"allow": 0, "deny": 7},
         }
 
-    def test_no_data_yet_is_zero_not_an_error(self):
+    def test_no_series_at_all_is_no_data(self):
         client = _cw()
         with Stubber(client) as stub:
-            stub.add_response("list_metrics", {"Metrics": []})
-            stub.add_response("list_metrics", {"Metrics": []})
+            _discover(stub)
             stub.add_response(
                 "get_metric_data",
                 {
                     "MetricDataResults": [
-                        {"Id": "allow", "Values": []},
-                        {"Id": "deny", "Values": []},
-                        {"Id": "nodet", "Values": []},
+                        _result("allow", []),
+                        _result("deny", []),
+                        _result("nodet", []),
                     ]
                 },
             )
-            counts = PolicyObserver(client=client).decisions("eng-1", now=1_800_000_000.0)
-        assert counts.total == 0 and counts.by_policy == {}
+            counts = PolicyObserver(client=client).decisions("eng-1", now=self.NOW)
+        assert counts.datapoints == 0 and counts.total == 0 and counts.by_policy == {}
+
+    def test_historical_series_with_an_empty_window_is_still_no_data(self):
+        # list_metrics remembers a series for two weeks; discovering one says nothing about this window.
+        client = _cw()
+        with Stubber(client) as stub:
+            _discover(stub, allow_policies=["old-policy-abc"])
+            stub.add_response(
+                "get_metric_data",
+                {
+                    "MetricDataResults": [
+                        _result("allow", []),
+                        _result("deny", []),
+                        _result("nodet", []),
+                        _result("p0", []),
+                    ]
+                },
+            )
+            counts = PolicyObserver(client=client).decisions(
+                "eng-1", gateway_id="gw-0123456789", now=self.NOW
+            )
+        assert counts.datapoints == 0
+        assert counts.by_policy == {}, "a series without datapoints must not appear as a 0/0 row"
+
+    def test_a_real_zero_datapoint_is_data(self):
+        client = _cw()
+        with Stubber(client) as stub:
+            _discover(stub)
+            stub.add_response(
+                "get_metric_data",
+                {
+                    "MetricDataResults": [
+                        _result("allow", [0.0]),
+                        _result("deny", []),
+                        _result("nodet", []),
+                    ]
+                },
+            )
+            counts = PolicyObserver(client=client).decisions("eng-1", now=self.NOW)
+        assert counts.datapoints == 1 and counts.total == 0
+
+    def test_partial_data_pages_are_followed_and_accumulated(self):
+        client = _cw()
+        with Stubber(client) as stub:
+            _discover(stub, allow_policies=["look_before_you_write-abc"])
+            stub.add_response(
+                "get_metric_data",
+                {
+                    "MetricDataResults": [
+                        _result("allow", [2.0], "PartialData"),
+                        _result("deny", [1.0], "PartialData"),
+                        _result("nodet", [], "PartialData"),
+                        _result("p0", [2.0], "PartialData"),
+                    ],
+                    "NextToken": "page2",
+                },
+            )
+            stub.add_response(
+                "get_metric_data",
+                {
+                    "MetricDataResults": [
+                        _result("allow", [3.0]),
+                        _result("deny", [], "Complete"),
+                        _result("nodet", [], "Complete"),
+                        _result("p0", [3.0]),
+                    ]
+                },
+                expected_params={
+                    "MetricDataQueries": ANY,
+                    "StartTime": ANY,
+                    "EndTime": ANY,
+                    "NextToken": "page2",
+                },
+            )
+            counts = PolicyObserver(client=client).decisions(
+                "eng-1", gateway_id="gw-0123456789", now=self.NOW
+            )
+            stub.assert_no_pending_responses()
+        assert (counts.allow, counts.deny, counts.datapoints) == (5, 1, 5)
+        assert counts.by_policy == {"look_before_you_write-abc": {"allow": 5, "deny": 0}}
+
+    @pytest.mark.parametrize("status", ["InternalError", "Forbidden"])
+    def test_an_error_status_is_an_error_not_a_count(self, status):
+        from sec310_sample.live import MetricReadError
+
+        client = _cw()
+        with Stubber(client) as stub:
+            _discover(stub, allow_policies=["look_before_you_write-abc"])
+            stub.add_response(
+                "get_metric_data",
+                {
+                    "MetricDataResults": [
+                        _result(
+                            "allow", [], status, [{"Code": "Err", "Value": "backend unavailable"}]
+                        ),
+                        _result("deny", []),
+                        _result("nodet", []),
+                        _result("p0", []),
+                    ]
+                },
+            )
+            with pytest.raises(
+                MetricReadError, match=f"allow is {status}: Err: backend unavailable"
+            ):
+                PolicyObserver(client=client).decisions(
+                    "eng-1", gateway_id="gw-0123456789", now=self.NOW
+                )
+
+    def test_partial_data_without_a_continuation_is_an_error(self):
+        from sec310_sample.live import MetricReadError
+
+        client = _cw()
+        with Stubber(client) as stub:
+            _discover(stub)
+            stub.add_response(
+                "get_metric_data",
+                {
+                    "MetricDataResults": [
+                        _result("allow", [2.0], "PartialData"),
+                        _result("deny", []),
+                        _result("nodet", []),
+                    ]
+                },
+            )
+            with pytest.raises(
+                MetricReadError, match=r"incomplete results and no continuation: \['allow'\]"
+            ):
+                PolicyObserver(client=client).decisions("eng-1", now=self.NOW)
+
+    def test_an_operation_level_message_is_an_error(self):
+        from sec310_sample.live import MetricReadError
+
+        client = _cw()
+        with Stubber(client) as stub:
+            _discover(stub)
+            stub.add_response(
+                "get_metric_data",
+                {
+                    "MetricDataResults": [
+                        _result("allow", [2.0]),
+                        _result("deny", []),
+                        _result("nodet", []),
+                    ],
+                    "Messages": [
+                        {
+                            "Code": "MaxMetricsExceeded",
+                            "Value": "Maximum number of allowed metrics exceeded",
+                        }
+                    ],
+                },
+            )
+            with pytest.raises(MetricReadError, match="MaxMetricsExceeded"):
+                PolicyObserver(client=client).decisions("eng-1", now=self.NOW)
+
+    def test_queries_are_batched_by_one_hundred(self):
+        class Client:
+            def __init__(self):
+                self.batches = []
+
+            def get_paginator(self, op):
+                class P:
+                    def paginate(self, **kw):
+                        if kw["MetricName"] != "AllowDecisions":
+                            return [{"Metrics": []}]
+                        return [
+                            {
+                                "Metrics": [
+                                    _metric("AllowDecisions", f"policy-{i:03d}") for i in range(101)
+                                ]
+                            }
+                        ]
+
+                return P()
+
+            def get_metric_data(self, **kw):
+                self.batches.append(len(kw["MetricDataQueries"]))
+                return {
+                    "MetricDataResults": [_result(q["Id"], [1.0]) for q in kw["MetricDataQueries"]]
+                }
+
+        client = Client()
+        counts = PolicyObserver(client=client).decisions(
+            "eng-1", gateway_id="gw-0123456789", now=self.NOW
+        )
+        assert client.batches == [100, 4]  # 3 engine queries + 101 policy queries
+        assert len(counts.by_policy) == 101 and counts.datapoints == 104
 
 
 def test_gateway_id_from_url():
@@ -1384,8 +1635,11 @@ def test_gateway_id_from_url():
 
 
 class _FakeCloudWatch:
-    def __init__(self, empty=False):
-        self.empty = empty
+    """Modes: 'data' (counts), 'empty' (no series), 'historical' (a series, no datapoints),
+    'zero' (no series; the engine published a real 0), 'error' (InternalError)."""
+
+    def __init__(self, mode="data"):
+        self.mode = mode
 
     def get_paginator(self, op):
         assert op == "list_metrics"
@@ -1393,7 +1647,7 @@ class _FakeCloudWatch:
 
         class P:
             def paginate(self, **kw):
-                if fake.empty:
+                if fake.mode in ("empty", "zero"):
                     return [{"Metrics": []}]
                 policy = (
                     "look_before_you_write-abc"
@@ -1405,19 +1659,20 @@ class _FakeCloudWatch:
         return P()
 
     def get_metric_data(self, **kw):
-        if self.empty:
+        ids = [q["Id"] for q in kw["MetricDataQueries"]]
+        if self.mode in ("empty", "historical"):
+            return {"MetricDataResults": [_result(i, []) for i in ids]}
+        if self.mode == "zero":
+            return {"MetricDataResults": [_result(i, [0.0] if i == "allow" else []) for i in ids]}
+        if self.mode == "error":
             return {
                 "MetricDataResults": [
-                    {"Id": q["Id"], "Values": []} for q in kw["MetricDataQueries"]
+                    _result(i, [], "InternalError", [{"Code": "Err", "Value": "try later"}])
+                    for i in ids
                 ]
             }
         values = {"allow": 5.0, "deny": 3.0, "nodet": 2.0, "p0": 2.0, "p1": 3.0}
-        return {
-            "MetricDataResults": [
-                {"Id": q["Id"], "Values": [values.get(q["Id"], 0.0)]}
-                for q in kw["MetricDataQueries"]
-            ]
-        }
+        return {"MetricDataResults": [_result(i, [values.get(i, 0.0)]) for i in ids]}
 
 
 def test_observe_stage_reports_the_engines_decisions(monkeypatch, capsys):
@@ -1437,14 +1692,29 @@ def test_observe_stage_reports_the_engines_decisions(monkeypatch, capsys):
     assert "on gateway gw-0123456789" in out
 
 
-def test_observe_stage_says_when_metrics_have_not_arrived(monkeypatch, capsys):
+@pytest.mark.parametrize("mode", ["empty", "historical"])
+def test_observe_stage_says_when_metrics_have_not_arrived(monkeypatch, capsys, mode):
+    from sec310_sample.demo.__main__ import stage_observe
+
+    monkeypatch.setenv("SEC310_POLICY_ENGINE_ID", "eng-1")
+    monkeypatch.setenv(
+        "SEC310_GATEWAY_URL",
+        "https://gw-0123456789.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+    )
+    code = stage_observe(make_client=lambda svc: _FakeCloudWatch(mode))
+    out = capsys.readouterr().out
+    assert code == 1 and "no decisions recorded yet" in out and "✔" not in out
+    assert "allow=0" not in out, "a historical series must not print as a 0/0 row"
+
+
+def test_observe_stage_treats_a_published_zero_as_data(monkeypatch, capsys):
     from sec310_sample.demo.__main__ import stage_observe
 
     monkeypatch.setenv("SEC310_POLICY_ENGINE_ID", "eng-1")
     monkeypatch.delenv("SEC310_GATEWAY_URL", raising=False)
-    code = stage_observe(make_client=lambda svc: _FakeCloudWatch(empty=True))
+    code = stage_observe(make_client=lambda svc: _FakeCloudWatch("zero"))
     out = capsys.readouterr().out
-    assert code == 1 and "no decisions recorded yet" in out and "✔" not in out
+    assert code == 0 and "✔ ALLOW 0   DENY 0" in out and "no decisions recorded yet" not in out
 
 
 def test_observe_stage_needs_the_engine_id(monkeypatch, capsys):
@@ -1453,6 +1723,25 @@ def test_observe_stage_needs_the_engine_id(monkeypatch, capsys):
     monkeypatch.delenv("SEC310_POLICY_ENGINE_ID", raising=False)
     assert stage_observe(make_client=lambda svc: _FakeCloudWatch()) == 2
     assert "set SEC310_POLICY_ENGINE_ID" in capsys.readouterr().out
+
+
+def test_observe_command_reports_a_failed_metric_read_as_stopped(monkeypatch, capsys):
+    # the whole command path: argparse -> stage_observe -> PolicyObserver -> MetricReadError -> exit 2
+    import boto3
+
+    import sec310_sample.demo.__main__ as demo
+
+    monkeypatch.setenv("SEC310_POLICY_ENGINE_ID", "eng-1")
+    monkeypatch.delenv("SEC310_GATEWAY_URL", raising=False)
+    monkeypatch.setattr(boto3, "client", lambda service, **kw: _FakeCloudWatch("error"))
+    code = demo.main(["observe"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert (
+        "✖ observe stage stopped: GetMetricData result allow is InternalError: Err: try later"
+        in out
+    )
+    assert "✔" not in out and "Traceback" not in out
 
 
 @LIVE
