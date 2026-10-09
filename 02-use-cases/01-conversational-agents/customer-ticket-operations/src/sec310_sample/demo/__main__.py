@@ -663,44 +663,56 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
         )
         read, write = "EvidenceTools___read_evidence", "EvidenceTools___update_rule"
         s1, s2 = str(uuid.uuid4()), str(uuid.uuid4())
+        # Each call names the decision kind it must produce. A transport or tool failure is
+        # neither an allow nor a policy denial, so it can never satisfy an expectation.
         script = (
             (
                 "write before any read",
                 write,
                 {"account_id": "acct-a", "rule_id": "rule-42", "enabled": True},
                 s1,
-                False,
+                "policy_denied",
             ),
-            ("read acct-a", read, {"account_id": "acct-a"}, s1, True),
+            ("read acct-a", read, {"account_id": "acct-a"}, s1, "allowed"),
             (
                 "write acct-a after reading it",
                 write,
                 {"account_id": "acct-a", "rule_id": "rule-42", "enabled": True},
                 s1,
-                True,
+                "allowed",
             ),
-            ("read acct-b", read, {"account_id": "acct-b"}, s1, True),
+            ("read acct-b", read, {"account_id": "acct-b"}, s1, "allowed"),
             (
                 "write acct-b after reading it",
                 write,
                 {"account_id": "acct-b", "rule_id": "rule-77", "enabled": False},
                 s1,
-                False,
+                "policy_denied",
             ),
-            ("new session: read acct-b", read, {"account_id": "acct-b"}, s2, True),
+            ("new session: read acct-b", read, {"account_id": "acct-b"}, s2, "allowed"),
             (
                 "new session: write acct-a having read only acct-b",
                 write,
                 {"account_id": "acct-a", "rule_id": "rule-42", "enabled": True},
                 s2,
-                False,
+                "policy_denied",
             ),
-            ("no session id at all", read, {"account_id": "acct-a"}, None, False),
+            ("no session id at all", read, {"account_id": "acct-a"}, None, "invalid_request"),
         )
-        for label, tool, args, session, should_allow in script:
+        labels = {
+            "allowed": "ALLOW",
+            "policy_denied": "DENY (policy)",
+            "invalid_request": "REJECTED (invalid request)",
+        }
+        for label, tool, args, session, expected_kind in script:
             d = gw.call_tool(tool, args, session)
-            outcome = "ALLOW" if d.allowed else "DENY"
-            expect(label, d.allowed == should_allow, f"{outcome}  {d.detail[:110]}")
+            shown = labels.get(d.kind, d.kind.upper())
+            expect(
+                label,
+                d.kind == expected_kind,
+                f"{shown}  {d.detail[:110]}",
+                unavailable=d.kind == "transport",
+            )
         note(
             "Every denial came from the policy engine, before the tool ran. The agent never saw a choice."
         )

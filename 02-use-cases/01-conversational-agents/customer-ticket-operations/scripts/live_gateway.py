@@ -277,7 +277,7 @@ class Live:
         return arn
 
     def engine(self) -> tuple[str, str]:
-        for e in self.ctl.list_policy_engines()["policyEngines"]:
+        for e in self.each(self.ctl, "list_policy_engines", "policyEngines"):
             if e["name"] == ENGINE_NAME:
                 say(f"policy engine {ENGINE_NAME} exists ({e['policyEngineId']})")
                 return e["policyEngineId"], e["policyEngineArn"]
@@ -289,7 +289,7 @@ class Live:
         return e["policyEngineId"], e["policyEngineArn"]
 
     def gateway(self, role_arn: str, engine_arn: str) -> dict:
-        for g in self.ctl.list_gateways()["items"]:
+        for g in self.each(self.ctl, "list_gateways", "items"):
             if g["name"] == GATEWAY_NAME:
                 say(f"gateway {GATEWAY_NAME} exists ({g['gatewayId']})")
                 return self.ctl.get_gateway(gatewayIdentifier=g["gatewayId"])
@@ -310,7 +310,7 @@ class Live:
         return g
 
     def target(self, gateway_id: str, function_arn: str) -> None:
-        for t in self.ctl.list_gateway_targets(gatewayIdentifier=gateway_id)["items"]:
+        for t in self.each(self.ctl, "list_gateway_targets", "items", gatewayIdentifier=gateway_id):
             if t["name"] == TARGET:
                 say(f"target {TARGET} exists")
                 return
@@ -336,7 +336,7 @@ class Live:
 
     def add_policies(self, engine_id: str, gateway_arn: str) -> None:
         existing = {}
-        for p in self.ctl.list_policies(policyEngineId=engine_id)["policies"]:
+        for p in self.each(self.ctl, "list_policies", "policies", policyEngineId=engine_id):
             status = self.ctl.get_policy(policyEngineId=engine_id, policyId=p["policyId"])["status"]
             if status == "ACTIVE":
                 existing[p["name"]] = p["policyId"]
@@ -370,6 +370,11 @@ class Live:
                 f"created {'Dogwood' if kind == 'policy' else 'Cedar'} policy {name} ({p['status']})"
             )
 
+    def each(self, client, operation: str, key: str, **kwargs):
+        """Every page of a list call. A teardown that reads page one only is not a teardown."""
+        for page in client.get_paginator(operation).paginate(**kwargs):
+            yield from page.get(key, [])
+
     def wait_policy(self, engine_id: str, policy_id: str, name: str) -> dict:
         return self.wait(
             lambda: self.ctl.get_policy(policyEngineId=engine_id, policyId=policy_id),
@@ -399,10 +404,10 @@ class Live:
     # -- down --------------------------------------------------------------------------------
     def down(self) -> int:
         say(f"account: {masked(self.account)}  region: {self.region}")
-        for g in self.ctl.list_gateways()["items"]:
+        for g in self.each(self.ctl, "list_gateways", "items"):
             if g["name"] == GATEWAY_NAME:
                 self.remove_gateway(g["gatewayId"], g["name"])
-        for e in self.ctl.list_policy_engines()["policyEngines"]:
+        for e in self.each(self.ctl, "list_policy_engines", "policyEngines"):
             if e["name"].startswith(PREFIX):
                 self.remove_engine(e["policyEngineId"], e["name"])
         self.attempt(
@@ -421,7 +426,7 @@ class Live:
         return 0
 
     def remove_gateway(self, gid: str, name: str) -> None:
-        for t in self.ctl.list_gateway_targets(gatewayIdentifier=gid)["items"]:
+        for t in self.each(self.ctl, "list_gateway_targets", "items", gatewayIdentifier=gid):
             self.remove_target(gid, t["targetId"], t["name"])
         self.attempt(
             f"gateway {name}",
@@ -437,7 +442,7 @@ class Live:
         )
 
     def remove_engine(self, eid: str, name: str) -> None:
-        for p in self.ctl.list_policies(policyEngineId=eid)["policies"]:
+        for p in self.each(self.ctl, "list_policies", "policies", policyEngineId=eid):
             self.remove_policy(eid, p["policyId"], p["name"])
         self.attempt(
             f"policy engine {name}",
@@ -458,9 +463,11 @@ class Live:
         )
 
     def delete_role(self, name: str) -> None:
-        for p in self.iam.list_attached_role_policies(RoleName=name)["AttachedPolicies"]:
+        for p in self.each(
+            self.iam, "list_attached_role_policies", "AttachedPolicies", RoleName=name
+        ):
             self.iam.detach_role_policy(RoleName=name, PolicyArn=p["PolicyArn"])
-        for p in self.iam.list_role_policies(RoleName=name)["PolicyNames"]:
+        for p in self.each(self.iam, "list_role_policies", "PolicyNames", RoleName=name):
             self.iam.delete_role_policy(RoleName=name, PolicyName=p)
         self.iam.delete_role(RoleName=name)
 

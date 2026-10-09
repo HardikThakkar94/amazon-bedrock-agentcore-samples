@@ -368,19 +368,31 @@ class CedarPolicyGate:
 
 @dataclass(frozen=True)
 class GatewayDecision:
-    """One tool call as the gateway decided it."""
+    """One tool call as the gateway decided it, classified so a transport failure can never
+    satisfy an expectation of a policy denial (or of an allow)."""
 
-    allowed: bool
+    kind: str  # allowed | policy_denied | invalid_request | tool_error | transport
     http_status: int
-    detail: str  # tool output when allowed; the gateway's reason when not
+    detail: str  # tool output when allowed; the gateway's reason or the failure otherwise
 
     @property
-    def denied_by_policy(self) -> bool:
-        return not self.allowed and "policy" in self.detail.lower()
+    def allowed(self) -> bool:
+        return self.kind == "allowed"
+
+
+# JSON-RPC error codes the gateway returned on 2026-10-08.
+_POLICY_DENIED = -32002  # "Tool call not allowed due to policy enforcement [...]"
+_INVALID_REQUEST = (
+    -32006
+)  # "Policy Evaluation rejected the request as invalid [sessionId is required ...]"
 
 
 class GatewayClient:
-    """SigV4-signed MCP client for one AgentCore Gateway (AWS_IAM inbound authorization)."""
+    """SigV4-signed MCP client for one AgentCore Gateway (AWS_IAM inbound authorization).
+
+    Only an HTTP 2xx carrying a JSON-RPC ``result`` object counts as a tool outcome; anything
+    else is a transport failure, reported as such. Nothing is retried.
+    """
 
     PROTOCOL_VERSION = "2025-03-26"  # the version the gateway accepted on 2026-10-08
     SESSION_HEADER = "x-amzn-bedrock-agentcore-policy-session-id"
@@ -404,22 +416,36 @@ class GatewayClient:
 
     def list_tools(self, policy_session: str | None) -> list[str]:
         status, body = self._rpc("tools/list", {}, policy_session)
-        if "error" in body:
-            raise RuntimeError(f"tools/list failed ({status}): {body['error']}")
-        return [t["name"] for t in body.get("result", {}).get("tools", [])]
+        if not (200 <= status < 300) or not isinstance(body.get("result"), dict):
+            raise RuntimeError(f"tools/list failed: HTTP {status} {json.dumps(body)[:300]}")
+        tools = body["result"].get("tools")
+        if not isinstance(tools, list):
+            raise RuntimeError(f"tools/list returned no tools list: {json.dumps(body)[:300]}")
+        return [t["name"] for t in tools]
 
     def call_tool(self, name: str, arguments: dict, policy_session: str | None) -> GatewayDecision:
         status, body = self._rpc(
             "tools/call", {"name": name, "arguments": arguments}, policy_session
         )
-        if "error" in body:
-            err = body["error"]
-            return GatewayDecision(False, status, f"{err.get('code')}: {err.get('message', '')}")
-        result = body.get("result", {})
+        error = body.get("error")
+        if isinstance(error, dict):
+            code, message = error.get("code"), str(error.get("message", ""))
+            if code == _POLICY_DENIED:
+                kind = "policy_denied"
+            elif code == _INVALID_REQUEST:
+                kind = "invalid_request"
+            else:
+                kind = "transport"
+            return GatewayDecision(kind, status, f"{code}: {message}")
+        result = body.get("result")
+        if not (200 <= status < 300) or not isinstance(result, dict) or "isError" not in result:
+            return GatewayDecision("transport", status, f"HTTP {status} {json.dumps(body)[:200]}")
         text = " ".join(
             c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"
         )
-        return GatewayDecision(not result.get("isError", False), status, text or json.dumps(result))
+        if result["isError"]:
+            return GatewayDecision("tool_error", status, text or json.dumps(result))
+        return GatewayDecision("allowed", status, text or json.dumps(result))
 
     # -- plumbing -----------------------------------------------------------------------------
     def _rpc(self, method: str, params: dict, policy_session: str | None) -> tuple[int, dict]:

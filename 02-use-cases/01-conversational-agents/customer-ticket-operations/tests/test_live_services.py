@@ -968,7 +968,12 @@ class TestGatewayClient:
         send = _gateway_transport([(200, _ok('{"status":"ok"}'))])
         gw = GatewayClient("https://example.invalid/mcp", transport=send)
         d = gw.call_tool("EvidenceTools___update_rule", {"account_id": "acct-a"}, "session-1")
-        assert d.allowed and d.http_status == 200 and d.detail == '{"status":"ok"}'
+        assert (
+            d.allowed
+            and d.kind == "allowed"
+            and d.http_status == 200
+            and d.detail == '{"status":"ok"}'
+        )
         req = send.seen[0]
         assert req["headers"]["X-amzn-bedrock-agentcore-policy-session-id"] == "session-1"
         assert req["headers"]["Mcp-protocol-version"] == "2025-03-26"
@@ -978,7 +983,7 @@ class TestGatewayClient:
             "arguments": {"account_id": "acct-a"},
         }
 
-    def test_policy_denial_is_reported_not_retried(self):
+    def test_policy_denial_is_classified_and_not_retried(self):
         send = _gateway_transport(
             [
                 (
@@ -993,21 +998,29 @@ class TestGatewayClient:
         d = GatewayClient("https://example.invalid/mcp", transport=send).call_tool(
             "EvidenceTools___update_rule", {}, "s"
         )
-        assert not d.allowed and d.denied_by_policy
+        assert d.kind == "policy_denied" and not d.allowed
         assert d.detail.startswith("-32002: Tool Execution Denied")
         assert len(send.seen) == 1  # one request, no retry
 
-    def test_missing_session_header_is_omitted_and_rejection_surfaces(self):
+    def test_missing_session_is_an_invalid_request_not_a_policy_denial(self):
         send = _gateway_transport(
-            [(200, _denied(-32006, "sessionId is required when temporal policies are enabled"))]
+            [
+                (
+                    200,
+                    _denied(
+                        -32006,
+                        "Tool Execution Denied: Policy Evaluation rejected the request as invalid [sessionId is required when temporal policies are enabled]",
+                    ),
+                )
+            ]
         )
         d = GatewayClient("https://example.invalid/mcp", transport=send).call_tool(
             "EvidenceTools___read_evidence", {}, None
         )
-        assert not d.allowed and "sessionId is required" in d.detail
+        assert d.kind == "invalid_request" and "sessionId is required" in d.detail
         assert "X-amzn-bedrock-agentcore-policy-session-id" not in send.seen[0]["headers"]
 
-    def test_tool_error_is_not_allowed(self):
+    def test_tool_error_is_its_own_kind(self):
         body = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -1016,16 +1029,44 @@ class TestGatewayClient:
         d = GatewayClient(
             "https://example.invalid/mcp", transport=_gateway_transport([(200, body)])
         ).call_tool("t", {}, "s")
-        assert not d.allowed and d.detail == "boom" and not d.denied_by_policy
+        assert d.kind == "tool_error" and not d.allowed and d.detail == "boom"
 
-    def test_non_json_body_becomes_an_error_decision(self):
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (403, {}),  # the reviewer's reproduction: an empty body on a 403 used to read as ALLOW
+            (403, {"message": "Forbidden"}),
+            (502, {"message": "bad gateway"}),
+            (200, {}),  # no result object at all
+            (
+                200,
+                {"jsonrpc": "2.0", "id": 1, "result": {}},
+            ),  # a result with no isError is not an outcome
+            (200, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "internal"}}),
+        ],
+        ids=[
+            "403-empty",
+            "403-forbidden",
+            "502",
+            "200-empty",
+            "200-result-without-isError",
+            "other-jsonrpc-error",
+        ],
+    )
+    def test_anything_that_is_not_a_decision_is_transport(self, status, body):
+        d = GatewayClient(
+            "https://example.invalid/mcp", transport=_gateway_transport([(status, body)])
+        ).call_tool("t", {}, "s")
+        assert d.kind == "transport" and not d.allowed, d
+
+    def test_non_json_body_is_transport(self):
         def send(request):
             return 502, b"<html>bad gateway</html>"
 
         d = GatewayClient("https://example.invalid/mcp", transport=send).call_tool("t", {}, "s")
-        assert not d.allowed and d.http_status == 502 and "bad gateway" in d.detail
+        assert d.kind == "transport" and d.http_status == 502 and "bad gateway" in d.detail
 
-    def test_list_tools(self):
+    def test_list_tools_raises_on_anything_but_a_tools_list(self):
         body = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -1034,21 +1075,31 @@ class TestGatewayClient:
         assert GatewayClient(
             "https://example.invalid/mcp", transport=_gateway_transport([(200, body)])
         ).list_tools("s") == ["A___x", "A___y"]
-        with pytest.raises(RuntimeError, match="tools/list failed"):
-            GatewayClient(
-                "https://example.invalid/mcp",
-                transport=_gateway_transport([(403, _denied(-32000, "nope"))]),
-            ).list_tools("s")
+        for status, bad in (
+            (403, _denied(-32000, "nope")),
+            (403, {}),
+            (200, {}),
+            (200, {"jsonrpc": "2.0", "id": 1, "result": {}}),
+        ):
+            with pytest.raises(RuntimeError, match="tools/list"):
+                GatewayClient(
+                    "https://example.invalid/mcp", transport=_gateway_transport([(status, bad)])
+                ).list_tools("s")
 
 
 class _FakeGateway:
     """Replays the policy engine's decisions for the stage's script: a forbid outside acct-a and a
     'read the same account first' temporal permit, per policy session."""
 
-    def __init__(self, *, deny_everything=False, allow_everything=False):
+    def __init__(
+        self, *, deny_everything=False, allow_everything=False, outage_instead_of_deny=False
+    ):
         self.reads: dict[str, set[str]] = {}
         self.deny_everything = deny_everything
         self.allow_everything = allow_everything
+        self.outage_instead_of_deny = (
+            outage_instead_of_deny  # a 503 where the engine would have denied
+        )
 
     def __call__(self, request):
         body = json.loads(request.data.decode())
@@ -1096,6 +1147,8 @@ class _FakeGateway:
                 -32002,
                 "Tool Execution Denied: Tool call not allowed due to policy enforcement [No policy applies to the request (denied by default).]",
             )
+        if self.outage_instead_of_deny and "error" in verdict:
+            return 503, b"<html>Service Unavailable</html>"
         return 200, json.dumps(verdict).encode()
 
 
@@ -1111,18 +1164,20 @@ def test_stage_enforcement_script_passes_against_a_faithful_gateway(monkeypatch,
     )
     assert code == 0, out
     for line in (
-        "✔ write before any read: DENY",
+        "✔ write before any read: DENY (policy)",
         "✔ read acct-a: ALLOW",
         "✔ write acct-a after reading it: ALLOW",
-        "✔ write acct-b after reading it: DENY",
-        "✔ new session: write acct-a having read only acct-b: DENY",
-        "✔ no session id at all: DENY",
+        "✔ write acct-b after reading it: DENY (policy)",
+        "✔ new session: write acct-a having read only acct-b: DENY (policy)",
+        "✔ no session id at all: REJECTED (invalid request)",
     ):
         assert line in out, line
     assert "every configured live check passed" in out
 
 
-@pytest.mark.parametrize("behaviour", ["allow_everything", "deny_everything"])
+@pytest.mark.parametrize(
+    "behaviour", ["allow_everything", "deny_everything", "outage_instead_of_deny"]
+)
 def test_stage_fails_when_the_gateway_decides_differently(monkeypatch, capsys, behaviour):
     import sec310_sample.live as live
 
@@ -1134,7 +1189,14 @@ def test_stage_fails_when_the_gateway_decides_differently(monkeypatch, capsys, b
         monkeypatch, capsys, _Fake(), env={"SEC310_GATEWAY_URL": "https://example.invalid/mcp"}
     )
     assert code == 1, out
-    assert "(unexpected)" in out and "every configured live check passed" not in out
+    assert "every configured live check passed" not in out
+    if behaviour == "outage_instead_of_deny":
+        # a 503 where a denial was expected is UNAVAILABLE, never a satisfied DENY
+        assert (
+            "✖ write before any read: UNAVAILABLE" in out and "✔ write before any read" not in out
+        )
+    else:
+        assert "(unexpected)" in out
 
 
 @LIVE
