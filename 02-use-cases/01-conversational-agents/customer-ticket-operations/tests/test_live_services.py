@@ -473,6 +473,35 @@ class TestBedrockModel:
             list(model.stream("p"))
         assert client.choices == [{"tool": {"name": "respond"}}, {"auto": {}}, {"auto": {}}]
 
+    def test_a_failed_auto_retry_propagates_without_a_third_attempt(self):
+        # the relaxed retry itself fails: that failure is the caller's, and no further retry happens
+        from botocore.exceptions import ClientError
+
+        from sec310_sample.model import BedrockModel
+
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            stub.add_client_error(
+                "converse",
+                service_error_code="ValidationException",
+                service_message='tool_choice: type "tool" and "any" are not supported for this model.',
+            )
+            stub.add_client_error(
+                "converse",
+                service_error_code="ThrottlingException",
+                service_message="Too many requests",
+                expected_params={
+                    "modelId": "test-model",
+                    "system": ANY,
+                    "messages": ANY,
+                    "inferenceConfig": ANY,
+                    "toolConfig": {"tools": ANY, "toolChoice": {"auto": {}}},
+                },
+            )
+            with pytest.raises(ClientError, match="Too many requests"):
+                BedrockModel(model_id="test-model", client=client).complete("p")
+            stub.assert_no_pending_responses()  # exactly two calls: forced, then auto
+
 
 class TestCedarPolicyGate:
     def test_provision_waits_for_engine_active(self):
