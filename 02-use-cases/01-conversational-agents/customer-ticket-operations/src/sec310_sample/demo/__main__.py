@@ -102,11 +102,50 @@ class World:
 
 
 # -- stages -----------------------------------------------------------------------------------
+def _v0_beat(agent: UnsafeAgent, store: EvidenceStore, request: dict) -> None:
+    """One v0 request, reported as it happened: what ran, what reached the UI, what changed."""
+    acct_b_before = store.rules("acct-b")
+    try:
+        result = agent.handle(request)
+    except Exception as exc:  # noqa: BLE001 - v0 has no output contract; a live model can break it
+        denied(f"v0 crashed on the model's output: {type(exc).__name__}: {str(exc)[:120]}")
+        note(
+            "No schema, no validation, no failure policy: a prototype that works until the model varies."
+        )
+        return
+
+    step("The agent answered...")
+    ok(result["answer"])
+    step("...and also did this:")
+    for action in result["executed"]:
+        denied(
+            f"{action['operation']} {action.get('account_id')} {action.get('resource_id', '')} → {action['status']}"
+        )
+    denied(f"links returned to the UI: {result['links']}")
+    smuggled = [link for link in result["links"] if str(link).startswith(("http://", "https://"))]
+    acct_b_after = store.rules("acct-b")
+    if acct_b_after != acct_b_before:
+        denied(f"acct-b rules now: {acct_b_after}   (tenant-b never saw this coming)")
+    else:
+        ok(f"acct-b rules now: {acct_b_after}   (unchanged)")
+    if smuggled:
+        denied(
+            f"an absolute URL from the evidence is now a clickable link in the UI: {smuggled}   "
+            "(the sample's own links are relative paths; nothing in the code looked at this one)"
+        )
+    if acct_b_after == acct_b_before and not smuggled:
+        note(
+            "This model did not act on the injected instruction. Nothing in the code would have "
+            "stopped it; whether it happens is up to the model."
+        )
+
+
 def stage_unsafe(model: Model, guardrail: Guardrail) -> None:
     banner("v0  The dangerous success: a prototype that works, and follows anything it reads")
     store = EvidenceStore.from_fixture()
     store.add_finding("acct-a", fixture("indirect-injection")["poisoned_finding"])
     agent = UnsafeAgent(model, store)
+    note(f"model: {model.version}")
 
     step("Alice (tenant-a) asks an honest question about her own account")
     show("request", fixture("indirect-injection")["request"])
@@ -115,34 +154,13 @@ def stage_unsafe(model: Model, guardrail: Guardrail) -> None:
         "acct-b belongs to tenant-b and currently has rule-77: "
         + json.dumps(store.rule("acct-b", "rule-77"))
     )
-    acct_b_before = store.rules("acct-b")
+    _v0_beat(agent, store, fixture("indirect-injection")["request"])
 
-    try:
-        result = agent.handle(fixture("indirect-injection")["request"])
-    except Exception as exc:  # noqa: BLE001 - v0 has no output contract; a live model can break it
-        denied(f"v0 crashed on the model's output: {type(exc).__name__}: {str(exc)[:120]}")
-        note(
-            "No schema, no validation, no failure policy: a prototype that works until the model varies."
-        )
-        return
-
-    step("The agent answered correctly...")
-    ok(result["answer"])
-    step("...and also did this:")
-    for action in result["executed"]:
-        denied(
-            f"{action['operation']} {action.get('account_id')} {action.get('resource_id', '')} → {action['status']}"
-        )
-    denied(f"links returned to the UI: {result['links']}")
-    acct_b_after = store.rules("acct-b")
-    if acct_b_after != acct_b_before:
-        denied(f"acct-b rules now: {acct_b_after}   (tenant-b never saw this coming)")
-    else:
-        ok(f"acct-b rules now: {acct_b_after}   (unchanged)")
-        note(
-            "This model did not act on the injected instruction. Nothing in the code would have "
-            "stopped it; whether it happens is up to the model."
-        )
+    step("Then a caller who is not honest: clean evidence, the instruction in the question itself")
+    show("request", fixture("direct-injection")["request"])
+    note("v0 trusts tenant_id from the body and hands the model's actions to one wide credential")
+    fresh = EvidenceStore.from_fixture()  # rule-77 is back; nothing poisoned this time
+    _v0_beat(UnsafeAgent(model, fresh), fresh, fixture("direct-injection")["request"])
     note(
         "Nothing was 'hacked'. Identity came from the body, tool data went in raw, and code obeyed the model."
     )

@@ -137,14 +137,44 @@ def _response_tool() -> dict:
     }
 
 
-def _rejects_forced_tool_choice(exc: BaseException) -> bool:
+_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*\})\s*```", re.DOTALL)
+_FORCED_TOOL_CHOICE = {"tool": {"name": "respond"}}
+_AUTO_TOOL_CHOICE = {"auto": {}}
+
+
+def _validation_message(exc: BaseException) -> str:
     response = getattr(exc, "response", None)
-    if (
-        not isinstance(response, dict)
-        or response.get("Error", {}).get("Code") != "ValidationException"
-    ):
-        return False
-    return "tool_choice" in str(response.get("Error", {}).get("Message", ""))
+    if not isinstance(response, dict):
+        return ""
+    error = response.get("Error", {})
+    if error.get("Code") != "ValidationException":
+        return ""
+    return str(error.get("Message", ""))
+
+
+def _rejects_forced_tool_choice(exc: BaseException) -> bool:
+    # Opus 5.5: 'tool_choice: type "tool" and "any" are not supported for this model.'
+    # Palmyra X4, Llama 4 Maverick: "This model doesn't support the toolConfig.toolChoice.tool field."
+    message = _validation_message(exc)
+    return "tool_choice" in message or "toolChoice.tool" in message
+
+
+def _rejects_tool_use(exc: BaseException) -> bool:
+    # Llama 3 8B, Mixtral: "This model doesn't support tool use."
+    return "doesn't support tool use" in _validation_message(exc)
+
+
+def _rejects_system_messages(exc: BaseException) -> bool:
+    # Mixtral 8x7B, Mistral 7B: "This model doesn't support system messages."
+    return "doesn't support system messages" in _validation_message(exc)
+
+
+def _unfence(text: str) -> str:
+    """Models that answer in text often wrap the JSON in a code fence. The fence is transport
+    noise, not content: hand the parser the object inside it. Anything else goes through
+    untouched, so a reply that is not JSON is still reported as malformed, not guessed at."""
+    match = _FENCE_RE.search(text)
+    return match.group(1) if match else text.strip()
 
 
 class BedrockModel:
@@ -154,6 +184,12 @@ class BedrockModel:
     credentials come from the normal AWS SDK chain. Nothing here can mutate state. The response
     shape is requested with a forced tool call; ``complete``/``stream`` return its JSON input as
     text so the rest of the sample treats the live model exactly like the scripted one.
+
+    Not every model on Bedrock accepts the same request (observed 2026-10-09): some reject a
+    forced tool choice but call the offered tool under ``auto``; some reject tools altogether and
+    answer in text; some reject system messages. The adapter starts strict and relaxes one
+    capability at a time, only when the service names it in a ``ValidationException``, and keeps
+    the relaxed shape for the rest of the instance. Any other error propagates.
     """
 
     def __init__(self, model_id: str | None = None, client=None) -> None:
@@ -166,31 +202,46 @@ class BedrockModel:
 
             client = boto3.client("bedrock-runtime")
         self._client = client
-        # Some models (Opus 5.5, observed 2026-10-09) reject a forced tool choice with a
-        # ValidationException; they still call the one offered tool under "auto". The adapter
-        # starts strict and relaxes only after the service says so, once per instance.
-        self._tool_choice: dict = {"tool": {"name": "respond"}}
+        self._tool_choice: dict | None = _FORCED_TOOL_CHOICE  # None: no tools offered
+        self._system_in_message = False
 
     def _request(self, prompt: str) -> dict:
-        return {
+        request = {
             "modelId": self.model_id,
-            "system": [{"text": _SYSTEM}],
             "messages": [{"role": "user", "content": [{"text": prompt}]}],
-            "toolConfig": {"tools": [_response_tool()], "toolChoice": self._tool_choice},
             # maxTokens only: some models reject sampling parameters such as temperature. 800 was
             # too small for Sonnet 5 / Opus 5 (observed 2026-10-09: the tool input came back
             # truncated to {} with stopReason max_tokens); 2000 leaves room for a long answer.
             "inferenceConfig": {"maxTokens": 2000},
         }
+        if self._system_in_message:
+            request["messages"][0]["content"][0]["text"] = f"{_SYSTEM}\n\n{prompt}"
+        else:
+            request["system"] = [{"text": _SYSTEM}]
+        if self._tool_choice is not None:
+            request["toolConfig"] = {"tools": [_response_tool()], "toolChoice": self._tool_choice}
+        return request
+
+    def _relax(self, exc: BaseException) -> bool:
+        """Drop exactly one capability the service just rejected. False: nothing to relax."""
+        if _rejects_system_messages(exc) and not self._system_in_message:
+            self._system_in_message = True
+            return True
+        if _rejects_tool_use(exc) and self._tool_choice is not None:
+            self._tool_choice = None
+            return True
+        if _rejects_forced_tool_choice(exc) and self._tool_choice == _FORCED_TOOL_CHOICE:
+            self._tool_choice = _AUTO_TOOL_CHOICE
+            return True
+        return False
 
     def _call(self, operation, prompt: str):
-        try:
-            return operation(**self._request(prompt))
-        except Exception as exc:  # noqa: BLE001 - only the documented tool_choice rejection is handled
-            if _rejects_forced_tool_choice(exc) and self._tool_choice != {"auto": {}}:
-                self._tool_choice = {"auto": {}}
+        while True:
+            try:
                 return operation(**self._request(prompt))
-            raise
+            except Exception as exc:  # noqa: BLE001 - only the named capability rejections are handled
+                if not self._relax(exc):
+                    raise
 
     def complete(self, prompt: str) -> str:
         resp = self._call(self._client.converse, prompt)
@@ -202,15 +253,27 @@ class BedrockModel:
         for block in blocks:
             if "toolUse" in block:
                 return json.dumps(block["toolUse"]["input"])
-        # No tool call despite the forced choice: hand back whatever text came, so the strict
-        # parser reports it as malformed rather than this adapter guessing.
-        return "".join(block.get("text", "") for block in blocks)
+        # No tool call: the model answered in text (no tool support, or it ignored the forced
+        # choice, as Gemma does). Strip a code fence; anything else reaches the parser as is.
+        return _unfence("".join(block.get("text", "") for block in blocks))
 
     def stream(self, prompt: str) -> Iterator[str]:
         resp = self._call(self._client.converse_stream, prompt)
+        text_parts: list[str] = []
+        saw_tool = False
+        stop_reason = None
         for event in resp["stream"]:
             delta = event.get("contentBlockDelta", {}).get("delta", {})
             if "toolUse" in delta:
+                saw_tool = True
                 yield delta["toolUse"]["input"]
             elif "text" in delta:
-                yield delta["text"]
+                text_parts.append(delta["text"])
+            if "messageStop" in event:
+                stop_reason = event["messageStop"].get("stopReason")
+        if stop_reason == "max_tokens":
+            yield f"<model output truncated: stopReason={stop_reason}>"
+        elif not saw_tool and text_parts:
+            # Text answers are buffered so a code fence can be stripped; the consumer gates the
+            # whole reply before showing any of it, so nothing is lost by yielding it at the end.
+            yield _unfence("".join(text_parts))

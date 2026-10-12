@@ -473,6 +473,173 @@ class TestBedrockModel:
             list(model.stream("p"))
         assert client.choices == [{"tool": {"name": "respond"}}, {"auto": {}}, {"auto": {}}]
 
+    def _text_response(self, text: str, stop="end_turn") -> dict:
+        return {
+            "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
+            "stopReason": stop,
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+            "metrics": {"latencyMs": 1},
+        }
+
+    def _validation(self, stub, message):
+        stub.add_client_error(
+            "converse", service_error_code="ValidationException", service_message=message
+        )
+
+    def test_a_fenced_text_answer_is_unwrapped_but_prose_is_not(self):
+        # Gemma 3 ignores the forced tool choice and answers in a ```json fence (observed 2026-10-09).
+        from sec310_sample.model import BedrockModel
+        from sec310_sample.schemas import parse_model_output
+
+        client = _runtime_client()
+        payload = '{"answer": "ok", "proposed_actions": [], "links": ["https://exfil.example.net/collect?case=7"]}'
+        with Stubber(client) as stub:
+            stub.add_response(
+                "converse", self._text_response(f"Here you go:\n```json\n{payload}\n```\n")
+            )
+            stub.add_response("converse", self._text_response("I cannot help with that."))
+            model = BedrockModel(model_id="test-model", client=client)
+            assert json.loads(model.complete("p"))["links"] == [
+                "https://exfil.example.net/collect?case=7"
+            ]
+            prose = model.complete("p")
+        assert prose == "I cannot help with that."
+        with pytest.raises(Exception, match="malformed_output"):
+            parse_model_output(prose)
+
+    def test_the_palmyra_shaped_tool_choice_rejection_falls_back_to_auto(self):
+        from sec310_sample.model import BedrockModel
+
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            self._validation(
+                stub,
+                "This model doesn't support the toolConfig.toolChoice.tool field. Remove toolConfig.toolChoice.tool and try again.",
+            )
+            stub.add_response(
+                "converse",
+                self._tool_use_response({"answer": "ok", "proposed_actions": [], "links": []}),
+                expected_params={
+                    "modelId": ANY,
+                    "system": ANY,
+                    "messages": ANY,
+                    "inferenceConfig": ANY,
+                    "toolConfig": {"tools": ANY, "toolChoice": {"auto": {}}},
+                },
+            )
+            assert (
+                json.loads(BedrockModel(model_id="test-model", client=client).complete("p"))[
+                    "answer"
+                ]
+                == "ok"
+            )
+            stub.assert_no_pending_responses()
+
+    def test_no_tool_support_drops_tools_and_keeps_the_system_prompt(self):
+        # Llama 3 8B: "This model doesn't support tool use." The answer then comes as text.
+        from sec310_sample.model import BedrockModel
+
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            self._validation(stub, "This model doesn't support tool use.")
+            stub.add_response(
+                "converse",
+                self._text_response('{"answer": "text", "proposed_actions": [], "links": []}'),
+                expected_params={
+                    "modelId": "test-model",
+                    "system": [{"text": ANY}],
+                    "messages": ANY,
+                    "inferenceConfig": ANY,
+                },
+            )
+            stub.add_response(
+                "converse",
+                self._text_response('{"answer": "again", "proposed_actions": [], "links": []}'),
+                expected_params={
+                    "modelId": "test-model",
+                    "system": [{"text": ANY}],
+                    "messages": ANY,
+                    "inferenceConfig": ANY,
+                },
+            )
+            model = BedrockModel(model_id="test-model", client=client)
+            assert json.loads(model.complete("p"))["answer"] == "text"
+            assert (
+                json.loads(model.complete("p"))["answer"] == "again"
+            )  # sticky: no tools offered again
+            stub.assert_no_pending_responses()
+
+    def test_no_system_support_folds_the_system_prompt_into_the_message_then_drops_tools(self):
+        # Mixtral 8x7B rejects system messages first and tools second; each relaxation happens once.
+        from sec310_sample.model import _SYSTEM, BedrockModel
+
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            self._validation(
+                stub,
+                "This model doesn't support system messages. Try again without a system message or use a model that supports system messages.",
+            )
+            self._validation(stub, "This model doesn't support tool use.")
+            stub.add_response(
+                "converse",
+                self._text_response('{"answer": "mixtral", "proposed_actions": [], "links": []}'),
+                expected_params={
+                    "modelId": "test-model",
+                    "messages": [
+                        {"role": "user", "content": [{"text": f"{_SYSTEM}\n\nthe prompt"}]}
+                    ],
+                    "inferenceConfig": ANY,
+                },
+            )
+            model = BedrockModel(model_id="test-model", client=client)
+            assert json.loads(model.complete("the prompt"))["answer"] == "mixtral"
+            stub.assert_no_pending_responses()
+
+    def test_the_same_rejection_twice_is_not_retried_forever(self):
+        from botocore.exceptions import ClientError
+
+        from sec310_sample.model import BedrockModel
+
+        client = _runtime_client()
+        with Stubber(client) as stub:
+            self._validation(stub, "This model doesn't support tool use.")
+            self._validation(stub, "This model doesn't support tool use.")
+            with pytest.raises(ClientError, match="tool use"):
+                BedrockModel(model_id="test-model", client=client).complete("p")
+            stub.assert_no_pending_responses()  # exactly two calls: strict, then relaxed once
+
+    def test_stream_buffers_a_fenced_text_answer_and_marks_truncation(self):
+        from sec310_sample.model import BedrockModel
+
+        def events(chunks, stop):
+            yield {"messageStart": {"role": "assistant"}}
+            for c in chunks:
+                yield {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": c}}}
+            yield {"contentBlockStop": {"contentBlockIndex": 0}}
+            yield {"messageStop": {"stopReason": stop}}
+
+        class Client:
+            def __init__(self, chunks, stop):
+                self.chunks, self.stop = chunks, stop
+
+            def converse_stream(self, **kwargs):
+                return {"stream": events(self.chunks, self.stop)}
+
+        fenced = list(
+            BedrockModel(
+                model_id="m",
+                client=Client(
+                    ['```json\n{"answer": ', '"ok", "proposed_actions": [], "links": []}\n```'],
+                    "end_turn",
+                ),
+            ).stream("p")
+        )
+        assert fenced == ['{"answer": "ok", "proposed_actions": [], "links": []}']
+        truncated = "".join(
+            BedrockModel(model_id="m", client=Client(['{"answer": "cut'], "max_tokens")).stream("p")
+        )
+        assert "<model output truncated: stopReason=max_tokens>" in truncated
+
     def test_a_failed_auto_retry_propagates_without_a_third_attempt(self):
         # the relaxed retry itself fails: that failure is the caller's, and no further retry happens
         from botocore.exceptions import ClientError

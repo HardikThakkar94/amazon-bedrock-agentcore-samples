@@ -23,7 +23,20 @@ class GodModeClient:
         }
 
     def execute(self, action: dict[str, Any]) -> dict[str, Any]:
-        """Run whatever the model asked for. No policy, no confirmation, no audit."""
+        """Run whatever the model asked for. No policy, no confirmation, no audit. An action the
+        store cannot apply is recorded and skipped, the way a first prototype's try/except would;
+        the next action still runs."""
+        try:
+            return self._execute(action)
+        except Exception as exc:  # noqa: BLE001 - v0 swallows errors; that is part of what it gets wrong
+            return {
+                "operation": action.get("operation"),
+                "account_id": action.get("account_id", ""),
+                "resource_id": action.get("resource_id", ""),
+                "status": f"error: {type(exc).__name__}: {exc}",
+            }
+
+    def _execute(self, action: dict[str, Any]) -> dict[str, Any]:
         op = action.get("operation")
         account_id = action.get("account_id", "")
         resource_id = action.get("resource_id", "")

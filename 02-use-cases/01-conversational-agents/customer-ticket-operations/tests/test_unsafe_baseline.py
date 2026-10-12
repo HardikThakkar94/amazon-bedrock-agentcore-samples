@@ -49,3 +49,26 @@ def test_unsafe_agent_trusts_tenant_from_body(store, model):
     result = agent.handle(request)
 
     assert "acct-a" in result["answer"]  # cross-tenant read, no error
+
+
+def test_godmode_records_an_action_it_cannot_apply_and_keeps_going(store):
+    # A live model may send `change: true` where a dict is expected (Gemma 3, 2026-10-09). v0 has
+    # no schema, so it records the failure the way a prototype's try/except would and still runs
+    # the next action: the delete still lands.
+    from sec310_sample.tools.godmode import GodModeClient
+
+    client = GodModeClient(store)
+    bad = client.execute(
+        {
+            "operation": "update_rule",
+            "account_id": "acct-a",
+            "resource_id": "rule-42",
+            "change": True,
+        }
+    )
+    assert bad["status"].startswith("error: ")
+    assert store.rules("acct-a")["rule-42"]["enabled"] is False  # untouched
+    good = client.execute(
+        {"operation": "delete_rule", "account_id": "acct-b", "resource_id": "rule-77"}
+    )
+    assert good["status"] == "executed" and "rule-77" not in store.rules("acct-b")
