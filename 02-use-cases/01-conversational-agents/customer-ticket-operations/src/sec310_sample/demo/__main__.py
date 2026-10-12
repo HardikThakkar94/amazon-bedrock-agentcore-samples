@@ -283,7 +283,7 @@ def stage_tools(model: Model, guardrail: Guardrail) -> None:
         note(
             f"the model proposed no update_rule (status={result.status}, notes={list(result.notes)})"
         )
-        note("continuing with the scripted proposal so the gateway path can be shown")
+        note("testing the gateway with an operator-authored plan (not model output)")
         plan = ActionPlan(
             operation=Operation.UPDATE_RULE,
             account_id="acct-a",
@@ -299,12 +299,19 @@ def stage_tools(model: Model, guardrail: Guardrail) -> None:
 
     step("A confirmation is bound to this identity and this exact plan")
     confirmation = Confirmation(action_digest(ALICE, plan), "alice")
-    done = gw.execute(ALICE, plan, confirmation)
-    ok(f"status={done.status}  rule-42 → {done.payload}")
-    replay = gw.execute(ALICE, plan, confirmation)
-    ok(
-        f"client retried the same confirmed action → status={replay.status}, mutations={len(world.store.mutation_log)}"
-    )
+    try:
+        done = gw.execute(ALICE, plan, confirmation)
+    except PolicyRejected as exc:
+        denied(f"confirmed proposal still rejected by current-state validation: {exc}")
+        note(
+            f"mutations={len(world.store.mutation_log)}; confirmation is not permission to bypass state checks"
+        )
+    else:
+        ok(f"status={done.status}  rule-42 → {done.payload}")
+        replay = gw.execute(ALICE, plan, confirmation)
+        ok(
+            f"client retried the same confirmed action → status={replay.status}, mutations={len(world.store.mutation_log)}"
+        )
     ok(f"audit chain intact: {gw.audit.verify_chain()}  records={len(gw.audit)}")
 
     step(
@@ -324,8 +331,10 @@ def stage_tools(model: Model, guardrail: Guardrail) -> None:
     fresh = World(model, guardrail)
     try:
         fresh.gateway.execute(carol, plan, Confirmation(action_digest(carol, plan), "carol"))
-    except AuthorizationError as exc:
+    except (AuthorizationError, PolicyRejected) as exc:
         denied(f"{exc}")
+        if isinstance(exc, PolicyRejected):
+            note("this plan was rejected by state validation before reaching the capability check")
     note(
         "The model selects among capabilities. Deterministic code decides which capabilities exist."
     )
@@ -755,48 +764,136 @@ def stage_live(make_client: Callable[[str], object] | None = None) -> int:
 
 
 def stage_observe(make_client: Callable[[str], object] | None = None) -> int:
-    """What happened? Ask the platform. AgentCore Policy publishes its decisions to CloudWatch
-    by default, per engine and per policy: the hashed decision events of Patch 5, emitted for you.
-    Metrics lag the calls by a few minutes, so this runs after `live`, not inside it.
-    Exit 0 with counts; 1 when no datapoint exists in the window yet; 2 without an engine id;
-    an incomplete or failed CloudWatch answer raises and is reported as the stage stopping."""
-    banner("Observe  The platform's own record of what the policy engine decided")
+    """Read the platform's own records, not reconstructed agent-side events.
+
+    Configured sections must have data: exit 1 while delivery lags, 2 with nothing configured
+    or an operational failure (caught by main), 0 when all configured sections were read.
+    Full prompts/answers live in the console; the terminal shows only safe metadata and flags.
+    """
+    import os
+
+    from sec310_sample.live import (
+        GatewayLogReader,
+        GuardrailObserver,
+        InvocationLogReader,
+        PolicyObserver,
+        ar_guardrail_id,
+        gateway_id_from_url,
+        gateway_log_group,
+        gateway_url,
+        invocation_log_group,
+        policy_engine_id,
+    )
+
+    banner("Observe  What the platform recorded (last 3 hours; delivery is delayed)")
     if make_client is None:
         import boto3
 
         make_client = boto3.client
-    from sec310_sample.live import (
-        PolicyObserver,
-        gateway_id_from_url,
-        gateway_url,
-        policy_engine_id,
-    )
-
     engine = policy_engine_id()
-    if not engine:
-        denied("set SEC310_POLICY_ENGINE_ID (printed by `scripts/live_gateway.py up`)")
-        return 2
-    gateway = gateway_id_from_url(gateway_url())
-    counts = PolicyObserver(client=make_client("cloudwatch")).decisions(engine, gateway_id=gateway)
-    step(f"AWS/Bedrock-AgentCore · AuthorizeAction · engine {engine} · last 3 hours")
-    if counts.datapoints == 0:
-        note(
-            "no decisions recorded yet: CloudWatch metrics lag by a few minutes; run this again shortly"
+    invocation_group, gateway_group = invocation_log_group(), gateway_log_group()
+    guardrail_ids = (
+        list(
+            dict.fromkeys(
+                g for g in (os.environ.get("SEC310_GUARDRAIL_ID"), ar_guardrail_id()) if g
+            )
         )
-        return 1
-    ok(
-        f"ALLOW {counts.allow}   DENY {counts.deny}   of which deny-by-default (no determining policy) {counts.no_determining_policy}"
+        if os.environ.get("SEC310_OBSERVE_GUARDRAILS") == "1"
+        else []
     )
-    step(f"Per policy: which rule made each decision{f' on gateway {gateway}' if gateway else ''}")
-    for policy_id, c in sorted(counts.by_policy.items()):
-        note(f"{policy_id:<44} allow={c['allow']:<4} deny={c['deny']}")
-    note(
-        "Same shape as the sample's DecisionEvent: who decided, what, how often. Nobody had to instrument the agent."
-    )
-    note(
-        "Per-request detail (reason, determining policies, temporal latency) is in the gateway's traces when enabled."
-    )
-    return 0
+    if not any((engine, invocation_group, gateway_group, guardrail_ids)):
+        denied("set SEC310_POLICY_ENGINE_ID or source exports from scripts/live_logging.py up")
+        return 2
+    missing = False
+
+    if invocation_group:
+        step(f"Bedrock invocation logs · {invocation_group}")
+        records = InvocationLogReader(make_client("logs")).records(
+            invocation_group, run_id=os.environ.get("SEC310_RUN_ID")
+        )
+        if not records:
+            note(
+                "no matching invocation records yet; run a live model call and retry after delivery"
+            )
+            missing = True
+        else:
+            ok(f"{len(records)} recorded API attempts; showing the latest 12")
+            for r in records[-12:]:
+                note(f"{r.timestamp} {r.model_id} {r.operation} stop={r.stop_reason}")
+                if r.error_code:
+                    note(f"  service error={r.error_code}; no model answer or token usage recorded")
+                else:
+                    note(f"  tokens in={r.input_tokens} out={r.output_tokens}; caller={r.caller}")
+                for flag in r.carries:
+                    note(f"  recorded output: {flag}")
+            note(
+                "Full prompts and answers are in this log group. Summaries are not proof a tool ran."
+            )
+
+    if guardrail_ids:
+        step("Guardrails · AWS/Bedrock/Guardrails (metrics, not per-request log records)")
+        rows, checks = GuardrailObserver(make_client("cloudwatch")).counts(guardrail_ids)
+        present = set()
+        for r in rows:
+            if r.datapoints:
+                present.add(r.guardrail_id)
+                ok(
+                    f"{r.guardrail_id}: Invocations={r.invocations} InvocationsIntervened={r.intervened} TextUnitCount={r.text_units}"
+                )
+        if present != set(guardrail_ids):
+            note("some configured guardrails have no datapoints yet; metrics lag the calls")
+            missing = True
+        if checks is not None:
+            note(f"account-wide PromptAttack CheckInvocations={checks} (not per guardrail)")
+        note(
+            "InvocationsIntervened is the service's metric, not proof action=GUARDRAIL_INTERVENED."
+        )
+        note(
+            "ApplyGuardrail assessments are printed by demo live; standalone calls are NOT model invocation logs."
+        )
+
+    if engine:
+        gateway = gateway_id_from_url(gateway_url())
+        counts = PolicyObserver(client=make_client("cloudwatch")).decisions(
+            engine, gateway_id=gateway
+        )
+        step(f"AWS/Bedrock-AgentCore · AuthorizeAction · engine {engine} · last 3 hours")
+        if counts.datapoints == 0:
+            note(
+                "no decisions recorded yet: CloudWatch metrics lag by a few minutes; run this again shortly"
+            )
+            missing = True
+        else:
+            ok(
+                f"ALLOW {counts.allow}   DENY {counts.deny}   of which deny-by-default (no determining policy) {counts.no_determining_policy}"
+            )
+            step(
+                f"Per policy: which rule made each decision{f' on gateway {gateway}' if gateway else ''}"
+            )
+            for policy_id, c in sorted(counts.by_policy.items()):
+                note(f"{policy_id:<44} allow={c['allow']:<4} deny={c['deny']}")
+
+    if gateway_group:
+        step(f"Gateway vended logs · {gateway_group}")
+        requests = GatewayLogReader(make_client("logs")).requests(gateway_group)
+        calls = [r for r in requests if r.method == "tools/call"]
+        if not calls:
+            note("no recorded tools/call requests yet; run demo live and retry after delivery")
+            missing = True
+        for r in calls[-12:]:
+            note(f"{r.tool} {r.account_id}: {r.decision}")
+            if r.reason:
+                note(f"  reason: {r.reason}")
+            if r.determining_policies:
+                note(f"  determining policies: {', '.join(r.determining_policies)}")
+            if r.temporal is not None:
+                note(f"  temporal evaluated={r.temporal}; latency={r.latency_ms}ms")
+            if r.decision not in ("ALLOW", "DENY", "REJECTED"):
+                missing = True
+        note(
+            "These decisions come from body.policy in gateway logs; no decision is inferred from HTTP status."
+        )
+    return 1 if missing else 0
 
 
 def report_cleanup(report, problems: list[str]) -> None:

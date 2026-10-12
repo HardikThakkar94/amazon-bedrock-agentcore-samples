@@ -204,6 +204,7 @@ class BedrockModel:
         self._client = client
         self._tool_choice: dict | None = _FORCED_TOOL_CHOICE  # None: no tools offered
         self._system_in_message = False
+        self.run_id = os.environ.get("SEC310_RUN_ID")
 
     def _request(self, prompt: str) -> dict:
         request = {
@@ -220,6 +221,8 @@ class BedrockModel:
             request["system"] = [{"text": _SYSTEM}]
         if self._tool_choice is not None:
             request["toolConfig"] = {"tools": [_response_tool()], "toolChoice": self._tool_choice}
+        if self.run_id:
+            request["requestMetadata"] = {"sec310_run": self.run_id}
         return request
 
     def _relax(self, exc: BaseException) -> bool:

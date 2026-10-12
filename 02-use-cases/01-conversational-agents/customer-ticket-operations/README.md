@@ -9,16 +9,18 @@ A small "security evidence assistant" starts as a prototype that works beautiful
 is trivially dangerous. Five patches turn it into something you could run: not by making
 the model smarter, but by putting deterministic controls around it.
 
-Everything here is **synthetic and offline**. Fake tenants, fake accounts, an in-memory
-evidence store, a deliberately gullible scripted model. No credentials, no network, no
-real service is touched unless you opt in to `--live`, and even then the write path stays
-local.
+The evidence and tool targets are **synthetic** so no customer data or production rule can
+be harmed. For the real-model rehearsal, use `--live`: proposals come from Bedrock and
+screening from Bedrock Guardrails. The default offline commands remain a deterministic
+regression/fallback path and clearly identify their scripted model; never describe them as
+live inference. `demo live` separately exercises real AWS guardrails, policy validation and
+AgentCore Gateway enforcement. `demo observe` reads the platform's recorded evidence.
 
 ## Run it
 
 ```bash
 uv sync            # or: pip install -e '.[aws]' pytest
-uv run pytest      # 71 tests, < 1s, offline
+uv run pytest      # current HEAD's tests; offline (historical v5 tag has 71)
 uv run python -m sec310_sample.demo all     # the full walkthrough
 uv run python -m sec310_sample.demo unsafe  # or one stage: identity | untrusted | tools | containment | telemetry
 ```
@@ -82,6 +84,7 @@ scripts/check_tags.sh         every tag builds + passes from a fresh checkout
 scripts/live_setup.sh         AWS resources for the live stage (guardrails, AR policy); prints exports
 scripts/live_teardown.sh      removes them, plus any sec310_demo* policy engine left behind
 scripts/live_gateway.py       up/down: gateway + Lambda tools + policy engine (ENFORCE) + Cedar/Dogwood policies
+scripts/live_logging.py       up/down: Bedrock invocation logging and gateway vended log delivery
 scripts/live/                 the AR policy's natural-language source and the tool Lambda's code
 ```
 
@@ -93,20 +96,32 @@ export SEC310_GUARDRAIL_ID=<guardrail id>  SEC310_GUARDRAIL_VERSION=DRAFT
 uv run python -m sec310_sample.demo tools --live
 ```
 
-The live model only produces *proposals*. The gateway, the fixtures, and the write path
-are unchanged and local. If the network is down, run without `--live`; the outcomes are
-the same, which is rather the point.
+The live model only produces *proposals*. The sample's application gateway and write path
+remain local; successful writes change the in-memory store, not AWS production resources.
+Real models may decline, produce malformed plans, or follow an injection. The runner reports
+what happened, never substitutes a scripted response without a label. Model options and
+observed variability are in [docs/model-options.md](docs/model-options.md). If the venue
+network fails, show a recording of real calls or explicitly announce the offline test mode.
 
 ### The `live` stage: the same controls against real services
 
 ```bash
-uv sync --extra aws                                   # boto3 with the agentic guardrail and policy APIs
-eval "$(sh scripts/live_setup.sh)"                    # guardrails + an Automated Reasoning policy (~2 min); exports their ids
-eval "$(uv run python scripts/live_gateway.py up)"    # gateway + tool Lambda + policy engine in ENFORCE (~1 min); exports its URL
+export AWS_PROFILE=your-development-profile AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
+unset AWS_BEARER_TOKEN_BEDROCK                        # use the named profile, not an ambient bearer token
+aws sts get-caller-identity --profile "$AWS_PROFILE" # verify the account before setup
+uv sync --extra aws
+sh scripts/live_setup.sh > /tmp/sec310-model.env && . /tmp/sec310-model.env
+uv run python scripts/live_gateway.py up > /tmp/sec310-gateway.env && . /tmp/sec310-gateway.env
+uv run python scripts/live_logging.py up > /tmp/sec310-logs.env && . /tmp/sec310-logs.env
+export SEC310_MODEL_ID=google.gemma-3-4b-it             # or another candidate in model-options.md
+uv run python -m sec310_sample.demo unsafe --live      # genuine model responses, two attack paths
+uv run python -m sec310_sample.demo all --live
 uv run python -m sec310_sample.demo live
-uv run python -m sec310_sample.demo observe           # a few minutes later: the engine's own decision counts from CloudWatch
-uv run python scripts/live_gateway.py down            # removes the gateway, engine, policies, function, roles
-sh scripts/live_teardown.sh                           # removes the guardrails and the AR policy
+uv run python -m sec310_sample.demo observe            # retry after delivery if exit 1: no data yet
+# AFTER retaining private rehearsal evidence, and when the logging demo is finished:
+uv run python scripts/live_logging.py down             # first: verify logging config/delivery removal
+uv run python scripts/live_gateway.py down
+sh scripts/live_teardown.sh
 ```
 
 `live` is not part of `all`. It needs credentials in the default AWS SDK chain plus the
@@ -125,14 +140,17 @@ against a real account on 2026-10-08 (us-east-1); the whole stage takes about 75
 | `bedrock-runtime:InvokeGuardrailChecks` | prompt-attack severity scores for the argument *values* of a proposed tool call, before it runs; the threshold is the application's, and a missing evaluation is UNAVAILABLE, not a pass | `live.GuardrailChecks` |
 | `bedrock-runtime:ApplyGuardrail` (AR policy) | formal-logic findings over the answer text: a claim the team's rule-change policy contradicts comes back `INVALID` with the rule it breaks, a supported claim `VALID`; `action` is `NONE` both times (detect mode) | stage code |
 | `bedrock-agentcore-control:CreatePolicy` under `FAIL_ON_ANY_FINDINGS` | Cedar is machine-checked before anything could enforce it: the parser refuses an unconstrained resource synchronously; everything else settles asynchronously to `ACTIVE` or `CREATE_FAILED` with `statusReasons`, and the gate reads the verdict from that terminal state | `live.CedarPolicyGate` |
-| `cloudwatch:GetMetricData` on `AWS/Bedrock-AgentCore` (`demo observe`) | the platform's own record of what the engine decided: ALLOW / DENY / deny-by-default per engine and per policy, published with no instrumentation — the hashed decision events of Patch 5, emitted for you | `live.PolicyObserver` |
+| `cloudwatch:GetMetricData` on `AWS/Bedrock-AgentCore` (`demo observe`) | ALLOW / DENY / NoDeterminingPolicies per engine, ALLOW / DENY per policy; service-published aggregate counts, not the sample's HMAC-hashed events | `live.PolicyObserver` |
+| `logs:FilterLogEvents` for model invocations (`demo observe`) | Bedrock's recorded request metadata, response and token counts; service errors remain errors, and a proposal is not proof of execution | `live.InvocationLogReader` |
+| `cloudwatch:GetMetricData` on `AWS/Bedrock/Guardrails` | per-guardrail invocation/intervention/text-unit metrics, plus account-wide prompt-attack check count; not per-request guardrail log records | `live.GuardrailObserver` |
+| `logs:FilterLogEvents` for gateway vended logs | the engine's actual decision, reason, determining policies and temporal evaluation for each MCP request | `live.GatewayLogReader` |
 | signed MCP `tools/call` to an AgentCore Gateway with a policy engine in `ENFORCE` | **Cedar and Dogwood deciding real tool calls**: a Cedar `forbid` keeps writes inside one account, and a Dogwood temporal `permit` allows a write only after the same policy session read that account's evidence; the same `update_rule` call is DENY, then ALLOW, then DENY, and a request without a session id is rejected outright | `live.GatewayClient`, `scripts/live_gateway.py` |
 
-Two things the live run taught us, both encoded in the code: the prompt-attack classifier
-scores an instruction-shaped wrapper such as `proposed tool call: ...` as an attack on its own
-(0.8), so only the argument values are screened; and a capable model wraps JSON in a Markdown
-fence unless the shape is requested at the API, so the live model is asked for it with a
-forced tool call. Validation stays strict either way.
+The live run taught us: the prompt-attack classifier scores an instruction-shaped wrapper
+such as `proposed tool call: ...` as an attack on its own (0.8), so only argument values are
+screened. Models also differ in API support: forced tool choice is preferred, but only an
+explicit service rejection relaxes a capability. Fenced JSON text is unwrapped, not repaired;
+field/type validation stays strict. See the model-options guide.
 
 The policy step creates a throwaway engine with no gateway attached and expects four
 rejections with the service's own reasons: `permit(principal, action, resource);` from the
@@ -168,6 +186,36 @@ as a truncated, malformed reply rather than an empty one.
 Unit tests use `botocore.stub.Stubber` and small fake clients and run offline (the stage runs
 end to end against fakes); `SEC310_LIVE=1 uv run pytest tests/test_live_services.py` adds
 two real-service tests for a throwaway account.
+
+## Reading the logs on stage
+
+`live_logging.py up` enables **account/Region-wide text invocation logging**, not just this
+program's calls. Full prompts and answers are stored; use only an isolated development
+account with synthetic inputs. New log groups retain data for three days. Existing foreign
+invocation configurations are preserved and never automatically displayed. Keep raw logs
+and real account identifiers OUT of the public sample and package.
+
+The script prints `SEC310_RUN_ID`. Model calls carry that value in `requestMetadata.sec310_run`;
+`observe` filters invocation records to that run. Re-source fresh logging exports for a new
+rehearsal. The terminal prints safe metadata/structured flags, not the full prompt or answer.
+In the CloudWatch console, open the log groups named in the exports for the full platform
+records. Model invocation logging does NOT capture standalone `ApplyGuardrail` calls: their
+assessments appear in `demo live`, and their metrics appear in `observe`. Per-request API
+accountability for standalone guardrails additionally needs CloudTrail guardrail data-event
+logging, which this sample does not provision. `InvocationsIntervened` must not be equated
+with the response's `action`; Automated Reasoning detect-mode checks were observed with
+`action=NONE` while that metric still increased.
+
+`observe` exits 1 while any configured section has no data (delivery lag), 2 on operational
+or incomplete reads, and 0 when every configured section could be read. An API failure
+record is displayed with its `errorCode`, not as an empty successful model answer. Gateway
+ALLOW/DENY comes from its structured `body.policy`, not an inference from HTTP 403.
+
+Official sources:
+- [Bedrock model invocation logging](https://docs.aws.amazon.com/bedrock/latest/userguide/model-invocation-logging.html)
+- [Guardrail metrics](https://docs.aws.amazon.com/bedrock/latest/userguide/monitoring-guardrails-cw-metrics.html)
+- [AgentCore observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html)
+- [Gateway logs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-gateway-metrics.html)
 
 ## What this sample is not
 

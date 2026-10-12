@@ -1,7 +1,10 @@
 # Presenter walkthrough — 60-minute code talk
 
 Target: **~48-52 minutes of content, questions interleaved throughout** (code talks have no reserved end Q&A). Two speakers. Terminal font ≥ 18pt (assume the session may be recorded for YouTube).
-Every command below is offline and deterministic; rehearse it with Wi-Fi off.
+The commands below without `--live` are the offline regression path. For the current real-model
+rehearsal, append `--live` to the proposal-producing stages after following README setup; model
+behaviour varies. Keep a recording of actual Bedrock calls as the fallback, and announce any
+switch to the offline test model.
 
 Before going on stage:
 
@@ -19,6 +22,35 @@ Tags let you show *diffs*, not just files: `git diff v1-identity v2-untrusted-da
 `git show v3-bounded-tools:src/sec310_sample/action_gateway.py`.
 
 ---
+
+## Real-model and platform-record rehearsal (October 12 update)
+
+Read [model-options.md](model-options.md) first. Prefer Gemma 3 4B for the real-model cold
+open, with Mixtral, Maverick and Palmyra as candidates to re-test before delivery. Do not
+promise the same account will be deleted every take.
+
+After README setup, run `unsafe --live`: first an honest caller receives poisoned tool
+evidence; then a dishonest caller places the instruction in the question, using clean
+state. Watch the actual output. An attacker URL forwarded to the UI is a link-validation
+failure, not an observed network transfer. A deletion changes a synthetic in-memory rule;
+Bedrock made the proposal, but no real customer rule is touched. Record both the success
+and refusal variants. The deterministic controls reject the dangerous proposal regardless.
+
+Run `live` for the real AWS guardrails and AgentCore gateway checks, then `observe` to show:
+1. The matching Bedrock invocation records (tagged with `SEC310_RUN_ID`), including service
+   errors from API capability negotiation. A failed API attempt has no model answer.
+2. Guardrail CloudWatch counters. These are metrics, not standalone ApplyGuardrail logs.
+   Read the per-request assessments in the `live` output; invocation logging alone does
+   not capture them. An AR `InvocationsIntervened` count does not imply `action=INTERVENED`.
+3. Policy-engine aggregate counts and gateway vended `body.policy` records: ALLOW/DENY,
+   the reason, determining policy, and whether temporal evaluation ran.
+
+Logs may arrive after the request completes; `observe` exits 1 while a configured section
+has no records. Show the log groups in the CloudWatch console, not a screenshot described
+as live. Invocation logging is account-wide and contains full prompts/answers; synthetic
+inputs only, three-day retention, no raw AWS logs in the public sample/package. After the
+rehearsal is finished, remove logging first with `live_logging.py down`, then the gateway
+and guardrails. Do not disable a pre-existing account logging configuration.
 
 ## 0:00–4:00 · Cold open: the dangerous success
 

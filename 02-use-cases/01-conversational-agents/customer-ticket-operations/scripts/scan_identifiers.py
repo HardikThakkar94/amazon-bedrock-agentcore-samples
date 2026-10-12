@@ -31,7 +31,7 @@ ALLOWED_HOSTS = {"docs.aws.amazon.com", "aws.amazon.com", "github.com"}
 # ARNs that disclose nothing: AWS-managed policies carry no account, and a template whose
 # region slot is a placeholder is filled in at runtime from the caller's own account.
 ALLOWED_ARN_PREFIXES = ("arn:aws:iam::aws:policy/",)
-TEMPLATED_ARN = re.compile(r"arn:aws[a-z-]*:[a-z0-9-]*:\{", re.IGNORECASE)
+TEMPLATED_ARN = re.compile(r"arn:aws[a-z-]*:(?:[a-z0-9-]*:\{|iam::\{)", re.IGNORECASE)
 SKIP_DIRS = {
     ".git",
     ".venv",

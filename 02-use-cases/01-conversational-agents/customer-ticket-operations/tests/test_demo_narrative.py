@@ -132,12 +132,20 @@ class TestUntrustedStageWithAModelThatDeclines:
         assert "rejected:" in out
 
 
+def test_empty_change_proposal_is_rejected_without_crashing_the_demo(capsys):
+    demo.stage_tools(_acts_on("update_rule", "acct-a", "rule-42", {}), LocalGuardrail())
+    out = capsys.readouterr().out
+    assert "confirmed proposal still rejected by current-state validation: empty_change" in out
+    assert "mutations=0" in out
+    assert "status=executed" not in out
+
+
 class TestToolsStageWhenTheModelProposesNoWrite:
     def test_fallback_is_visible(self, capsys):
         demo.stage_tools(_quiet(), LocalGuardrail())
         out = capsys.readouterr().out
         assert "the model proposed no update_rule" in out
-        assert "continuing with the scripted proposal so the gateway path can be shown" in out
+        assert "testing the gateway with an operator-authored plan (not model output)" in out
         assert "status=confirmation_required" in out
 
     def test_no_fallback_when_the_model_proposes_the_write(self, capsys):

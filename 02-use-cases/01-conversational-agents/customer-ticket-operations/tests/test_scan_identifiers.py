@@ -72,6 +72,7 @@ def test_account_free_and_templated_arns_are_allowed_but_real_ones_are_not(
     (tree / "ok.py").write_text(
         'MANAGED = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"\n'
         'prefix = f"arn:aws:bedrock-agentcore:{region}:{account}"\n'
+        'role = f"arn:aws:iam::{account}:role/Demo"\n'
     )
     assert scanner.main([str(tree)]) == 0
 

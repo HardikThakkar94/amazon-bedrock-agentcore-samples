@@ -517,6 +517,80 @@ class MetricReadError(RuntimeError):
     PartialData result with no way to continue, or an operation-level message. Never a count."""
 
 
+def _window(hours: float, now: float | None):
+    import datetime as dt
+
+    end = dt.datetime.fromtimestamp(now, tz=dt.UTC) if now is not None else dt.datetime.now(dt.UTC)
+    return end - dt.timedelta(hours=hours), end
+
+
+def _sum_query(qid: str, namespace: str, metric: str, dims: list[dict], period: int) -> dict:
+    return {
+        "Id": qid,
+        "MetricStat": {
+            "Metric": {"Namespace": namespace, "MetricName": metric, "Dimensions": dims},
+            "Period": period,
+            "Stat": "Sum",
+        },
+    }
+
+
+class MetricReader:
+    """GetMetricData, read completely: every page followed, values accumulated per query id,
+    datapoints counted separately from values. An error status, an incomplete result with no
+    continuation, or an operation-level message raises; it is never a count."""
+
+    def __init__(self, client) -> None:
+        self._client = client
+
+    def read(self, queries: list[dict], start, end) -> tuple[dict[str, int], dict[str, int]]:
+        sums: dict[str, int] = {}
+        points: dict[str, int] = {}
+        for i in range(0, len(queries), 100):  # GetMetricData takes at most 100 queries
+            self._read_batch(queries[i : i + 100], start, end, sums, points)
+        return sums, points
+
+    def _read_batch(self, batch, start, end, sums: dict[str, int], points: dict[str, int]) -> None:
+        kwargs = {"MetricDataQueries": batch, "StartTime": start, "EndTime": end}
+        status: dict[str, str] = {}
+        while True:
+            resp = self._client.get_metric_data(**kwargs)
+            if resp.get("Messages"):
+                raise MetricReadError(
+                    "GetMetricData returned messages: "
+                    + "; ".join(f"{m.get('Code')}: {m.get('Value')}" for m in resp["Messages"])
+                )
+            for r in resp.get("MetricDataResults", []):
+                values = r.get("Values", [])
+                sums[r["Id"]] = sums.get(r["Id"], 0) + int(sum(values))
+                points[r["Id"]] = points.get(r["Id"], 0) + len(values)
+                status[r["Id"]] = r.get("StatusCode", "missing")
+                if status[r["Id"]] in ("InternalError", "Forbidden"):
+                    detail = "; ".join(
+                        f"{m.get('Code')}: {m.get('Value')}" for m in r.get("Messages", [])
+                    )
+                    raise MetricReadError(
+                        f"GetMetricData result {r['Id']} is {status[r['Id']]}: {detail or 'no detail'}"
+                    )
+            token = resp.get("NextToken")
+            if not token:
+                break
+            kwargs["NextToken"] = token
+        incomplete = sorted(q["Id"] for q in batch if status.get(q["Id"]) != "Complete")
+        if incomplete:
+            raise MetricReadError(
+                f"GetMetricData ended with incomplete results and no continuation: {incomplete}"
+            )
+
+    def series(self, namespace: str, metric: str, dims: list[dict] | None = None):
+        """Every metric series CloudWatch remembers for this name (discovery, not data)."""
+        kwargs = {"Namespace": namespace, "MetricName": metric}
+        if dims:
+            kwargs["Dimensions"] = dims
+        for page in self._client.get_paginator("list_metrics").paginate(**kwargs):
+            yield from page.get("Metrics", [])
+
+
 class PolicyObserver:
     """Reads AgentCore Policy's own decision metrics (published by default, no setup).
 
@@ -544,14 +618,7 @@ class PolicyObserver:
         hours: float = 3.0,
         now: float | None = None,
     ) -> PolicyDecisionCounts:
-        import datetime as dt
-
-        end = (
-            dt.datetime.fromtimestamp(now, tz=dt.UTC)
-            if now is not None
-            else dt.datetime.now(dt.UTC)
-        )
-        start = end - dt.timedelta(hours=hours)
+        start, end = _window(hours, now)
         period = int(hours * 3600)
         engine_dims = [
             {"Name": "OperationName", "Value": "AuthorizeAction"},
@@ -623,10 +690,7 @@ class PolicyObserver:
                                 },
                             }
                         )
-        sums: dict[str, int] = {}
-        points: dict[str, int] = {}
-        for i in range(0, len(queries), 100):  # GetMetricData takes at most 100 queries
-            self._read_batch(queries[i : i + 100], start, end, sums, points)
+        sums, points = MetricReader(self._client).read(queries, start, end)
         for qid, policy_id, kind in policy_queries:
             if points.get(qid, 0) == 0:
                 continue  # a series that exists but has no datapoints in this window
@@ -639,39 +703,331 @@ class PolicyObserver:
             datapoints=sum(points.values()),
         )
 
-    def _read_batch(self, batch, start, end, sums: dict[str, int], points: dict[str, int]) -> None:
-        """One GetMetricData query batch, every page. Values accumulate per query id; the final
-        status of every result must be Complete, and any operation-level message is an error."""
-        kwargs = {"MetricDataQueries": batch, "StartTime": start, "EndTime": end}
-        status: dict[str, str] = {}
-        while True:
-            resp = self._client.get_metric_data(**kwargs)
-            if resp.get("Messages"):
-                raise MetricReadError(
-                    "GetMetricData returned messages: "
-                    + "; ".join(f"{m.get('Code')}: {m.get('Value')}" for m in resp["Messages"])
+
+@dataclass(frozen=True)
+class GuardrailCounts:
+    """What CloudWatch recorded for one guardrail: ``AWS/Bedrock/Guardrails``, dimensions
+    GuardrailArn + GuardrailVersion (observed 2026-10-12). ``intervened`` is the service's own
+    ``InvocationsIntervened`` count: for an Automated Reasoning guardrail it counts checks that
+    produced findings even when the returned action was NONE, so it is reported, not interpreted.
+    ``check_invocations`` is ``CheckInvocations`` for InvokeGuardrailChecks (CheckType PromptAttack),
+    which is account-wide, not per guardrail."""
+
+    guardrail_id: str
+    invocations: int
+    intervened: int
+    text_units: int
+    datapoints: int
+
+
+class GuardrailObserver:
+    NAMESPACE = "AWS/Bedrock/Guardrails"
+
+    def __init__(self, client=None) -> None:
+        if client is None:
+            import boto3  # lazy
+
+            client = boto3.client("cloudwatch")
+        self._reader = MetricReader(client)
+
+    def counts(
+        self, guardrail_ids: list[str], *, hours: float = 3.0, now: float | None = None
+    ) -> tuple[list[GuardrailCounts], int | None]:
+        """Per guardrail (every version CloudWatch has seen for it), plus the account-wide
+        prompt-attack CheckInvocations count (None when no series exists)."""
+        start, end = _window(hours, now)
+        period = int(hours * 3600)
+        queries: list[dict] = []
+        owners: list[tuple[str, str, str]] = []  # (query id, guardrail id, kind)
+        for series in self._reader.series(self.NAMESPACE, "Invocations"):
+            dims = {d["Name"]: d["Value"] for d in series["Dimensions"]}
+            if set(dims) != {"GuardrailArn", "GuardrailVersion"}:
+                continue
+            gid = dims["GuardrailArn"].rsplit("/", 1)[-1]
+            if gid not in guardrail_ids:
+                continue
+            for metric, kind in (
+                ("Invocations", "invocations"),
+                ("InvocationsIntervened", "intervened"),
+                ("TextUnitCount", "text_units"),
+            ):
+                qid = f"g{len(owners)}"
+                owners.append((qid, gid, kind))
+                queries.append(
+                    _sum_query(qid, self.NAMESPACE, metric, series["Dimensions"], period)
                 )
-            for r in resp.get("MetricDataResults", []):
-                values = r.get("Values", [])
-                sums[r["Id"]] = sums.get(r["Id"], 0) + int(sum(values))
-                points[r["Id"]] = points.get(r["Id"], 0) + len(values)
-                status[r["Id"]] = r.get("StatusCode", "Complete")
-                if status[r["Id"]] in ("InternalError", "Forbidden"):
-                    detail = "; ".join(
-                        f"{m.get('Code')}: {m.get('Value')}" for m in r.get("Messages", [])
-                    )
-                    raise MetricReadError(
-                        f"GetMetricData result {r['Id']} is {status[r['Id']]}: {detail or 'no detail'}"
-                    )
-            token = resp.get("NextToken")
-            if not token:
-                break
-            kwargs["NextToken"] = token
-        incomplete = sorted(qid for qid, st in status.items() if st != "Complete")
-        if incomplete:
-            raise MetricReadError(
-                f"GetMetricData ended with incomplete results and no continuation: {incomplete}"
+        check_dims = [
+            {"Name": "CheckType", "Value": "PromptAttack"},
+            {"Name": "Operation", "Value": "InvokeGuardrailChecks"},
+        ]
+        has_checks = any(
+            True for _ in self._reader.series(self.NAMESPACE, "CheckInvocations", check_dims)
+        )
+        if has_checks:
+            queries.append(
+                _sum_query("checks", self.NAMESPACE, "CheckInvocations", check_dims, period)
             )
+        if not queries:
+            return [], None
+        sums, points = self._reader.read(queries, start, end)
+        per: dict[str, dict[str, int]] = {}
+        for qid, gid, kind in owners:
+            row = per.setdefault(
+                gid, {"invocations": 0, "intervened": 0, "text_units": 0, "datapoints": 0}
+            )
+            row[kind] += sums.get(qid, 0)
+            row["datapoints"] += points.get(qid, 0)
+        rows = [
+            GuardrailCounts(
+                gid, r["invocations"], r["intervened"], r["text_units"], r["datapoints"]
+            )
+            for gid in guardrail_ids
+            if (r := per.get(gid))
+        ]
+        checks = sums.get("checks") if has_checks and points.get("checks", 0) else None
+        return rows, checks
+
+
+_INJECTED_URL = "exfil.example.net"
+
+
+@dataclass(frozen=True)
+class InvocationRecord:
+    """One Bedrock model invocation log entry (schemaType ModelInvocationLog 1.0, observed
+    2026-10-12): the platform's copy of what the model was asked and what it answered."""
+
+    timestamp: str
+    model_id: str
+    operation: str
+    caller: str
+    input_tokens: int | None
+    output_tokens: int | None
+    stop_reason: str
+    output_text: str
+    error_code: str | None = None
+
+    @property
+    def carries(self) -> list[str]:
+        """Structured proposals/links, not a refusal merely quoting the attack. No action is
+        inferred to have executed from a model invocation log."""
+        from sec310_sample.model import _unfence
+
+        try:
+            payload = json.loads(_unfence(self.output_text))
+        except (ValueError, TypeError):
+            return []
+        if not isinstance(payload, dict):
+            return []
+        found = []
+        links, actions = payload.get("links"), payload.get("proposed_actions")
+        if isinstance(links, list) and any(_INJECTED_URL in str(link) for link in links):
+            found.append("attacker URL in links (not a network transfer)")
+        if isinstance(actions, list) and any(
+            isinstance(a, dict) and a.get("operation") == "delete_rule" for a in actions
+        ):
+            found.append("delete_rule proposal (not proof of execution)")
+        return found
+
+
+class LogReadError(RuntimeError):
+    """CloudWatch Logs could be queried but a record was not what the platform documents."""
+
+
+class InvocationLogReader:
+    def __init__(self, client=None) -> None:
+        if client is None:
+            import boto3  # lazy
+
+            client = boto3.client("logs")
+        self._client = client
+
+    def records(
+        self,
+        log_group: str,
+        *,
+        hours: float = 3.0,
+        now: float | None = None,
+        run_id: str | None = None,
+    ) -> list[InvocationRecord]:
+        out: list[InvocationRecord] = []
+        for event in _log_events(self._client, log_group, hours, now):
+            try:
+                rec = json.loads(event["message"])
+            except ValueError as exc:
+                if (
+                    event["message"].strip()
+                    == "Permissions are correctly set for Amazon Bedrock logs."
+                ):
+                    continue
+                raise LogReadError("unreadable model invocation log record") from exc
+            if not isinstance(rec, dict) or rec.get("schemaType") != "ModelInvocationLog":
+                raise LogReadError("unexpected model invocation log schema")
+            if run_id and rec.get("requestMetadata", {}).get("sec310_run") != run_id:
+                continue
+            output = rec.get("output", {}).get("outputBodyJson")
+            error_code = rec.get("errorCode")
+            if error_code:
+                output = {}  # A service-rejected attempt has no model answer; it is still a valid log.
+            elif not isinstance(output, dict):
+                raise LogReadError(
+                    "invocation output is absent or not inline; inspect its S3 reference"
+                )
+            message = output.get("output", {}).get("message", {})
+            parts = []
+            for block in message.get("content", []):
+                if "text" in block:
+                    parts.append(block["text"])
+                if "toolUse" in block:
+                    parts.append(json.dumps(block["toolUse"].get("input", {})))
+            identity = rec.get("identity", {}).get("arn", "")
+            out.append(
+                InvocationRecord(
+                    timestamp=rec.get("timestamp", ""),
+                    model_id=rec.get("modelId", "?"),
+                    operation=rec.get("operation", "?"),
+                    caller=identity.rsplit("/", 1)[-1] if identity else "?",
+                    input_tokens=rec.get("input", {}).get("inputTokenCount"),
+                    output_tokens=rec.get("output", {}).get("outputTokenCount"),
+                    stop_reason=str(output.get("stopReason", "?")),
+                    output_text="".join(parts),
+                    error_code=str(error_code) if error_code else None,
+                )
+            )
+        return out
+
+
+@dataclass(frozen=True)
+class GatewayRequest:
+    """One MCP request through the gateway, assembled from its vended log lines (observed
+    2026-10-12: Started processing / policy / Tool Execution Denied / Successfully processed,
+    all sharing a request_id). ``decision`` and ``reason`` come from the engine's own
+    ``body.policy`` record, not from the response text."""
+
+    timestamp_ms: int
+    method: str
+    tool: str
+    account_id: str
+    decision: str  # ALLOW | DENY | REJECTED | n/a
+    reason: str
+    determining_policies: tuple[str, ...]
+    temporal: bool | None
+    latency_ms: int | None
+
+
+def _field(body: str, key: str) -> str:
+    match = re.search(rf"\b{key}=([^,{{}}]+)", body)
+    return match.group(1).strip() if match else ""
+
+
+class GatewayLogReader:
+    def __init__(self, client=None) -> None:
+        if client is None:
+            import boto3  # lazy
+
+            client = boto3.client("logs")
+        self._client = client
+
+    def requests(
+        self, log_group: str, *, hours: float = 3.0, now: float | None = None
+    ) -> list[GatewayRequest]:
+        grouped: dict[str, list[dict]] = {}
+        for event in _log_events(self._client, log_group, hours, now):
+            try:
+                rec = json.loads(event["message"])
+            except ValueError as exc:
+                raise LogReadError("gateway log line is not JSON") from exc
+            grouped.setdefault(rec.get("request_id", event.get("eventId", "?")), []).append(rec)
+        out = []
+        for lines in grouped.values():
+            lines.sort(key=lambda r: r.get("event_timestamp", 0))
+            request = next(
+                (r["body"]["requestBody"] for r in lines if "requestBody" in r.get("body", {})), ""
+            )
+            policy = next(
+                (r["body"]["policy"] for r in lines if "policy" in r.get("body", {})), None
+            )
+            denied = next(
+                (
+                    r["body"]["log"]
+                    for r in lines
+                    if str(r.get("body", {}).get("log", "")).startswith("Tool Execution Denied")
+                ),
+                None,
+            )
+            method = _field(request, "method") or "?"
+            if policy:
+                decision, reason = str(policy.get("decision", "?")), str(policy.get("reason", ""))
+                determining = tuple(
+                    p if isinstance(p, str) else str(p.get("policyId", p))
+                    for p in policy.get("determiningPolicies", [])
+                )
+                temporal = policy.get("temporal_evaluation_invoked")
+                latency = policy.get("latencyMs")
+            elif denied:
+                decision, reason, determining, temporal, latency = (
+                    "REJECTED"
+                    if "rejected the request as invalid" in denied
+                    else "UNCLASSIFIED_ERROR",
+                    denied.split("Tool Execution Denied: ", 1)[-1],
+                    (),
+                    None,
+                    None,
+                )
+            else:
+                decision, reason, determining, temporal, latency = "n/a", "", (), None, None
+            out.append(
+                GatewayRequest(
+                    timestamp_ms=int(lines[0].get("event_timestamp", 0)),
+                    method=method,
+                    tool=_field(request, "name"),
+                    account_id=_field(request, "account_id"),
+                    decision=decision,
+                    reason=reason,
+                    determining_policies=determining,
+                    temporal=temporal,
+                    latency_ms=latency,
+                )
+            )
+        out.sort(key=lambda r: r.timestamp_ms)
+        return out
+
+
+def _log_events(client, log_group: str, hours: float, now: float | None):
+    """Every event in the window, every page. FilterLogEvents has no botocore paginator."""
+    start, end = _window(hours, now)
+    kwargs = {
+        "logGroupName": log_group,
+        "startTime": int(start.timestamp() * 1000),
+        "endTime": int(end.timestamp() * 1000),
+    }
+    seen_tokens: set[str] = set()
+    seen_events: set[str] = set()
+    while True:
+        resp = client.filter_log_events(**kwargs)
+        for event in resp.get("events", []):
+            eid = event.get("eventId")
+            if eid and eid in seen_events:
+                continue
+            if eid:
+                seen_events.add(eid)
+            yield event
+        token = resp.get("nextToken")
+        if not token:
+            return
+        if token in seen_tokens:
+            raise LogReadError("FilterLogEvents repeated a continuation token; read is incomplete")
+        seen_tokens.add(token)
+        kwargs["nextToken"] = token
+
+
+def invocation_log_group() -> str | None:
+    """Where Bedrock model invocation logging delivers (set by ``scripts/live_logging.py up``)."""
+    return os.environ.get("SEC310_INVOCATION_LOG_GROUP")
+
+
+def gateway_log_group() -> str | None:
+    """Where the gateway's vended logs deliver (set by ``scripts/live_logging.py up``)."""
+    return os.environ.get("SEC310_GATEWAY_LOG_GROUP")
 
 
 def gateway_url() -> str | None:
