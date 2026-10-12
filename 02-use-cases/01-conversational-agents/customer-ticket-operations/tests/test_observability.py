@@ -26,8 +26,8 @@ def invocation(payload=None, metadata=None):
         "timestamp": "2026-10-12T17:00:00Z",
         "modelId": "test-model",
         "operation": "Converse",
-        "identity": {"arn": "test-principal/Admin"},
-        "requestMetadata": metadata or {},
+        "identity": {"arn": "test-principal:assumed-role/Admin/private-session"},
+        "requestMetadata": metadata or {"sec310_run": "test-run"},
         "input": {"inputTokenCount": 10},
         "output": {
             "outputTokenCount": 20,
@@ -289,21 +289,11 @@ def test_guardrails_read_only_exact_per_guardrail_series_and_count_real_datapoin
     assert (rows[0].invocations, rows[0].intervened, rows[0].text_units) == (1, 1, 1)
 
 
-@pytest.fixture
-def clean_observe_env(monkeypatch):
-    import os
-
-    for key in os.environ:
-        if key.startswith("SEC310_"):
-            monkeypatch.delenv(key)
-
-
-def test_observe_combines_configured_sections_without_leaking_raw_answers(
-    monkeypatch, capsys, clean_observe_env
-):
+def test_observe_combines_configured_sections_without_leaking_raw_answers(monkeypatch, capsys):
     from sec310_sample.demo.__main__ import stage_observe
 
     monkeypatch.setenv("SEC310_INVOCATION_LOG_GROUP", "invocations")
+    monkeypatch.setenv("SEC310_RUN_ID", "test-run")
     monkeypatch.setenv("SEC310_GATEWAY_LOG_GROUP", "gateway")
 
     class Logs:
@@ -345,12 +335,11 @@ def test_observe_combines_configured_sections_without_leaking_raw_answers(
     assert "private-answer-must-not-print" not in text
 
 
-def test_one_empty_configured_section_is_not_overall_success(
-    monkeypatch, capsys, clean_observe_env
-):
+def test_one_empty_configured_section_is_not_overall_success(monkeypatch, capsys):
     from sec310_sample.demo.__main__ import stage_observe
 
     monkeypatch.setenv("SEC310_INVOCATION_LOG_GROUP", "invocations")
+    monkeypatch.setenv("SEC310_RUN_ID", "test-run")
 
     class Logs:
         def filter_log_events(self, **kw):

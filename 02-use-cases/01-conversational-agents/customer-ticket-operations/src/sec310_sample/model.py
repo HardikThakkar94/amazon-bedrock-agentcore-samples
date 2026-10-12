@@ -7,7 +7,8 @@ hold even when the model behaves this badly; nothing in the talk relies on the
 model being smart.
 
 ``BedrockModel`` is opt-in and only ever used to *propose*. It never executes
-anything and is never wired to the write path.
+anything itself. The unsafe v0 runner may apply proposals to its synthetic in-memory
+store; neither path writes to real customer resources.
 """
 
 from __future__ import annotations

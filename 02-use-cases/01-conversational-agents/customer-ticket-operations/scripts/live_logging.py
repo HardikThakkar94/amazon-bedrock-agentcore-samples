@@ -75,22 +75,29 @@ class Logging:
     # -- up ----------------------------------------------------------------------------------
     def up(self) -> int:
         say(f"account: {masked(self.account)}  region: {self.region}")
-        invocation_group = self.invocation_logging()
-        gateway_group = self.gateway_logging()
-        say("")
-        say("paste these, then (after `demo live`): uv run python -m sec310_sample.demo observe")
-        if invocation_group:
-            print(f"export SEC310_INVOCATION_LOG_GROUP={invocation_group}")
-        if gateway_group:
-            print(f"export SEC310_GATEWAY_LOG_GROUP={gateway_group}")
-        print("export SEC310_OBSERVE_GUARDRAILS=1")
-        print(f"export SEC310_RUN_ID=sec310_{uuid.uuid4().hex}")
         say(
             "WARNING: invocation logging records ALL text-model inputs/outputs in this account/Region."
         )
         say(
             "Use synthetic demo inputs only. Log retention is 3 days; logs must not go in the public zip."
         )
+        invocation_group = self.invocation_logging()
+        # Expose the setup that succeeded even if the independent gateway setup fails.
+        if invocation_group:
+            print(f"export SEC310_INVOCATION_LOG_GROUP={invocation_group}", flush=True)
+        print("export SEC310_OBSERVE_GUARDRAILS=1", flush=True)
+        print(f"export SEC310_RUN_ID=sec310_{uuid.uuid4().hex}", flush=True)
+        try:
+            gateway_group = self.gateway_logging()
+        except (RuntimeError, ClientError) as exc:
+            say(
+                f"setup incomplete: gateway logs: {exc}; invocation configuration may already be enabled"
+            )
+            return 1
+        if gateway_group:
+            print(f"export SEC310_GATEWAY_LOG_GROUP={gateway_group}")
+        say("")
+        say("paste these, then (after `demo live`): uv run python -m sec310_sample.demo observe")
         return 0
 
     def invocation_logging(self) -> str | None:
@@ -273,8 +280,14 @@ class Logging:
     # -- down --------------------------------------------------------------------------------
     def down(self) -> int:
         say(f"account: {masked(self.account)}  region: {self.region}")
-        self.remove_gateway_logging()
-        self.remove_invocation_logging()
+        for label, remove in (
+            ("gateway logging", self.remove_gateway_logging),
+            ("invocation logging", self.remove_invocation_logging),
+        ):
+            try:
+                remove()
+            except (RuntimeError, ClientError) as exc:
+                self.problems.append(f"{label}: {exc}")
         if self.problems:
             say("cleanup incomplete:")
             for p in self.problems:

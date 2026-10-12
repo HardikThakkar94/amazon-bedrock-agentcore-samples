@@ -196,8 +196,10 @@ invocation configurations are preserved and never automatically displayed. Keep 
 and real account identifiers OUT of the public sample and package.
 
 The script prints `SEC310_RUN_ID`. Model calls carry that value in `requestMetadata.sec310_run`;
-`observe` filters invocation records to that run. Re-source fresh logging exports for a new
-rehearsal. The terminal prints safe metadata/structured flags, not the full prompt or answer.
+`observe` filters invocation records to that run and refuses an unfiltered invocation display
+when the run ID is absent. Re-source fresh logging exports for a new rehearsal. The terminal
+prints safe metadata/structured flags and the role name, never the caller's STS session name
+or the full prompt or answer.
 In the CloudWatch console, open the log groups named in the exports for the full platform
 records. Model invocation logging does NOT capture standalone `ApplyGuardrail` calls: their
 assessments appear in `demo live`, and their metrics appear in `observe`. Per-request API

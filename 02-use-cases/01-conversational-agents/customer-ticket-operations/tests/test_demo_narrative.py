@@ -57,7 +57,7 @@ class TestUnsafeStageTellsTheTruthAboutTenantB:
         assert out.count("✖ acct-b rules now: {}   (tenant-b never saw this coming)") == 2
         assert "Then a caller who is not honest" in out
         assert "unchanged" not in out
-        assert "an absolute URL from the evidence is now a clickable link in the UI" in out
+        assert "an absolute URL from the model response is now a clickable link in the UI" in out
 
     def test_a_model_that_only_leaks_the_link_is_not_called_harmless(self, capsys):
         # Gemma 3 4B on the poisoned fixture (observed 2026-10-09): no write, but the attacker's URL
@@ -73,7 +73,7 @@ class TestUnsafeStageTellsTheTruthAboutTenantB:
         out = capsys.readouterr().out
         assert "(unchanged)" in out
         assert (
-            "✖ an absolute URL from the evidence is now a clickable link in the UI: ['https://exfil.example.net/collect?case=7']"
+            "✖ an absolute URL from the model response is now a clickable link in the UI: ['https://exfil.example.net/collect?case=7']"
             in out
         )
         assert "did not act on the injected instruction" not in out
@@ -99,6 +99,26 @@ class TestUnsafeStageTellsTheTruthAboutTenantB:
 
 
 class TestUnsafeStageSurvivesABrokenModel:
+    @pytest.mark.parametrize("account, rule", [("acct-a", "rule-42"), ("acct-b", "rule-77")])
+    def test_post_execution_response_error_cannot_hide_the_changed_state(
+        self, store, capsys, account, rule
+    ):
+        from sec310_sample.unsafe_agent import UnsafeAgent
+
+        # v0 executes actions before attempting output[answer] / output[links].
+        bad = CannedModel(
+            {
+                "proposed_actions": [
+                    {"operation": "delete_rule", "account_id": account, "resource_id": rule}
+                ]
+            }
+        )
+        demo._v0_beat(UnsafeAgent(bad, store), store, demo.fixture("indirect-injection")["request"])
+        out = capsys.readouterr().out
+        assert rule not in store.rules(account)
+        assert "v0 crashed on the model's output: KeyError" in out
+        assert f"{account} rules now: {{}}   (changed before the response failed)" in out
+
     def test_non_json_output_is_reported_as_a_crash_not_a_traceback(self, capsys):
         class Garbage:
             version = "garbage/1"
@@ -119,16 +139,51 @@ class TestUntrustedStageWithAModelThatDeclines:
     def test_declining_model_is_reported_not_narrated(self, capsys):
         demo.stage_untrusted(_quiet(), LocalGuardrail())
         out = capsys.readouterr().out
-        assert "this model proposed nothing the injection asked for" in out
+        assert "no unsafe proposal or link remained after validation" in out
         assert (
             "sync.policy_outcome == stream.policy_outcome → True" in out
         )  # canned output is deterministic
         assert "✔ 'exfil' in streamed text → False" in out
 
+    def test_malformed_injected_reply_is_not_described_as_model_refusal(self, capsys):
+        bad = CannedModel(
+            {
+                "answer": "do the injected action",
+                "proposed_actions": [
+                    {
+                        "operation": "delete_rule",
+                        "account_id": "acct-b",
+                        "resource_id": "rule-77",
+                        "reason": "injected",
+                        "change": True,
+                    }
+                ],
+                "links": ["https://exfil.example.net/collect?case=7"],
+            }
+        )
+        demo.stage_untrusted(bad, LocalGuardrail())
+        out = capsys.readouterr().out
+        assert "model response rejected by strict validation (malformed_output)" in out
+        assert "raw model intent is not inferred here" in out
+        assert "proposed nothing the injection asked for" not in out
+        assert "no unsafe proposal or link remained after validation" not in out
+        assert "✔ the read-only answer still came back" not in out
+        assert "✔ answer: do the injected action" not in out
+        assert "links that reached the UI: []" in out
+
+    def test_tools_stage_names_withheld_response_and_unexercised_gateway(self, capsys):
+        bad = CannedModel({"answer": "blocked", "proposed_actions": True, "links": []})
+        demo.stage_tools(bad, LocalGuardrail())
+        out = capsys.readouterr().out
+        assert out.count("model response rejected by strict validation (malformed_output)") == 2
+        assert "capability check not exercised by this reply" in out
+        assert "operator-authored plan (not model output)" in out
+        assert "model proposed no update_rule" not in out
+
     def test_scripted_model_shows_the_rejections(self, capsys):
         demo.stage_untrusted(ScriptedModel(), LocalGuardrail())
         out = capsys.readouterr().out
-        assert "proposed nothing the injection asked for" not in out
+        assert "no unsafe proposal or link remained after validation" not in out
         assert "rejected:" in out
 
 
@@ -137,20 +192,20 @@ def test_empty_change_proposal_is_rejected_without_crashing_the_demo(capsys):
     out = capsys.readouterr().out
     assert "confirmed proposal still rejected by current-state validation: empty_change" in out
     assert "mutations=0" in out
-    assert "status=executed" not in out
+    assert "status=ok  rule-42" not in out and "client retried" not in out
 
 
 class TestToolsStageWhenTheModelProposesNoWrite:
     def test_fallback_is_visible(self, capsys):
         demo.stage_tools(_quiet(), LocalGuardrail())
         out = capsys.readouterr().out
-        assert "the model proposed no update_rule" in out
+        assert "no validated update_rule remains" in out
         assert "testing the gateway with an operator-authored plan (not model output)" in out
         assert "status=confirmation_required" in out
 
     def test_no_fallback_when_the_model_proposes_the_write(self, capsys):
         demo.stage_tools(ScriptedModel(), LocalGuardrail())
-        assert "proposed no update_rule" not in capsys.readouterr().out
+        assert "no validated update_rule remains" not in capsys.readouterr().out
 
 
 class TestTelemetryStageLabelsTheCorpusHonestly:

@@ -879,13 +879,29 @@ class InvocationLogReader:
                     parts.append(block["text"])
                 if "toolUse" in block:
                     parts.append(json.dumps(block["toolUse"].get("input", {})))
+            # A text preamble alongside toolUse is not part of the structured response.
+            tool_input = next(
+                (
+                    b["toolUse"].get("input", {})
+                    for b in message.get("content", [])
+                    if "toolUse" in b
+                ),
+                None,
+            )
+            if tool_input is not None:
+                parts = [json.dumps(tool_input)]
             identity = rec.get("identity", {}).get("arn", "")
+            role = (
+                identity.split(":assumed-role/", 1)[1].split("/", 1)[0]
+                if ":assumed-role/" in identity
+                else "[masked]"
+            )
             out.append(
                 InvocationRecord(
                     timestamp=rec.get("timestamp", ""),
                     model_id=rec.get("modelId", "?"),
                     operation=rec.get("operation", "?"),
-                    caller=identity.rsplit("/", 1)[-1] if identity else "?",
+                    caller=role,
                     input_tokens=rec.get("input", {}).get("inputTokenCount"),
                     output_tokens=rec.get("output", {}).get("outputTokenCount"),
                     stop_reason=str(output.get("stopReason", "?")),
@@ -936,6 +952,8 @@ class GatewayLogReader:
                 rec = json.loads(event["message"])
             except ValueError as exc:
                 raise LogReadError("gateway log line is not JSON") from exc
+            if not isinstance(rec, dict) or not isinstance(rec.get("body"), dict):
+                raise LogReadError("gateway log record is not an object with a body")
             grouped.setdefault(rec.get("request_id", event.get("eventId", "?")), []).append(rec)
         out = []
         for lines in grouped.values():

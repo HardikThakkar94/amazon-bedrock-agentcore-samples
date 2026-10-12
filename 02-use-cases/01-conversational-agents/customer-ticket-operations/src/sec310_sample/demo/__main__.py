@@ -104,7 +104,8 @@ class World:
 # -- stages -----------------------------------------------------------------------------------
 def _v0_beat(agent: UnsafeAgent, store: EvidenceStore, request: dict) -> None:
     """One v0 request, reported as it happened: what ran, what reached the UI, what changed."""
-    acct_b_before = store.rules("acct-b")
+    rules_before = {account: store.rules(account) for account in store.accounts()}
+    acct_b_before = rules_before["acct-b"]
     try:
         result = agent.handle(request)
     except Exception as exc:  # noqa: BLE001 - v0 has no output contract; a live model can break it
@@ -112,6 +113,12 @@ def _v0_beat(agent: UnsafeAgent, store: EvidenceStore, request: dict) -> None:
         note(
             "No schema, no validation, no failure policy: a prototype that works until the model varies."
         )
+        # v0 executes BEFORE reading answer/links. A malformed reply may fail only after
+        # changing state: report every changed account instead of hiding the side effect.
+        for account, before in rules_before.items():
+            after = store.rules(account)
+            if after != before:
+                denied(f"{account} rules now: {after}   (changed before the response failed)")
         return
 
     step("The agent answered...")
@@ -130,7 +137,7 @@ def _v0_beat(agent: UnsafeAgent, store: EvidenceStore, request: dict) -> None:
         ok(f"acct-b rules now: {acct_b_after}   (unchanged)")
     if smuggled:
         denied(
-            f"an absolute URL from the evidence is now a clickable link in the UI: {smuggled}   "
+            f"an absolute URL from the model response is now a clickable link in the UI: {smuggled}   "
             "(the sample's own links are relative paths; nothing in the code looked at this one)"
         )
     if acct_b_after == acct_b_before and not smuggled:
@@ -214,6 +221,22 @@ def stage_identity(model: Model, guardrail: Guardrail) -> None:
     note("A random session id is a lookup hint. Ownership is checked on every read and write.")
 
 
+def _report_blocked_response(result) -> bool:
+    """A withheld response is not a refusal by the model. Report the control outcome, not
+    what a rejected/unvalidated raw answer may have proposed."""
+    if result.status != "blocked":
+        return False
+    if any(str(note).startswith("malformed_output") for note in result.notes):
+        denied("model response rejected by strict validation (malformed_output)")
+        note("raw model intent is not inferred here; inspect its invocation record")
+    else:
+        denied(
+            f"response withheld by a control: input={result.guardrail_input} output={result.guardrail_output}"
+        )
+        note(f"control notes: {list(result.notes)}")
+    return True
+
+
 def stage_untrusted(model: Model, guardrail: Guardrail) -> None:
     banner("Patch 2  Untrusted data stays data")
 
@@ -224,21 +247,21 @@ def stage_untrusted(model: Model, guardrail: Guardrail) -> None:
         f"status={result.status} guardrail_input={result.guardrail_input} reasons={list(result.notes)}"
     )
 
-    step(
-        "Indirect injection inside tool data: the keyword guardrail misses it; whatever the model does next..."
-    )
+    step("Indirect injection inside tool data: observe what the input and output controls decide")
     world = World(model, guardrail, poisoned_with="indirect-injection")
     result = world.assistant.handle_sync(raw("indirect-injection"), ALICE)
-    note(f"guardrail_input={result.guardrail_input}  (nothing looked like an attack)")
-    ok(f"answer: {result.answer}")
+    note(f"status={result.status}  reported guardrail_input={result.guardrail_input}")
+    blocked = _report_blocked_response(result)
+    if not blocked:
+        ok(f"answer: {result.answer}")
     step("...deterministic validation still holds")
     for target, reason in result.rejected_actions:
         denied(f"proposal {target} rejected: {reason}")
     for link, reason in result.rejected_links:
         denied(f"link {link} rejected: {reason}")
-    if not result.rejected_actions and not result.rejected_links:
+    if not blocked and not result.rejected_actions and not result.rejected_links:
         note(
-            "this model proposed nothing the injection asked for; the gate above is what holds when one does"
+            "no unsafe proposal or link remained after validation; this is not a claim about the raw reply"
         )
     ok(f"links that reached the UI: {list(result.links)}")
     ok(f"mutations so far: {world.store.mutation_log}")
@@ -263,7 +286,8 @@ def stage_untrusted(model: Model, guardrail: Guardrail) -> None:
     world = World(model, UnavailableGuardrail())
     result = world.assistant.handle_sync(raw("normal-evidence"), ALICE)
     note(f"status={result.status}  kept={[p.operation.value for p in result.proposed_actions]}")
-    ok(f"the read-only answer still came back: {result.answer[:60]}…")
+    if not _report_blocked_response(result):
+        ok(f"the read-only answer still came back: {result.answer[:60]}…")
     for target, reason in result.rejected_actions:
         denied(f"{target}: {reason}")
     note("A guardrail decision is a layer. It is never the permission to act.")
@@ -278,10 +302,11 @@ def stage_tools(model: Model, guardrail: Guardrail) -> None:
     result = world.assistant.handle_sync(raw("normal-evidence"), ALICE)
     plan = next((p for p in result.proposed_actions if p.operation is Operation.UPDATE_RULE), None)
     if plan is None:
-        # A live model may answer without proposing a write. Say so, then continue with the
-        # scripted proposal so the gateway path can still be shown.
+        # A response can be withheld or have no validated write. Neither establishes that
+        # the raw model proposed nothing; test the gateway with a visibly authored plan.
+        _report_blocked_response(result)
         note(
-            f"the model proposed no update_rule (status={result.status}, notes={list(result.notes)})"
+            f"no validated update_rule remains (status={result.status}, notes={list(result.notes)})"
         )
         note("testing the gateway with an operator-authored plan (not model output)")
         plan = ActionPlan(
@@ -315,10 +340,15 @@ def stage_tools(model: Model, guardrail: Guardrail) -> None:
     ok(f"audit chain intact: {gw.audit.verify_chain()}  records={len(gw.audit)}")
 
     step(
-        "Injected delete inside Alice's own scope: schema ok, target ok, confirmation ok... capability absent"
+        "Injected instruction inside Alice's own scope: inspect any validated proposal at the gateway"
     )
     poisoned = World(model, guardrail, poisoned_with="indirect-injection-owned-account")
     result = poisoned.assistant.handle_sync(raw("indirect-injection-owned-account"), ALICE)
+    _report_blocked_response(result)
+    if not result.proposed_actions:
+        note(
+            "no validated action reached the gateway; capability check not exercised by this reply"
+        )
     for p in result.proposed_actions:
         try:
             poisoned.gateway.execute(ALICE, p, Confirmation(action_digest(ALICE, p), "alice"))
@@ -776,6 +806,7 @@ def stage_observe(make_client: Callable[[str], object] | None = None) -> int:
         GatewayLogReader,
         GuardrailObserver,
         InvocationLogReader,
+        LogReadError,
         PolicyObserver,
         ar_guardrail_id,
         gateway_id_from_url,
@@ -804,13 +835,17 @@ def stage_observe(make_client: Callable[[str], object] | None = None) -> int:
     if not any((engine, invocation_group, gateway_group, guardrail_ids)):
         denied("set SEC310_POLICY_ENGINE_ID or source exports from scripts/live_logging.py up")
         return 2
+    run_id = os.environ.get("SEC310_RUN_ID")
+    if invocation_group and not run_id:
+        denied(
+            "set SEC310_RUN_ID before reading invocation logs; unfiltered account-wide display is disabled"
+        )
+        return 2
     missing = False
 
     if invocation_group:
-        step(f"Bedrock invocation logs · {invocation_group}")
-        records = InvocationLogReader(make_client("logs")).records(
-            invocation_group, run_id=os.environ.get("SEC310_RUN_ID")
-        )
+        step(f"Bedrock invocation logs · {invocation_group} · run={run_id}")
+        records = InvocationLogReader(make_client("logs")).records(invocation_group, run_id=run_id)
         if not records:
             note(
                 "no matching invocation records yet; run a live model call and retry after delivery"
@@ -879,6 +914,13 @@ def stage_observe(make_client: Callable[[str], object] | None = None) -> int:
         calls = [r for r in requests if r.method == "tools/call"]
         if not calls:
             note("no recorded tools/call requests yet; run demo live and retry after delivery")
+            missing = True
+        if any(r.decision == "UNCLASSIFIED_ERROR" for r in calls):
+            raise LogReadError(
+                "gateway logs contain an unclassified service error; not a policy verdict"
+            )
+        if any(r.decision not in ("ALLOW", "DENY", "REJECTED") for r in calls):
+            note("some tools/call requests in the window have no complete decision record yet")
             missing = True
         for r in calls[-12:]:
             note(f"{r.tool} {r.account_id}: {r.decision}")
