@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SEC310 live ticket lab</title>
+  <style>
+    :root{--ink:#232f3e;--orange:#ff9900;--blue:#0073bb;--lightblue:#00a1c9;--success:#1d8102;--danger:#d13212;--warn:#f2b705;--bg:#f4f6f8;--card:#fff;--line:#d5dbdb;--text:#16191f;--muted:#545b64;--disabled:#aab7b8;--shadow:0 2px 8px rgba(0,0,0,.12)}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:"Amazon Ember","Helvetica Neue",Arial,sans-serif;font-size:16px}button,select{font:inherit}
+    header{height:74px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 32px;border-bottom:4px solid var(--orange)}
+    .brand{display:flex;align-items:center;gap:16px}.mark{width:38px;height:38px;border:2px solid var(--orange);border-radius:50%;display:grid;place-items:center;font-weight:800}.brand h1{font-size:21px;margin:0}.brand p{margin:3px 0 0;color:#d5dbdb;font-size:13px}.model{font-size:13px;background:#172536;border:1px solid #627d98;padding:9px 12px;border-radius:4px;max-width:470px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    main{padding:24px 28px 40px;max-width:1600px;margin:auto}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:18px}.toolbar .spacer{flex:1}.button{border:1px solid #879596;background:#fff;color:var(--text);padding:9px 15px;border-radius:4px;cursor:pointer;font-weight:650}.button:hover{background:#f1faff}.button.primary{background:var(--blue);border-color:var(--blue);color:#fff}.button.attack{background:#fff4f2;border-color:var(--danger);color:#9f1c0b}.button.stop{background:#fff8e5;border-color:#b7791f;color:#704b00}.button:disabled{opacity:.48;cursor:not-allowed}
+    .story{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}.beat{background:#fff;border:1px solid var(--line);border-top:4px solid var(--blue);padding:15px 17px;min-height:91px;box-shadow:0 1px 2px rgba(0,0,0,.05)}.beat strong{display:block;font-size:17px;margin-bottom:7px}.beat span{color:var(--muted);font-size:14px}.beat.danger{border-top-color:var(--danger)}.beat.safe{border-top-color:var(--success)}
+    .layout{display:grid;grid-template-columns:minmax(560px,1.18fr) minmax(470px,.82fr);gap:20px}.panel{background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:6px;overflow:hidden}.panel-head{padding:18px 20px 15px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:flex-start}.panel-head h2{font-size:21px;margin:0 0 4px}.panel-head p{margin:0;color:var(--muted);font-size:14px}.capture{padding:6px 10px;border-radius:12px;background:#eef7ff;color:#005b9f;font-size:12px;font-weight:750}.capture.off{background:#eaeded;color:#545b64}
+    table{width:100%;border-collapse:collapse}th{text-align:left;padding:11px 14px;background:#f2f3f3;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}td{padding:13px 14px;border-top:1px solid #eaeded;vertical-align:top}.ticket-id{font-weight:800;color:#005b9f}.subject{font-weight:700;margin-bottom:4px}.body{color:var(--muted);font-size:14px;line-height:1.35;white-space:pre-wrap;max-width:520px}.status{font-size:12px;font-weight:800;padding:5px 9px;border-radius:12px;display:inline-block}.status.OPEN{background:#e9f7e6;color:#176d09}.status.CLOSED{background:#fde7e3;color:#9f1c0b}.source{margin-top:6px;font-size:11px;color:#687078}.source.external{color:var(--danger);font-weight:700}
+    .runbox{padding:18px 20px}.stage-tabs{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:14px}.stage{border:1px solid #879596;background:#fff;padding:9px 5px;border-radius:4px;font-weight:800;cursor:pointer}.stage.active{background:var(--ink);color:#fff;border-color:var(--ink)}.stage small{display:block;font-weight:500;font-size:10px;margin-top:2px;color:inherit;opacity:.75}.run-controls{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end;margin-bottom:18px}.run-controls label{font-size:13px;color:var(--muted)}.run-controls select{width:100%;margin-top:5px;padding:10px;border:1px solid #879596;border-radius:4px;background:#fff}.run-controls .button{height:42px}
+    .empty{padding:42px 20px;text-align:center;color:var(--muted);border:1px dashed #aab7b8;border-radius:4px}.result{border-top:1px solid var(--line);padding-top:17px}.result-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}.verdict{font-weight:850;font-size:13px;border-radius:3px;padding:6px 9px}.verdict.CHANGED{background:#fde7e3;color:#9f1c0b}.verdict.BLOCKED,.verdict.STOPPED{background:#fff3cd;color:#704b00}.verdict.NO_EFFECT{background:#e9f7e6;color:#176d09}.verdict.ERROR{background:#fde7e3;color:#9f1c0b}.run-source{font-size:12px;color:var(--muted)}.answer{padding:13px;background:#f7f8f8;border-left:4px solid var(--blue);line-height:1.45;margin-bottom:12px}.section-label{font-size:12px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.05em;margin:15px 0 7px}.proposal,.control,.effect{padding:9px 11px;border:1px solid #eaeded;border-radius:4px;margin-top:6px;font-size:13px}.proposal code{font-weight:800;color:#9f1c0b}.control{display:grid;grid-template-columns:110px 76px 1fr;gap:8px}.control b.PASS{color:var(--success)}.control b.DENY,.control b.ERROR{color:var(--danger)}.control b.HOLD{color:#8d5d00}.effect{display:flex;justify-content:space-between}.effect .executed{color:var(--danger);font-weight:800}.effect .denied{color:var(--success);font-weight:800}.note{margin-top:12px;color:var(--muted);font-size:13px;line-height:1.4}.regression{margin-top:12px;padding:11px;border-left:4px solid var(--success);background:#edf8eb;font-weight:800}.regression.FAIL{border-color:var(--danger);background:#fff1ef;color:var(--danger)}
+    .trace{margin-top:20px}.trace-list{padding:14px 20px 18px;display:grid;gap:7px}.trace-row{display:grid;grid-template-columns:100px 55px 1fr 80px;gap:12px;padding:7px 9px;background:#f7f8f8;font-size:12px}.danger-text{color:var(--danger);font-weight:800}.busy{position:fixed;inset:0;background:rgba(35,47,62,.66);display:none;place-items:center;color:#fff;z-index:5}.busy.show{display:grid}.spinner{width:52px;height:52px;border:5px solid rgba(255,255,255,.35);border-top-color:var(--orange);border-radius:50%;animation:spin .8s linear infinite;margin:auto auto 14px}@keyframes spin{to{transform:rotate(360deg)}}
+    .toast{position:fixed;right:24px;bottom:24px;padding:13px 18px;background:var(--ink);color:#fff;border-radius:4px;box-shadow:var(--shadow);display:none;max-width:520px;z-index:7}.toast.error{background:var(--danger)}
+    @media(max-width:1050px){.layout{grid-template-columns:1fr}.story{grid-template-columns:1fr}.model{max-width:300px}}@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+  </style>
+</head>
+<body>
+<header><div class="brand"><div class="mark">A</div><div><h1>SEC310 · Live support agent lab</h1><p>Model proposal ≠ control decision ≠ observed effect</p></div></div><div id="model" class="model">Loading model…</div></header>
+<main>
+  <div class="toolbar">
+    <button id="reset" class="button">Reset clean demo</button>
+    <button id="resetEffects" class="button">Reopen tickets · keep attack + capture</button>
+    <button id="attacker" class="button attack">Open malicious submitter</button>
+    <button id="stop" class="button stop">Request durable stop</button>
+    <span class="spacer"></span><span id="stateSummary"></span>
+  </div>
+  <section class="story">
+    <div class="beat"><strong>1 · Normal work</strong><span>Run V0 before the malicious ticket exists. The agent summarizes ordinary tickets.</span></div>
+    <div class="beat danger"><strong>2 · Live malicious input</strong><span>A separate user submits a real ticket. The next agent run reads its stored text.</span></div>
+    <div class="beat safe"><strong>3 · Build the boundary</strong><span>Replay the captured proposal through identity, validation, policy, stop and evidence controls.</span></div>
+  </section>
+  <section class="layout">
+    <div>
+      <div class="panel">
+        <div class="panel-head"><div><h2>Local ticket store</h2><p>The browser shows the state that actually changed.</p></div><span id="capture" class="capture off">No capture</span></div>
+        <table><thead><tr><th>Ticket</th><th>Customer</th><th>Request content</th><th>Status</th></tr></thead><tbody id="tickets"></tbody></table>
+      </div>
+      <div class="panel trace">
+        <div class="panel-head"><div><h2>Decision evidence</h2><p>Separate test runs; not one impossible execution trace.</p></div></div>
+        <div id="trace" class="trace-list"><div class="empty">No decisions recorded yet.</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Run the agent</h2><p>Use V0 for a new model call; replay the exact capture to compare patches.</p></div></div>
+      <div class="runbox">
+        <div id="stages" class="stage-tabs"></div>
+        <div class="run-controls"><label>Model input for this run<select id="runSource"><option value="new">New model call</option><option value="capture">Replay captured V0 response</option></select></label><button id="run" class="button primary">Run selected version</button></div>
+        <div id="result" class="empty">Start with a clean V0 run. Then submit the malicious ticket in the second window.</div>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="busy" class="busy"><div><div class="spinner"></div><strong>Waiting for the agent…</strong><div style="margin-top:8px;color:#d5dbdb">No record can change until a returned proposal reaches the effect boundary.</div></div></div>
+<div id="toast" class="toast"></div>
+<script>
+const stageNames={v0:'Unsafe',v1:'Identity',v2:'Validate',v3:'Policy',v4:'Stop',v5:'Evidence'};let selected='v0';let state=null;
+const el=id=>document.getElementById(id);const escapeText=v=>String(v??'');
+function node(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=escapeText(text);return n}
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const v=await r.json();if(!r.ok)throw new Error(v.error||`HTTP ${r.status}`);return v}
+function toast(message,error=false){const t=el('toast');t.textContent=message;t.className='toast'+(error?' error':'');t.style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>t.style.display='none',4200)}
+function stages(){const box=el('stages');box.replaceChildren();Object.entries(stageNames).forEach(([id,label])=>{const b=node('button','stage'+(selected===id?' active':''));b.append(node('span','',id.toUpperCase()),node('small','',label));b.onclick=()=>{selected=id;stages()};box.append(b)})}
+function renderTickets(items){const body=el('tickets');body.replaceChildren();items.forEach(t=>{const tr=node('tr');const a=node('td');a.append(node('div','ticket-id',t.ticket_id),node('div','source'+(t.submitted_by==='external user'?' external':''),t.submitted_by));const b=node('td','',t.customer_id);const c=node('td');c.append(node('div','subject',t.subject),node('div','body',t.body));const d=node('td');d.append(node('span','status '+t.status,t.status));tr.append(a,b,c,d);body.append(tr)})}
+function renderResult(r){const box=el('result');if(!r){box.className='empty';box.textContent='Start with a clean V0 run. Then submit the malicious ticket in the second window.';return}box.className='result';box.replaceChildren();const top=node('div','result-top');top.append(node('span','verdict '+r.status,r.status),node('span','run-source',`${r.stage.toUpperCase()} · ${r.source} · run ${r.run_id}`));box.append(top);if(r.answer)box.append(node('div','answer',r.answer));if(r.proposals.length){box.append(node('div','section-label','Model proposed'));r.proposals.forEach(p=>{const x=node('div','proposal');x.append(node('code','',`${p.operation||'unknown'} ${p.customer_id||''} ${p.ticket_id||''}`),node('span','',` · ${p.reason||'no reason'}`));box.append(x)})}if(r.controls.length){box.append(node('div','section-label','Independent controls'));r.controls.forEach(c=>{const x=node('div','control');x.append(node('strong','',c.control),node('b',c.status,c.status),node('span','',c.detail));box.append(x)})}if(r.effects.length){box.append(node('div','section-label','Observed effects'));r.effects.forEach(e=>{const x=node('div','effect');x.append(node('span','',`${e.operation} ${e.target}`),node('span',e.status==='EXECUTED'?'executed':'denied',e.before&&e.after?`${e.status}: ${e.before} → ${e.after}`:e.status));box.append(x)})}if(r.note)box.append(node('div','note',r.note));if(r.regression){const g=node('div','regression '+r.regression,`Regression invariant: ${r.regression} · malicious ticket must not change A-42`);box.append(g)}}
+function renderTrace(rows){const box=el('trace');box.replaceChildren();if(!rows.length){box.append(node('div','empty','No decisions recorded yet.'));return}rows.slice().reverse().forEach(r=>{const x=node('div','trace-row');x.append(node('span','',r.run_id),node('b','',r.stage.toUpperCase()),node('span','',`${r.source} · ${r.proposals} proposal(s)`),node('b',r.executed_effects?'danger-text':'',r.executed_effects?`${r.executed_effects} EFFECT`:(r.regression||r.status)));box.append(x)})}
+function render(s){state=s;el('model').textContent=`Model: ${s.model} · all ticket effects local`;el('capture').textContent=s.capture_available?`Captured: ${s.capture_source}`:'No captured model response';el('capture').className='capture'+(s.capture_available?'':' off');el('stateSummary').textContent=s.stop_requested?'STOP REQUESTED':'Ready';el('stop').textContent=s.stop_requested?'Clear durable stop':'Request durable stop';el('runSource').querySelector('option[value="capture"]').disabled=!s.capture_available;renderTickets(s.tickets);renderResult(s.last_run);renderTrace(s.decisions);el('busy').className='busy'+(s.busy?' show':'')}
+async function refresh(){try{render(await api('/api/state'))}catch(e){toast(e.message,true)}}
+el('run').onclick=async()=>{el('busy').className='busy show';try{await api('/api/run',{stage:selected,reuse_capture:el('runSource').value==='capture'});await refresh()}catch(e){toast(e.message,true);await refresh()}};
+el('reset').onclick=async()=>{if(!confirm('Reset tickets, malicious submissions, capture and evidence?'))return;try{render(await api('/api/reset',{}));toast('Clean demo restored')}catch(e){toast(e.message,true)}};
+el('resetEffects').onclick=async()=>{try{render(await api('/api/reset-effects',{}));toast('Ticket effects reset; attack and model capture preserved')}catch(e){toast(e.message,true)}};
+el('attacker').onclick=()=>window.open('/submit','sec310-attacker','width=660,height=760');
+el('stop').onclick=async()=>{try{render(await api('/api/stop',{requested:!state.stop_requested}));toast(state.stop_requested?'Durable stop requested':'Durable stop cleared')}catch(e){toast(e.message,true)}};
+stages();refresh();setInterval(()=>{if(!document.hidden)refresh()},1500);
+</script>
+</body>
+</html>

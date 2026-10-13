@@ -27,6 +27,39 @@ uv run python -m sec310_sample.demo unsafe  # or one stage: identity | untrusted
 
 Without `uv`: `python3 -m pytest` and `PYTHONPATH=src python3 -m sec310_sample.demo all` (needs `pydantic` and `pytest` installed).
 
+### Browser demo: submit the attack live
+
+The CLI fixture starts after attacker-controlled text already exists. The separate browser demo
+shows the missing first step: an external user submits a support ticket through a real local HTTP
+form, the stored ticket reaches the agent on its next run, and the UI displays any actual local
+effect separately from the model proposal.
+
+```bash
+# Deterministic rehearsal; all inference and records stay local
+uv run python -m sec310_sample.ticket_demo --open
+
+# Real Bedrock inference; ticket storage and effects are still local demo-only data
+export AWS_PROFILE=<named-development-profile> AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
+unset AWS_BEARER_TOKEN_BEDROCK
+aws sts get-caller-identity --profile "$AWS_PROFILE"   # stop if this fails or is the wrong account
+export SEC310_MODEL_ID=<Bedrock model id>
+export SEC310_RUN_ID="sec310-ticket-$(date +%Y%m%d-%H%M%S)"
+uv run python -m sec310_sample.ticket_demo --live --open
+```
+
+Use the operator console in the first window and **Open malicious submitter** in the second.
+Run clean V0, submit the ticket, then run V0 again. If that real model produced an unwanted
+proposal, choose **Replay captured V0 response**, reopen ticket effects, and advance through V1–V5.
+The replay is the exact captured response, not a fabricated fallback. A live model may decline or
+return malformed output; the UI reports that take honestly.
+
+V1 identity and V2 screening/schema checks intentionally do not authorize this well-shaped,
+same-customer action; V3's independent action policy is the first boundary that denies it. V4
+shows durable stop before admission/effect, and V5 records the decision plus the no-change release
+invariant. Add `--managed-guardrail` only when the configured Bedrock Guardrail environment is
+available; otherwise the demo uses the labelled deterministic local signal. See
+[docs/live-ticket-demo.md](docs/live-ticket-demo.md) for the exact story and limitations.
+
 `make check` runs the disclosure scan with built-in patterns. To add an external denylist (kept outside the repo):
 `make check DENYLIST=/path/to/denylist.txt` — a missing file is an error, never a silent downgrade.
 `scripts/check_tags.sh` proves every tag builds and passes from a fresh checkout.
@@ -73,11 +106,14 @@ src/sec310_sample/
   telemetry.py            P5  Tracer: keyed hashes, runtime scrub, versioned, redaction-tested
   evaluation.py           P5  corpus runner
   model.py                    ScriptedModel (offline, gullible) + optional BedrockModel
+  ticket_demo.py              loopback browser server, ticket state, proposal capture/replay
+  ticket_demo_web/            dependency-free operator and malicious-submitter views
   tools/                      EvidenceStore, GodModeClient (v0), ReadClient, WriteClient
   demo/                       python -m sec310_sample.demo
 fixtures/                     synthetic evidence + adversarial request fixtures
 corpus/regression.json        versioned behavioural expectations
 docs/walkthrough.md           segment-by-segment presenter map
+docs/live-ticket-demo.md      live ingress → model proposal → local effect → patch replay
 docs/failure-policy.md        the decision table, explained
 scripts/scan_identifiers.py   disclosure scan (run before publishing anything)
 scripts/check_tags.sh         every tag builds + passes from a fresh checkout
