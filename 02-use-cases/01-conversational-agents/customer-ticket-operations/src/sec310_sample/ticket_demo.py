@@ -39,7 +39,7 @@ from sec310_sample.model import (
     _rejects_tool_use,
     _unfence,
 )
-from sec310_sample.ticket_demo_patches import PATCH_TITLES, PATCHES, PatchContext
+from sec310_sample.ticket_demo_patches import PATCH_LESSONS, PATCH_TITLES, PATCHES, PatchContext
 
 WEB_ROOT = Path(__file__).with_name("ticket_demo_web")
 MAX_REQUEST_BYTES = 16_384
@@ -339,6 +339,9 @@ class DemoState:
         with self.lock:
             if self.busy:
                 raise DemoConflict("wait for the current agent run to finish")
+            for existing in self.tickets.values():
+                if existing.subject == subject and existing.body == body:
+                    return copy.deepcopy(existing)
             ticket = Ticket(
                 f"A-{self._next_ticket}",
                 "customer-a",
@@ -388,6 +391,7 @@ class DemoState:
                 "stop_requested": self.stop_requested,
                 "active_stage": self.active_stage,
                 "active_title": PATCH_TITLES[self.active_stage],
+                "active_lesson": PATCH_LESSONS[self.active_stage],
                 "capture_available": capture_current,
                 "capture_stale": self.captured_response is not None and not capture_current,
                 "capture_source": self.capture_source,
@@ -640,6 +644,23 @@ class DemoState:
                 "No unsafe proposal is fabricated."
                 if "ACTION:" in ticket_text
                 else "Normal run: the model proposed no ticket mutation."
+            )
+        elif stage == "v0" and result.status == "CHANGED":
+            result.note = "VULNERABLE: no independent boundary stopped the model proposal."
+        elif stage == "v1" and result.status == "CHANGED":
+            result.note = "STILL VULNERABLE: identity passed because both the ticket and target are Customer A."
+        elif stage == "v2" and result.status == "CHANGED":
+            result.note = "STILL VULNERABLE: screening and a valid output shape did not authorize this action."
+        elif stage == "v3" and result.status == "BLOCKED":
+            result.note = "PROTECTED: action policy denied close_ticket before the effect."
+        elif stage == "v4" and result.status == "BLOCKED":
+            result.note = (
+                "Policy already blocked this action. Request durable stop before running V4 to "
+                "demonstrate admission control."
+            )
+        elif stage == "v5" and result.status == "BLOCKED":
+            result.note = (
+                "EVIDENCE: the denied proposal and unchanged ticket are recorded separately."
             )
         if stage == "v5":
             result.regression = (

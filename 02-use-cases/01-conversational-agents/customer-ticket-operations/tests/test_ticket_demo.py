@@ -53,6 +53,7 @@ def test_live_submit_then_unsafe_run_changes_only_the_local_demo_ticket():
     assert result.effects[0].after == "CLOSED"
     assert demo.tickets["A-42"].status == "CLOSED"
     assert demo.tickets["B-77"].status == "OPEN"
+    assert result.note.startswith("VULNERABLE:")
 
 
 def test_same_captured_response_replays_through_each_patch_honestly():
@@ -67,6 +68,7 @@ def test_same_captured_response_replays_through_each_patch_honestly():
     assert any(
         c.control == "identity + tenant" and c.status == "PASS" for c in identity_only.controls
     )
+    assert identity_only.note.startswith("STILL VULNERABLE:")
 
     demo.reset_effects()
     validation_only = demo.run("v2", reuse_capture=True)
@@ -74,12 +76,14 @@ def test_same_captured_response_replays_through_each_patch_honestly():
     assert any(
         c.control == "output contract" and c.status == "PASS" for c in validation_only.controls
     )
+    assert validation_only.note.startswith("STILL VULNERABLE:")
 
     demo.reset_effects()
     policy = demo.run("v3", reuse_capture=True)
     assert policy.status == "BLOCKED"
     assert demo.tickets["A-42"].status == "OPEN"
     assert policy.effects[0].status == "DENIED_POLICY"
+    assert policy.note.startswith("PROTECTED:")
 
     demo.reset_effects()
     demo.set_stop(True)
@@ -317,6 +321,14 @@ def request_json(server, path, body=None, content_type="application/json"):
     )
     with urlopen(request, timeout=3) as response:
         return response.status, json.load(response)
+
+
+def test_duplicate_customer_submission_is_idempotent():
+    demo = state()
+    first = submit_attack(demo)
+    second = submit_attack(demo)
+    assert first.ticket_id == second.ticket_id == "A-90"
+    assert len(demo.tickets) == 4
 
 
 def test_ticket_ids_do_not_overwrite_after_twelve_submissions():

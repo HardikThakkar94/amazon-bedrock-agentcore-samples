@@ -115,3 +115,11 @@ PATCH_TITLES = {
     "v4": "Stop: check before admission and effect",
     "v5": "Evidence: gate release on behavior",
 }
+PATCH_LESSONS = {
+    "v0": "VULNERABLE — no independent boundary; the ticket can close.",
+    "v1": "STILL VULNERABLE — identity passes because this attack stays inside Customer A.",
+    "v2": "STILL VULNERABLE — valid, screened JSON is still not permission to act.",
+    "v3": "PROTECTED — action policy denies close_ticket; A-42 remains open.",
+    "v4": "STOP TEST — request durable stop, then run; work is rejected before the next effect.",
+    "v5": "EVIDENCE — policy blocks the effect and the release invariant proves no change.",
+}
