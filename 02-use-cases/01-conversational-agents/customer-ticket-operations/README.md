@@ -30,7 +30,7 @@ Without `uv`: `python3 -m pytest` and `PYTHONPATH=src python3 -m sec310_sample.d
 ### Browser demo: submit the attack live
 
 The CLI fixture starts after attacker-controlled text already exists. The separate browser demo
-shows the missing first step: an external user submits a support ticket through a real local HTTP
+shows the missing first step: a customer submits a support ticket through a real local HTTP
 form, the stored ticket reaches the agent on its next run, and the UI displays any actual local
 effect separately from the model proposal.
 

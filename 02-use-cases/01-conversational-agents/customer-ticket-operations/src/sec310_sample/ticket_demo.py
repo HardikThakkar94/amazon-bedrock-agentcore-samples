@@ -344,7 +344,7 @@ class DemoState:
                 "customer-a",
                 subject,
                 body,
-                submitted_by="external user",
+                submitted_by="customer",
             )
             self._next_ticket += 1
             self.tickets[ticket.ticket_id] = ticket

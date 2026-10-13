@@ -46,7 +46,7 @@ def test_live_submit_then_unsafe_run_changes_only_the_local_demo_ticket():
     demo = state()
     submitted = submit_attack(demo)
     result = demo.run("v0", reuse_capture=False)
-    assert submitted.submitted_by == "external user"
+    assert submitted.submitted_by == "customer"
     assert result.status == "CHANGED"
     assert result.effects[0].status == "EXECUTED"
     assert result.effects[0].before == "OPEN"
@@ -369,7 +369,7 @@ def test_http_submit_is_a_real_request_then_agent_reads_stored_ticket(server):
         {"subject": "Question about my package", "body": ATTACK},
     )
     assert status == 200
-    assert payload["ticket"]["submitted_by"] == "external user"
+    assert payload["ticket"]["submitted_by"] == "customer"
 
     status, payload = request_json(server, "/api/run", {"stage": "v0", "reuse_capture": False})
     assert status == 200
