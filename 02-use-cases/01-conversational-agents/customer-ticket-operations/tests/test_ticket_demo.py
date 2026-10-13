@@ -331,6 +331,52 @@ def test_duplicate_customer_submission_is_idempotent():
     assert len(demo.tickets) == 4
 
 
+def test_ticket_editor_exposes_content_and_status_diff_without_model_evidence():
+    demo = state()
+    ticket = demo.update_ticket("A-42", "Changed subject", "Changed description", "CLOSED")
+    public = demo.public_state()
+    assert ticket.status == "CLOSED"
+    comparison = public["store_comparison"]["A-42"]
+    assert comparison["before"] == {
+        "subject": "Correct billing address",
+        "body": "Please update the postal code on my next invoice.",
+        "status": "OPEN",
+    }
+    assert comparison["after"] == {
+        "subject": "Changed subject",
+        "body": "Changed description",
+        "status": "CLOSED",
+    }
+    assert comparison["changed_fields"] == ["subject", "body", "status"]
+    assert public["store_change_source"].startswith("Presenter edited A-42")
+    assert public["decisions"] == []
+
+
+def test_editing_ticket_content_invalidates_older_model_capture():
+    demo = state()
+    demo.run("v0", reuse_capture=False)
+    assert demo.public_state()["capture_available"] is True
+    demo.update_ticket("A-42", "Correct billing address", "New customer text", "OPEN")
+    assert demo.public_state()["capture_available"] is False
+    assert demo.public_state()["capture_stale"] is True
+
+
+def test_presenter_presets_change_only_local_state_and_active_build():
+    demo = state()
+    demo.load_scenario("compromised")
+    assert demo.tickets["A-42"].status == "CLOSED"
+    assert demo.active_stage == "v0"
+    assert len(demo.tickets) == 4
+    demo.load_scenario("policy-blocked")
+    assert demo.tickets["A-42"].status == "OPEN"
+    assert demo.active_stage == "v3"
+    demo.load_scenario("stopped")
+    assert demo.active_stage == "v4" and demo.stop_requested is True
+    demo.load_scenario("normal")
+    assert demo.active_stage == "v0" and demo.stop_requested is False
+    assert len(demo.tickets) == 3
+
+
 def test_ticket_ids_do_not_overwrite_after_twelve_submissions():
     demo = state()
     ids = {demo.submit_ticket(f"subject {i}", "body").ticket_id for i in range(12)}
@@ -407,6 +453,29 @@ def test_apply_next_patch_exposes_the_actual_code_and_reopens_effects(server):
     assert "customer != context.operator_customer" in code["source"]
 
 
+def test_http_presenter_controls_return_comparison_state(server):
+    status, payload = request_json(
+        server,
+        "/api/ticket",
+        {
+            "ticket_id": "A-42",
+            "subject": "Changed subject",
+            "body": "Changed description",
+            "status": "CLOSED",
+        },
+    )
+    assert status == 200
+    comparison = payload["state"]["store_comparison"]["A-42"]
+    assert comparison["before"]["status"] == "OPEN"
+    assert comparison["after"]["status"] == "CLOSED"
+    assert comparison["after"]["body"] == "Changed description"
+    status, payload = request_json(server, "/api/scenario", {"name": "policy-blocked"})
+    assert status == 200
+    assert payload["active_stage"] == "v3"
+    assert next(t for t in payload["tickets"] if t["ticket_id"] == "A-42")["status"] == "OPEN"
+    assert payload["decisions"] == []
+
+
 def test_http_bounds_and_content_type_are_enforced(server):
     with pytest.raises(HTTPError) as exc:
         request_json(server, "/api/tickets", {"subject": "x", "body": "x"}, "text/plain")
@@ -432,3 +501,6 @@ def test_ui_renders_external_text_as_text_not_html():
     assert "innerHTML" not in html
     assert "window.open('/submit'" in html
     assert "Live Demo" in html and "Code Diff" in html and "Trace &amp; CloudWatch" in html
+    assert "Before" in html and "Current" in html and "Changes" in html
+    assert "Edit tickets" in html and "Presenter state control" in html
+    assert "!editStatuses)refresh()" in html

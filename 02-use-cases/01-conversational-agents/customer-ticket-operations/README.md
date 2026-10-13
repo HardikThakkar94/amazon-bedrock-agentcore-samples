@@ -43,7 +43,10 @@ export SEC310_RUN_ID="sec310-ticket-$(date +%Y%m%d-%H%M%S)"
 uv run python -m sec310_sample.ticket_demo --live --open
 ```
 
-The single browser contains **Live Demo**, **Code Diff**, and **Trace & CloudWatch** tabs. Run V0
+The single browser contains **Live Demo**, **Code Diff**, and **Trace & CloudWatch** tabs. The
+Ticket Store can switch between **Before**, **Current**, and highlighted **Changes**; a presenter
+can edit ticket subject, description, and OPEN/CLOSED status or load Normal/Compromised/Policy Blocked/Stopped state presets.
+Those presenter controls are visibly labelled and create no Bedrock or CloudWatch record. Run V0
 live before the attack, open **Malicious submitter**, submit the ticket, then run V0 live again.
 A successful attacked V0 call becomes the current capture only for that exact ticket set; adding
 or changing ticket input makes an older capture visibly stale and disables replay.

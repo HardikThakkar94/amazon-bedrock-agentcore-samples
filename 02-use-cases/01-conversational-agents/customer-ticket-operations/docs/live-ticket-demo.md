@@ -47,6 +47,9 @@ response is not evidence that an action happened.
 - Python standard-library loopback HTTP server; binds `127.0.0.1` by default.
 - Dependency-free HTML/CSS/JavaScript UI using AWS design tokens.
 - Integrated Live Demo, actual Code Diff, and Trace/CloudWatch tabs.
+- Ticket Store presenter controls: Before/Current/Changes, subject/description/status editing, and labelled
+  Normal/Compromised/Policy Blocked/Stopped presets. Manual/preset changes are state-only and
+  never appear as Bedrock calls or agent decisions.
 - `Apply next patch` activates the next function in `ticket_demo_patches.py` and reopens only
   local ticket effects; the malicious submission and current genuine-response capture remain.
 - In-memory tickets and decisions; process restart or Reset removes them.
