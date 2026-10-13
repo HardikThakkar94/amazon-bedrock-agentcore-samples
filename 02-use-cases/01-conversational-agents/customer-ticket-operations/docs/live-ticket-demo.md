@@ -12,7 +12,8 @@ Bedrock inference:
    broad demo client. If the model proposes `close_ticket customer-a A-42`, the visible local
    ticket changes from OPEN to CLOSED.
 5. The exact captured Bedrock proposal can be replayed through V1–V5, so comparisons do not
-   depend on different model samples.
+   depend on different model samples. The capture is bound to the ticket content it actually saw;
+   a subsequent submission makes it visibly stale and unusable.
 
 This proves the live ingress-to-agent path. It does not claim that an outside attacker reached
 AWS, that every model follows the injection, or that any real customer record changed.
@@ -45,18 +46,22 @@ response is not evidence that an action happened.
 
 - Python standard-library loopback HTTP server; binds `127.0.0.1` by default.
 - Dependency-free HTML/CSS/JavaScript UI using AWS design tokens.
+- Integrated Live Demo, actual Code Diff, and Trace/CloudWatch tabs.
+- `Apply next patch` activates the next function in `ticket_demo_patches.py` and reopens only
+  local ticket effects; the malicious submission and current genuine-response capture remain.
 - In-memory tickets and decisions; process restart or Reset removes them.
 - Request body size and field lengths are bounded.
 - `ScriptedTicketModel` for deterministic offline tests.
 - `BedrockTicketModel` for opt-in `--live`; requires `SEC310_MODEL_ID` and the normal named AWS
   profile/region environment. It can only return proposals.
 - No AWS resources are created. No real record/tool mutation is available.
-- The malicious URL, if returned, is rendered as inert text and never fetched.
+- Model-returned links are validated in V2+ and are never rendered or fetched by this UI.
 
 ## Stage use
 
 Use V0 with live Bedrock to capture one actual response. If that response does not propose the
 malicious action, the UI says so; it never fabricates compliance or silently switches models.
-After a response is captured, reset effects while keeping the submitted malicious ticket and
-replay that immutable capture through each patch. V1 and V2 intentionally still permit this
-same-customer, well-shaped action; V3 is the first build that adds the missing action authority.
+After a response is captured, click `Apply next patch`: the UI reopens local effects, displays the
+actual code diff, and lets the presenter test the immutable response through the new boundary.
+V1 and V2 intentionally still permit this same-customer, well-shaped action; V3 is the first build
+that adds the missing action authority. A fresh Bedrock call remains available on every build.

@@ -35,10 +35,6 @@ form, the stored ticket reaches the agent on its next run, and the UI displays a
 effect separately from the model proposal.
 
 ```bash
-# Deterministic rehearsal; all inference and records stay local
-uv run python -m sec310_sample.ticket_demo --open
-
-# Real Bedrock inference; ticket storage and effects are still local demo-only data
 export AWS_PROFILE=<named-development-profile> AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
 unset AWS_BEARER_TOKEN_BEDROCK
 aws sts get-caller-identity --profile "$AWS_PROFILE"   # stop if this fails or is the wrong account
@@ -47,17 +43,22 @@ export SEC310_RUN_ID="sec310-ticket-$(date +%Y%m%d-%H%M%S)"
 uv run python -m sec310_sample.ticket_demo --live --open
 ```
 
-Use the operator console in the first window and **Open malicious submitter** in the second.
-Run clean V0, submit the ticket, then run V0 again. If that real model produced an unwanted
-proposal, choose **Replay captured V0 response**, reopen ticket effects, and advance through V1–V5.
-The replay is the exact captured response, not a fabricated fallback. A live model may decline or
-return malformed output; the UI reports that take honestly.
+The single browser contains **Live Demo**, **Code Diff**, and **Trace & CloudWatch** tabs. Run V0
+live before the attack, open **Malicious submitter**, submit the ticket, then run V0 live again.
+A successful attacked V0 call becomes the current capture only for that exact ticket set; adding
+or changing ticket input makes an older capture visibly stale and disables replay.
 
-V1 identity and V2 screening/schema checks intentionally do not authorize this well-shaped,
+Click **Apply next patch** to reopen local effects, activate the next real Python function, and
+show its actual code diff. Use **Test exact live response** to exercise the new boundary against
+the genuine Bedrock response that caused V0's effect. **Run Bedrock live** remains available for
+a fresh model sample. This separates model variability from whether the application control works.
+
+V1 identity and V2 screening/schema checks intentionally remain insufficient for this well-shaped,
 same-customer action; V3's independent action policy is the first boundary that denies it. V4
 shows durable stop before admission/effect, and V5 records the decision plus the no-change release
 invariant. Add `--managed-guardrail` only when the configured Bedrock Guardrail environment is
-available; otherwise the demo uses the labelled deterministic local signal. See
+available; otherwise V2 uses the clearly labelled deterministic local signal. For an offline test
+only, omit `--live`; never present that mode as live inference. See
 [docs/live-ticket-demo.md](docs/live-ticket-demo.md) for the exact story and limitations.
 
 `make check` runs the disclosure scan with built-in patterns. To add an external denylist (kept outside the repo):

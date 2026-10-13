@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import argparse
 import copy
+import difflib
+import hashlib
+import inspect
 import json
 import os
 import re
@@ -19,7 +22,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Literal, Protocol
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -36,6 +39,7 @@ from sec310_sample.model import (
     _rejects_tool_use,
     _unfence,
 )
+from sec310_sample.ticket_demo_patches import PATCH_TITLES, PATCHES, PatchContext
 
 WEB_ROOT = Path(__file__).with_name("ticket_demo_web")
 MAX_REQUEST_BYTES = 16_384
@@ -69,8 +73,14 @@ class TicketResponse(BaseModel):
     @field_validator("links")
     @classmethod
     def safe_links(cls, links: list[str]) -> list[str]:
-        if any(not link.startswith("/") or link.startswith("//") for link in links):
-            raise ValueError("only application-relative links are allowed")
+        if any(
+            not link.startswith("/")
+            or link.startswith("//")
+            or "\\" in link
+            or any(ord(char) < 32 for char in link)
+            for link in links
+        ):
+            raise ValueError("only safe application-relative links are allowed")
         return links
 
 
@@ -155,7 +165,7 @@ class BedrockTicketModel:
         request: dict[str, Any] = {
             "modelId": self.model_id,
             "messages": [{"role": "user", "content": [{"text": user_text}]}],
-            "inferenceConfig": {"maxTokens": 1_200},
+            "inferenceConfig": {"maxTokens": 2_000},
         }
         if not self._system_in_message:
             request["system"] = [{"text": instructions}]
@@ -182,8 +192,11 @@ class BedrockTicketModel:
                     self._tool_choice = _AUTO_TOOL_CHOICE
                 else:
                     raise
-        if response.get("stopReason") == "max_tokens":
-            return "<model output truncated: stopReason=max_tokens>"
+        stop_reason = response.get("stopReason")
+        if stop_reason == "max_tokens":
+            raise RuntimeError("model output truncated: stopReason=max_tokens")
+        if stop_reason == "content_filtered":
+            raise RuntimeError("provider blocked model output: stopReason=content_filtered")
         blocks = response["output"]["message"]["content"]
         for block in blocks:
             if "toolUse" in block:
@@ -247,8 +260,13 @@ class DemoState:
         self.busy = False
         self.revision = 0
         self.stop_requested = False
+        self.active_stage = "v0"
+        self._next_ticket = 90
         self.captured_response: str | None = None
         self.capture_source: str | None = None
+        self.capture_fingerprint: str | None = None
+        self.capture_ticket_count: int | None = None
+        self.capture_run_id: str | None = None
         self.last_run: RunResult | None = None
         self.decisions: list[dict[str, Any]] = []
         self.tickets: dict[str, Ticket] = {}
@@ -273,8 +291,13 @@ class DemoState:
                 ),
             }
             self.stop_requested = False
+            self.active_stage = "v0"
+            self._next_ticket = 90
             self.captured_response = None
             self.capture_source = None
+            self.capture_fingerprint = None
+            self.capture_ticket_count = None
+            self.capture_run_id = None
             self.last_run = None
             self.decisions = []
             self.revision += 1
@@ -289,7 +312,24 @@ class DemoState:
             self.last_run = None
             self.revision += 1
 
+    def apply_next_patch(self) -> str:
+        with self.lock:
+            if self.busy:
+                raise DemoConflict("an agent run is in progress")
+            index = STAGE_NUMBER[self.active_stage]
+            if index >= len(STAGES) - 1:
+                return self.active_stage
+            self.active_stage = STAGES[index + 1]
+            for ticket in self.tickets.values():
+                ticket.status = "OPEN"
+            self.stop_requested = False
+            self.last_run = None
+            self.revision += 1
+            return self.active_stage
+
     def submit_ticket(self, subject: str, body: str) -> Ticket:
+        if not isinstance(subject, str) or not isinstance(body, str):
+            raise ValueError("subject and body must be strings")
         subject = subject.strip()
         body = body.strip()
         if not subject or len(subject) > MAX_SUBJECT:
@@ -299,48 +339,116 @@ class DemoState:
         with self.lock:
             if self.busy:
                 raise DemoConflict("wait for the current agent run to finish")
-            number = 90 + sum(
-                ticket.ticket_id.startswith("A-9") for ticket in self.tickets.values()
-            )
             ticket = Ticket(
-                f"A-{number}",
+                f"A-{self._next_ticket}",
                 "customer-a",
                 subject,
                 body,
                 submitted_by="external user",
             )
+            self._next_ticket += 1
             self.tickets[ticket.ticket_id] = ticket
             self.revision += 1
             return copy.deepcopy(ticket)
 
     def set_stop(self, value: bool) -> None:
+        if not isinstance(value, bool):
+            raise ValueError("requested must be a boolean")
         with self.lock:
-            if self.busy:
-                raise DemoConflict("stop state cannot change during an active effect")
+            # A stop must remain writable while inference is in flight. It does not change the
+            # ticket snapshot or capture provenance, so it has its own state outside revision.
             self.stop_requested = value
-            self.revision += 1
+
+    def _ticket_fingerprint(self, tickets: list[Ticket] | None = None) -> str:
+        source = tickets if tickets is not None else list(self.tickets.values())
+        records = [
+            {
+                "ticket_id": ticket.ticket_id,
+                "customer_id": ticket.customer_id,
+                "subject": ticket.subject,
+                "body": ticket.body,
+                "submitted_by": ticket.submitted_by,
+            }
+            for ticket in source
+            if ticket.customer_id == "customer-a"
+        ]
+        return hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
 
     def public_state(self) -> dict[str, Any]:
         with self.lock:
+            capture_current = (
+                self.captured_response is not None
+                and self.capture_fingerprint == self._ticket_fingerprint()
+            )
             return {
                 "model": self.model.version,
+                "live_model": self.model.version.startswith("bedrock/"),
+                "guardrail": type(self.guardrail).__name__,
                 "busy": self.busy,
                 "stop_requested": self.stop_requested,
-                "capture_available": self.captured_response is not None,
+                "active_stage": self.active_stage,
+                "active_title": PATCH_TITLES[self.active_stage],
+                "capture_available": capture_current,
+                "capture_stale": self.captured_response is not None and not capture_current,
                 "capture_source": self.capture_source,
+                "capture_ticket_count": self.capture_ticket_count,
+                "capture_run_id": self.capture_run_id,
                 "tickets": [asdict(ticket) for ticket in self.tickets.values()],
                 "last_run": asdict(self.last_run) if self.last_run else None,
                 "decisions": copy.deepcopy(self.decisions[-20:]),
+                "observability": {
+                    "sec310_run": os.environ.get("SEC310_RUN_ID"),
+                    "region": os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
+                    "invocation_log_group": os.environ.get("SEC310_INVOCATION_LOG_GROUP"),
+                    "scope": "Bedrock calls only; V3 policy and ticket effects are local",
+                },
             }
 
-    def run(self, stage: str, reuse_capture: bool) -> RunResult:
+    def code_view(self, stage: str | None = None) -> dict[str, Any]:
+        selected = stage or self.active_stage
+        if selected not in STAGES:
+            raise ValueError(f"unknown stage {selected!r}")
+        current = inspect.getsource(PATCHES[selected]).strip()
+        index = STAGE_NUMBER[selected]
+        previous = inspect.getsource(PATCHES[STAGES[index - 1]]).strip() if index else ""
+        diff = "\n".join(
+            difflib.unified_diff(
+                previous.splitlines(),
+                current.splitlines(),
+                fromfile=f"{STAGES[index - 1] if index else 'start'}",
+                tofile=selected,
+                lineterm="",
+            )
+        )
+        return {
+            "stage": selected,
+            "title": PATCH_TITLES[selected],
+            "path": f"src/sec310_sample/ticket_demo_patches.py::{selected}",
+            "source": current,
+            "diff": diff or current,
+            "shared_pipeline": "src/sec310_sample/ticket_demo.py::DemoState._run_snapshot",
+        }
+
+    def run(self, stage: str | None, reuse_capture: bool) -> RunResult:
+        if not isinstance(reuse_capture, bool):
+            raise ValueError("reuse_capture must be a boolean")
+        stage = stage or self.active_stage
         if stage not in STAGES:
             raise ValueError(f"unknown stage {stage!r}")
         with self.lock:
             if self.busy:
                 raise DemoConflict("an agent run is already in progress")
-            if reuse_capture and self.captured_response is None:
-                raise DemoConflict("capture a model response with V0 first")
+            capture_current = (
+                self.captured_response is not None
+                and self.capture_fingerprint == self._ticket_fingerprint()
+            )
+            if reuse_capture and not capture_current:
+                reason = (
+                    "captured response predates the current ticket set"
+                    if self.captured_response
+                    else "capture a model response with V0 first"
+                )
+                raise DemoConflict(reason)
             if STAGE_NUMBER[stage] >= STAGE_NUMBER["v4"] and self.stop_requested:
                 result = RunResult(
                     uuid.uuid4().hex[:12],
@@ -383,7 +491,10 @@ class DemoState:
     ) -> RunResult:
         run_id = uuid.uuid4().hex[:12]
         controls: list[ControlResult] = []
-        ticket_text = "\n".join(ticket.body for ticket in tickets)
+        ticket_text = json.dumps(
+            [{"subject": ticket.subject, "body": ticket.body} for ticket in tickets],
+            sort_keys=True,
+        )
 
         if STAGE_NUMBER[stage] >= STAGE_NUMBER["v2"]:
             guardrail = self.guardrail.assess(ticket_text, "INPUT")
@@ -454,6 +565,18 @@ class DemoState:
             )
             return self._commit_result(result, revision)
 
+        if not isinstance(raw, dict):
+            result = RunResult(
+                run_id,
+                stage,
+                source,
+                "ERROR",
+                controls=controls,
+                note=f"model output JSON must be an object, got {type(raw).__name__}",
+                regression="ERROR" if stage == "v5" else None,
+            )
+            return self._commit_result(result, revision)
+
         if STAGE_NUMBER[stage] >= STAGE_NUMBER["v2"]:
             try:
                 parsed = TicketResponse.model_validate(raw)
@@ -496,6 +619,9 @@ class DemoState:
                     raise DemoConflict("ticket state changed while the model was running")
                 self.captured_response = raw_response
                 self.capture_source = self.model.version
+                self.capture_fingerprint = self._ticket_fingerprint(tickets)
+                self.capture_ticket_count = len(tickets)
+                self.capture_run_id = run_id
 
         result = RunResult(
             run_id,
@@ -522,7 +648,7 @@ class DemoState:
         return self._commit_result(result, revision)
 
     def _apply_proposals(self, result: RunResult, revision: int) -> None:
-        stage_number = STAGE_NUMBER[result.stage]
+        patch = PATCHES[result.stage]
         for proposal in result.proposals:
             if not isinstance(proposal, dict):
                 result.controls.append(ControlResult("proposal", "ERROR", "non-object proposal"))
@@ -530,37 +656,16 @@ class DemoState:
             operation = proposal.get("operation")
             customer = proposal.get("customer_id")
             ticket_id = proposal.get("ticket_id")
-            if stage_number >= STAGE_NUMBER["v1"]:
-                if customer != "customer-a":
-                    result.controls.append(
-                        ControlResult(
-                            "identity + tenant", "DENY", f"{customer} is outside operator scope"
-                        )
-                    )
-                    result.effects.append(
-                        EffectResult(str(operation), str(ticket_id), "DENIED_IDENTITY")
-                    )
-                    continue
-                result.controls.append(
-                    ControlResult(
-                        "identity + tenant", "PASS", "verified operator may reach customer-a"
-                    )
+            with self.lock:
+                decision = patch(PatchContext("customer-a", self.stop_requested), proposal)
+            result.controls.extend(
+                ControlResult(control.name, control.status, control.detail)
+                for control in decision.controls
+            )
+            if not decision.allow_effect:
+                result.effects.append(
+                    EffectResult(str(operation), str(ticket_id), decision.effect_status)
                 )
-            if stage_number >= STAGE_NUMBER["v3"] and operation == "close_ticket":
-                result.controls.append(
-                    ControlResult(
-                        "action policy",
-                        "DENY",
-                        "close_ticket capability is absent from this conversation",
-                    )
-                )
-                result.effects.append(EffectResult(str(operation), str(ticket_id), "DENIED_POLICY"))
-                continue
-            if stage_number >= STAGE_NUMBER["v4"] and self.stop_requested:
-                result.controls.append(
-                    ControlResult("durable stop", "DENY", "stop observed before effect")
-                )
-                result.effects.append(EffectResult(str(operation), str(ticket_id), "STOPPED"))
                 continue
             if operation != "close_ticket":
                 result.effects.append(EffectResult(str(operation), str(ticket_id), "NOT_EXECUTED"))
@@ -568,6 +673,14 @@ class DemoState:
             with self.lock:
                 if self.revision != revision:
                     raise DemoConflict("ticket state changed while the model was running")
+                # Read stop again while holding the same lock used for the effect. V4/V5 can be
+                # stopped while Bedrock inference is in flight.
+                if STAGE_NUMBER[result.stage] >= STAGE_NUMBER["v4"] and self.stop_requested:
+                    result.controls.append(
+                        ControlResult("durable stop", "DENY", "stop observed before effect")
+                    )
+                    result.effects.append(EffectResult(str(operation), str(ticket_id), "STOPPED"))
+                    continue
                 ticket = self.tickets.get(str(ticket_id))
                 if ticket is None or ticket.customer_id != customer:
                     result.effects.append(
@@ -575,6 +688,13 @@ class DemoState:
                     )
                     continue
                 before = ticket.status
+                if before == "CLOSED":
+                    result.effects.append(
+                        EffectResult(
+                            str(operation), ticket.ticket_id, "ALREADY_CLOSED", before, before
+                        )
+                    )
+                    continue
                 ticket.status = "CLOSED"
                 after = ticket.status
                 self.revision += 1
@@ -648,10 +768,28 @@ class DemoHTTPServer(ThreadingHTTPServer):
 class DemoHandler(BaseHTTPRequestHandler):
     server: DemoHTTPServer
 
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(10)
+
+    def _valid_host(self) -> bool:
+        hostname = urlparse("//" + self.headers.get("Host", "")).hostname
+        if hostname in ("127.0.0.1", "localhost"):
+            return True
+        self._json(HTTPStatus.MISDIRECTED_REQUEST, {"error": "loopback Host required"})
+        return False
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        path = urlparse(self.path).path
+        if not self._valid_host():
+            return
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
         if path == "/api/state":
             self._json(HTTPStatus.OK, self.server.state.public_state())
+            return
+        if path == "/api/code":
+            stage = parse_qs(parsed_url.query).get("stage", [None])[0]
+            self._json(HTTPStatus.OK, self.server.state.code_view(stage))
             return
         filename = "submit.html" if path == "/submit" else "index.html" if path == "/" else None
         if filename is None:
@@ -660,6 +798,8 @@ class DemoHandler(BaseHTTPRequestHandler):
         self._file(WEB_ROOT / filename, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if not self._valid_host():
+            return
         try:
             data = self._body()
             path = urlparse(self.path).path
@@ -671,16 +811,22 @@ class DemoHandler(BaseHTTPRequestHandler):
                 payload = self.server.state.public_state()
             elif path == "/api/tickets":
                 ticket = self.server.state.submit_ticket(
-                    str(data.get("subject", "")), str(data.get("body", ""))
+                    data.get("subject", ""), data.get("body", "")
                 )
                 payload = {"ticket": asdict(ticket)}
+            elif path == "/api/patch":
+                payload = {
+                    "active_stage": self.server.state.apply_next_patch(),
+                    "state": self.server.state.public_state(),
+                }
             elif path == "/api/stop":
-                self.server.state.set_stop(bool(data.get("requested", True)))
+                self.server.state.set_stop(data.get("requested", True))
                 payload = self.server.state.public_state()
             elif path == "/api/run":
-                result = self.server.state.run(
-                    str(data.get("stage", "")), bool(data.get("reuse_capture", False))
-                )
+                stage = data.get("stage")
+                if stage is not None and not isinstance(stage, str):
+                    raise ValueError("stage must be a string")
+                result = self.server.state.run(stage, data.get("reuse_capture", False))
                 payload = {"result": asdict(result)}
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -756,8 +902,8 @@ def main(argv: list[str] | None = None) -> int:
         "--open", action="store_true", help="open the operator console in a browser"
     )
     args = parser.parse_args(argv)
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        parser.error("the demo binds only to a loopback address")
+    if args.host not in ("127.0.0.1", "localhost"):
+        parser.error("the demo binds only to IPv4 loopback")
     model: TicketModel = BedrockTicketModel() if args.live else ScriptedTicketModel()
     guardrail: Guardrail = LocalGuardrail()
     if args.managed_guardrail:
@@ -766,7 +912,7 @@ def main(argv: list[str] | None = None) -> int:
         guardrail = BedrockGuardrail()
     state = DemoState(model, guardrail)
     server = DemoHTTPServer((args.host, args.port), state)
-    url = f"http://127.0.0.1:{server.server_port}/"
+    url = f"http://{args.host}:{server.server_port}/"
     print(f"SEC310 support-ticket demo: {url}")
     print(f"Attacker submitter view: {url}submit")
     print(f"Model: {model.version}; records: local process memory only")
