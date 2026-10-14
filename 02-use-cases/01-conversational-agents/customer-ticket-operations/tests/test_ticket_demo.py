@@ -549,7 +549,9 @@ def test_ticket_origin_distinguishes_form_from_preset_without_changing_the_row_l
     demo = state()
     submitted = submit_attack(demo)
     assert submitted.origin == "form" and submitted.submitted_by == "customer"
-    assert {t.origin for t in demo.tickets.values() if t.ticket_id in ("A-41", "A-42", "B-77")} == {"seed"}
+    assert {t.origin for t in demo.tickets.values() if t.ticket_id in ("A-41", "A-42", "B-77")} == {
+        "seed"
+    }
     preset = state()
     preset.load_scenario("compromised")
     created = [t for t in preset.tickets.values() if t.origin == "preset"]
