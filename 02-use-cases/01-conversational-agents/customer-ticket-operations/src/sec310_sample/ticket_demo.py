@@ -42,6 +42,7 @@ from sec310_sample.model import (
 from sec310_sample.ticket_demo_patches import PATCH_LESSONS, PATCH_TITLES, PATCHES, PatchContext
 
 WEB_ROOT = Path(__file__).with_name("ticket_demo_web")
+ICON_ASSETS = {"bedrock", "agentcore", "cloudwatch"}  # official AWS icons, served read-only
 MAX_REQUEST_BYTES = 16_384
 MAX_SUBJECT = 120
 MAX_BODY = 2_000
@@ -930,6 +931,13 @@ class DemoHandler(BaseHTTPRequestHandler):
         if path == "/api/code":
             stage = parse_qs(parsed_url.query).get("stage", [None])[0]
             self._json(HTTPStatus.OK, self.server.state.code_view(stage))
+            return
+        if path.startswith("/assets/") and path.endswith(".svg"):
+            name = path[len("/assets/") : -len(".svg")]
+            if name not in ICON_ASSETS:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                return
+            self._file(WEB_ROOT / "assets" / f"{name}.svg", "image/svg+xml")
             return
         filename = "submit.html" if path == "/submit" else "index.html" if path == "/" else None
         if filename is None:

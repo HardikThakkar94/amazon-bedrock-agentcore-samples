@@ -60,6 +60,22 @@ response is not evidence that an action happened.
 - No AWS resources are created. No real record/tool mutation is available.
 - Model-returned links are validated in V2+ and are never rendered or fetched by this UI.
 
+## In-page explanation (dry-run feedback)
+
+The first dry run asked for two things that used to live on slides: a progressive explanation of
+the flow and an architecture diagram of the actual demo, both reachable without leaving the IDE.
+
+- **What just happened** (bottom of Live Demo): seven nodes rendered from the latest run, not
+  from a script. Red marks an attacker-controlled input or an executed effect, green a boundary
+  that denied, blue a live model call. The caption states the lesson for the recorded status
+  (CHANGED, BLOCKED, STOPPED, NO_EFFECT, ERROR) in one sentence.
+- **Architecture** tab: a data-flow view of this page. The orange box is the Python boundary the
+  five patches change. Bedrock inference and CloudWatch invocation records are real; the ticket
+  store, the V3 policy decision and the OPEN → CLOSED effect are process-local; AgentCore Gateway +
+  Policy and Automated Reasoning appear in a dashed "separate proof" band because this page never
+  calls them, `demo live` does. Icons are the official AWS Architecture Icons, served from the
+  same loopback process (`/assets/<name>.svg`, allow-listed).
+
 ## Stage use
 
 Use V0 with live Bedrock to capture one actual response. If that response does not propose the

@@ -504,3 +504,42 @@ def test_ui_renders_external_text_as_text_not_html():
     assert "Before" in html and "Current" in html and "Changes" in html
     assert "Edit tickets" in html and "Presenter state control" in html
     assert "!editStatuses)refresh()" in html
+
+
+def test_architecture_tab_and_flow_strip_tell_the_truth_about_what_is_real():
+    html = (Path(__file__).parents[1] / "src/sec310_sample/ticket_demo_web/index.html").read_text()
+    # Dry-run feedback: the flow explanation and the architecture of the actual demo live in the UI.
+    assert 'data-tab="arch"' in html and "What just happened" in html
+    assert "renderFlow(s)" in html and "renderFlow(s);" in html.split("function render(s)")[1]
+    # The diagram separates what is real on stage from what stays local or lives in `demo live`.
+    assert "PRESENTER LAPTOP · 127.0.0.1 ONLY" in html
+    assert "NOT CALLED BY THIS PAGE" in html
+    assert "Local keyword signal if unset" in html
+    # Official AWS icons are referenced by the read-only asset route; nothing external is loaded.
+    for icon in ("bedrock", "agentcore", "cloudwatch"):
+        assert f'href="/assets/{icon}.svg"' in html
+    assert "https://" not in html.split("<svg viewBox")[1].split("</svg>")[0]
+
+
+def test_icon_assets_are_served_read_only_from_an_allowlist(server):
+    base = f"http://127.0.0.1:{server.server_port}"
+    with urlopen(f"{base}/assets/bedrock.svg", timeout=3) as response:
+        assert response.status == 200
+        assert response.headers["Content-Type"].startswith("image/svg+xml")
+        body = response.read()
+    assert body.startswith(b"<svg") or body.startswith(b"<?xml")
+    for path in ("/assets/evil.svg", "/assets/../ticket_demo.py.svg", "/assets/bedrock.png"):
+        with pytest.raises(HTTPError) as error:
+            urlopen(f"{base}{path}", timeout=3)
+        assert error.value.code == 404
+
+
+def test_rehearsal_guide_matches_the_shipped_commands_and_tabs():
+    guide = (Path(__file__).parents[1] / "docs/ide-rehearsal.md").read_text()
+    html = (Path(__file__).parents[1] / "src/sec310_sample/ticket_demo_web/index.html").read_text()
+    assert "python -m sec310_sample.ticket_demo --live" in guide
+    assert "aws sts get-caller-identity" in guide
+    for tab in ("Live Demo", "Code Diff", "Architecture"):
+        assert tab in guide and tab in html
+    assert "Test exact live response" in guide and "Test exact live response" in html
+    assert "Request durable stop" in guide and "Request durable stop" in html

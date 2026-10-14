@@ -43,7 +43,13 @@ export SEC310_RUN_ID="sec310-ticket-$(date +%Y%m%d-%H%M%S)"
 uv run python -m sec310_sample.ticket_demo --live --open
 ```
 
-The single browser contains **Live Demo**, **Code Diff**, and **Trace & CloudWatch** tabs. The
+The single browser contains **Live Demo**, **Code Diff**, **Trace & CloudWatch**, and
+**Architecture** tabs. The Live Demo ends with a "What just happened" strip that colours
+customer → store → prompt → model → proposal → boundary → effect from the latest run, so the
+story is told under the execution rather than on a separate slide. The Architecture tab is a
+data-flow diagram of this exact demo: what is real (Bedrock inference, CloudWatch records),
+what stays local (ticket records, the V3 decision, the effect), and what lives only in
+`demo live` (AgentCore Gateway + Policy, Automated Reasoning). The
 Ticket Store can switch between **Before**, **Current**, and highlighted **Changes**; a presenter
 can edit ticket subject, description, and OPEN/CLOSED status or load Normal/Compromised/Policy Blocked/Stopped state presets.
 Those presenter controls are visibly labelled and create no Bedrock or CloudWatch record. Run V0
@@ -112,12 +118,14 @@ src/sec310_sample/
   model.py                    ScriptedModel (offline, gullible) + optional BedrockModel
   ticket_demo.py              loopback browser server, ticket state, proposal capture/replay
   ticket_demo_web/            dependency-free operator and malicious-submitter views
+    assets/                   official AWS Architecture Icons served read-only
   tools/                      EvidenceStore, GodModeClient (v0), ReadClient, WriteClient
   demo/                       python -m sec310_sample.demo
 fixtures/                     synthetic evidence + adversarial request fixtures
 corpus/regression.json        versioned behavioural expectations
 docs/walkthrough.md           segment-by-segment presenter map
 docs/live-ticket-demo.md      live ingress → model proposal → local effect → patch replay
+docs/ide-rehearsal.md         one-window VS Code layout and beat sheet (dry-run feedback)
 docs/failure-policy.md        the decision table, explained
 scripts/scan_identifiers.py   disclosure scan (run before publishing anything)
 scripts/check_tags.sh         every tag builds + passes from a fresh checkout
