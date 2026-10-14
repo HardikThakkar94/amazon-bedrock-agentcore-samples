@@ -214,6 +214,9 @@ class Ticket:
     status: str = "OPEN"
     submitted_by: str = "customer"
     untrusted: bool = True
+    # How the record entered the store: seed data, the live HTTP form, or a presenter preset.
+    # The row label stays "customer" in every case; origin only feeds the flow explanation.
+    origin: Literal["seed", "form", "preset"] = "seed"
 
 
 @dataclass
@@ -368,6 +371,7 @@ class DemoState:
                 subject,
                 body,
                 submitted_by="customer",
+                origin="form",
             )
             self._next_ticket += 1
             self.tickets[ticket.ticket_id] = ticket
@@ -442,6 +446,7 @@ class DemoState:
                     attack_subject,
                     attack_body,
                     submitted_by="customer",
+                    origin="preset",
                 )
                 self._next_ticket += 1
                 self.tickets[ticket.ticket_id] = ticket

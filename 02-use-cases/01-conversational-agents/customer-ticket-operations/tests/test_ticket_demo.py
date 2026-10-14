@@ -543,3 +543,18 @@ def test_rehearsal_guide_matches_the_shipped_commands_and_tabs():
         assert tab in guide and tab in html
     assert "Test exact live response" in guide and "Test exact live response" in html
     assert "Request durable stop" in guide and "Request durable stop" in html
+
+
+def test_ticket_origin_distinguishes_form_from_preset_without_changing_the_row_label():
+    demo = state()
+    submitted = submit_attack(demo)
+    assert submitted.origin == "form" and submitted.submitted_by == "customer"
+    assert {t.origin for t in demo.tickets.values() if t.ticket_id in ("A-41", "A-42", "B-77")} == {"seed"}
+    preset = state()
+    preset.load_scenario("compromised")
+    created = [t for t in preset.tickets.values() if t.origin == "preset"]
+    assert len(created) == 1 and created[0].submitted_by == "customer"
+    public = preset.public_state()
+    assert {t["origin"] for t in public["tickets"]} == {"seed", "preset"}
+    html = (Path(__file__).parents[1] / "src/sec310_sample/ticket_demo_web/index.html").read_text()
+    assert "t.origin==='form'" in html and "added by presenter preset (no model call)" in html
