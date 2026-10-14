@@ -67,8 +67,12 @@ the flow and an architecture diagram of the actual demo, both reachable without 
 
 - **What just happened** (bottom of Live Demo): seven nodes rendered from the latest run, not
   from a script. Red marks an attacker-controlled input or an executed effect, green a boundary
-  that denied, blue a live model call. The caption states the lesson for the recorded status
-  (CHANGED, BLOCKED, STOPPED, NO_EFFECT, ERROR) in one sentence.
+  that denied, blue a live model call. The Proposal, Boundary and Effect nodes and the one-line
+  caption are derived from the recorded controls, proposals and effects, never from the run status
+  alone: unusable output reads "unavailable", an input-screening denial reads "not requested",
+  an output-contract rejection reads "rejected", and a proposal that could not change anything
+  (target already closed) is called a no-op, not "no mutation proposed". The strip is executed
+  in tests (`tests/flow_strip_harness.mjs`, Node 22+) against real pipeline results.
 - **Architecture** tab: a data-flow view of this page. The orange box is the Python boundary the
   five patches change. Bedrock inference and CloudWatch invocation records are real; the ticket
   store, the V3 policy decision and the OPEN → CLOSED effect are process-local; AgentCore Gateway +
