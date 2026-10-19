@@ -806,25 +806,131 @@ def test_identity_denial_also_contains_at_v4():
     assert demo.stop_source == "automatic"
 
 
-def test_a_no_op_does_not_trigger_containment():
-    demo = state()
-    demo.submit_ticket("Question about my package", ATTACK)
-    demo.run("v0", reuse_capture=False)  # closes A-42
+class _GatedModel:
+    """Returns a fixed response only after the test releases it: deterministic mid-inference timing."""
+
+    version = "gated/1"
+
+    def __init__(self, output: str) -> None:
+        self.output = output
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def complete(self, prompt: str) -> str:
+        self.started.set()
+        assert self.release.wait(5), "test did not release the gated model"
+        return self.output
+
+
+ADD_NOTE = json.dumps(
+    {
+        "answer": "Summary",
+        "proposed_actions": [
+            {
+                "operation": "add_note",
+                "customer_id": "customer-a",
+                "ticket_id": "A-42",
+                "reason": "r",
+                "note": "n",
+            }
+        ],
+        "links": [],
+    }
+)
+
+
+def _run_with_mid_inference_stop(stage: str):
+    model = _GatedModel(ADD_NOTE)
+    demo = DemoState(model, LocalGuardrail())
+    while demo.active_stage != stage:
+        demo.apply_next_patch()
+    out: list = []
+    thread = threading.Thread(target=lambda: out.append(demo.run(stage, False)))
+    thread.start()
+    assert model.started.wait(5)
+    demo.set_stop(True)  # the operator's brake, while the model is still "thinking"
+    model.release.set()
+    thread.join(timeout=5)
+    return demo, out[0]
+
+
+@pytest.mark.parametrize("stage", ["v4", "v5"])
+def test_operator_stop_during_inference_is_not_narrated_as_automatic_containment(stage, server):
+    demo, result = _run_with_mid_inference_stop(stage)
+    assert result.status == "BLOCKED"
+    assert [e.status for e in result.effects] == ["STOPPED"]
+    assert demo.stop_source == "operator"
+    assert not any(c.control == "automatic halt" for c in result.controls)
+    assert "OPERATOR STOP" in result.note and "did not halt itself" in result.note
+    assert "CONTAINED" not in result.note and "the halt" not in result.note
+    if stage == "v5":
+        assert result.note.startswith("EVIDENCE · OPERATOR STOP") and result.regression == "PASS"
+    # The rendered panel shows the recorded note, not a stage slogan. Render through the real
+    # server's page with this exact state injected (same code path the browser executes).
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required to execute the result panel")
+    html = (Path(__file__).parents[1] / "src/sec310_sample/ticket_demo_web/index.html").read_text()
+    panel_js = html[
+        html.index("function renderResult(r)") : html.index(
+            "\nfunction ", html.index("function renderResult(r)") + 1
+        )
+    ]
+    script = f"""
+    const ids={{}};class N{{constructor(t){{this.tag=t;this.children=[];this.className='';this._t='';this.dataset={{}};this.style={{}}}}set textContent(v){{this._t=String(v);this.children=[]}}get textContent(){{return this.children.length?this.children.map(c=>c.textContent).join(''):this._t}}append(...n){{this.children.push(...n)}}replaceChildren(){{this.children=[]}}querySelector(){{return null}}}}
+    const document={{createElement:t=>new N(t),getElementById:id=>(ids[id]??=new N('div'))}};
+    const el=id=>document.getElementById(id);function node(tag,cls,text){{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text??'');return n}}
+    const state={json.dumps(demo.public_state())};
+    {panel_js}
+    renderResult(state.last_run);
+    process.stdout.write(ids.result.textContent);
+    """
+    rendered = subprocess.run(
+        [node, "-e", script], capture_output=True, text=True, timeout=30, check=False
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert "OPERATOR STOP" in rendered.stdout and "CONTAINED" not in rendered.stdout
+
+
+def test_a_genuine_no_op_at_v4_does_not_contain_and_evaluation_continues():
+    # add_note is allowed by policy but this build does not execute it: NOT_EXECUTED, a no-op.
+    # A second proposal after it must still be evaluated, and nothing may latch.
+    two = json.dumps(
+        {
+            "answer": "ok",
+            "proposed_actions": [
+                {
+                    "operation": "add_note",
+                    "customer_id": "customer-a",
+                    "ticket_id": "A-41",
+                    "reason": "r",
+                    "note": "n",
+                },
+                {
+                    "operation": "add_note",
+                    "customer_id": "customer-a",
+                    "ticket_id": "A-42",
+                    "reason": "r",
+                    "note": "n",
+                },
+            ],
+            "links": [],
+        }
+    )
+    demo = DemoState(_FixedModel(two), LocalGuardrail())
     for _ in range(4):
         demo.apply_next_patch()
-    # Reopen cleared the effect; close A-42 manually so the proposal becomes a no-op, not a denial.
-    demo.update_ticket(
-        "A-42",
-        "Correct billing address",
-        "Please update the postal code on my next invoice.",
-        "CLOSED",
-    )
-    demo.run("v0", reuse_capture=False)  # fresh capture against the current (closed) ticket set
-    demo.set_stop(False)
-    result = demo.run("v4", reuse_capture=True)
-    assert result.effects and result.effects[0].status in ("ALREADY_CLOSED", "DENIED_POLICY")
-    if result.effects[0].status == "ALREADY_CLOSED":
-        assert demo.stop_source == "none"
+    result = demo.run("v4", reuse_capture=False)
+    assert result.status == "NO_EFFECT"
+    assert [e.status for e in result.effects] == ["NOT_EXECUTED", "NOT_EXECUTED"]
+    # Both proposals were judged (v3 records an identity row per allowed proposal); none denied.
+    assert sum(1 for c in result.controls if c.control == "identity + tenant") == 2
+    assert not any(c.status == "DENY" for c in result.controls)
+    assert not any(c.control == "automatic halt" for c in result.controls)
+    assert demo.stop_requested is False and demo.stop_source == "none"
 
 
 def test_flow_strip_narrates_the_halt_and_the_latched_stop(tmp_path):

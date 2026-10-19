@@ -786,18 +786,33 @@ class DemoState:
             result.note = "STILL VULNERABLE: screening and a valid output shape did not authorize this action."
         elif stage == "v3" and result.status == "BLOCKED":
             result.note = "PROTECTED: action policy denied close_ticket before the effect."
-        elif stage == "v4" and result.status == "BLOCKED":
+        elif stage in ("v4", "v5") and result.status == "BLOCKED":
+            # Say what was recorded, not what the stage is for. An operator stop that lands
+            # during inference is the brake, not the agent containing itself.
+            halted = any(
+                c.control == "automatic halt" and c.status == "DENY" for c in result.controls
+            )
+            operator_stopped = any(e.status == "STOPPED" for e in result.effects)
             skipped = sum(1 for e in result.effects if e.status == "NOT_EVALUATED")
-            result.note = (
-                "CONTAINED: the first denied action ended the run"
-                + (f"; {skipped} further proposal(s) were not evaluated" if skipped else "")
-                + ". The agent stays stopped until an operator resets it."
-            )
-        elif stage == "v5" and result.status == "BLOCKED":
-            result.note = (
-                "EVIDENCE: the denied proposal, the halt and the unchanged ticket are recorded "
-                "separately."
-            )
+            if halted:
+                result.note = (
+                    "CONTAINED: the first denied action ended the run"
+                    + (f"; {skipped} further proposal(s) were not evaluated" if skipped else "")
+                    + ". The agent stays stopped until an operator resets it."
+                )
+            elif operator_stopped:
+                result.note = (
+                    "OPERATOR STOP: the stop arrived before the effect and refused it. "
+                    "The agent did not halt itself."
+                )
+            else:
+                result.note = "PROTECTED: a boundary denied the action before the effect."
+            if stage == "v5":
+                result.note = (
+                    "EVIDENCE · "
+                    + result.note
+                    + " The decision and the unchanged ticket are recorded separately."
+                )
         if stage == "v5":
             result.regression = (
                 "PASS" if not any(e.status == "EXECUTED" for e in result.effects) else "FAIL"
