@@ -30,7 +30,7 @@ const document = {
 };
 
 const src = [
-  "const stages=['v0','v1','v2','v3','v4','v5'],names={v0:'Unsafe',v1:'Identity',v2:'Validate',v3:'Policy',v4:'Stop',v5:'Evidence'};",
+  "const stages=['v0','v1','v2','v3','v4','v5'],names={v0:'Unsafe',v1:'Identity',v2:'Validate',v3:'Policy',v4:'Contain',v5:'Evidence'};",
   "const el=id=>document.getElementById(id);function node(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text??'');return n}",
   extract("flowNode"),
   extract("flowStory"),

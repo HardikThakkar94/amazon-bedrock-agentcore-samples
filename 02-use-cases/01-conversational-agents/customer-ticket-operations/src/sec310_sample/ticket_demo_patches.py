@@ -87,7 +87,8 @@ def v3(context: PatchContext, proposal: dict[str, Any]) -> PatchDecision:
 
 
 def v4(context: PatchContext, proposal: dict[str, Any]) -> PatchDecision:
-    """Check a durable operator stop again immediately before an effect."""
+    """Contain: a denied action ends the run and latches the agent stopped (see the pipeline);
+    the durable stop is checked again immediately before any effect."""
     policy = v3(context, proposal)
     if not policy.allow_effect:
         return policy
@@ -112,7 +113,7 @@ PATCH_TITLES = {
     "v1": "Identity: bind operator and customer",
     "v2": "Validation: treat records as data",
     "v3": "Policy: authorize every effect",
-    "v4": "Stop: check before admission and effect",
+    "v4": "Contain: halt on the first denied action",
     "v5": "Evidence: gate release on behavior",
 }
 PATCH_LESSONS = {
@@ -120,6 +121,6 @@ PATCH_LESSONS = {
     "v1": "STILL VULNERABLE — identity passes because this attack stays inside Customer A.",
     "v2": "STILL VULNERABLE — valid, screened JSON is still not permission to act.",
     "v3": "PROTECTED — action policy denies close_ticket; A-42 remains open.",
-    "v4": "STOP TEST — request durable stop, then run; work is rejected before the next effect.",
-    "v5": "EVIDENCE — policy blocks the effect and the release invariant proves no change.",
+    "v4": "CONTAINED — the first denied action ends the run and the agent stays stopped until reset.",
+    "v5": "EVIDENCE — the halt and the unchanged ticket are recorded; the release invariant passes.",
 }

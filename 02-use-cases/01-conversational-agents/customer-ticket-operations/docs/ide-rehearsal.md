@@ -75,8 +75,9 @@ Checklist:
 | Patch V1 | Apply next patch → Code Diff, then Test exact live response | "Identity passes, because this attack stays inside Customer A. Still vulnerable." |
 | Patch V2 | same | "Screening and a typed response are not permission. Still vulnerable." |
 | Patch V3 | same | "A deterministic policy outside the model denies close_ticket. Protected." |
-| Patch V4 | Request durable stop, then test | "The operator stop is checked before admission and before each effect. Stop is not rollback." |
-| Patch V5 | Clear stop, apply, test | "Proposal, decision and effect are recorded separately, and the release invariant passes." |
+| Patch V4 | Apply next patch → Test exact live response | "The first denied action ends the run. The agent stops itself and stays stopped until an operator resets it. Nobody had to press a button." Then test again: refused at admission. Click **Agent halted itself · Reset stop** to clear it. |
+| Manual brake (optional) | Request durable stop, then test | "An operator can also stop it on purpose. Same refusal at admission, different reason." Clear it before V5. |
+| Patch V5 | Apply, test | "Proposal, decision and effect are recorded separately, and the release invariant passes." |
 | Architecture | Architecture tab | "What was real: Bedrock inference, CloudWatch records. What stayed local: the ticket store and this policy." |
 | Trace | Trace & CloudWatch tab | Show the run id and the Logs Insights query; mention delivery lag before switching. |
 

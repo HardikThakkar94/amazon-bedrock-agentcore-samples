@@ -64,7 +64,8 @@ a fresh model sample. This separates model variability from whether the applicat
 
 V1 identity and V2 screening/schema checks intentionally remain insufficient for this well-shaped,
 same-customer action; V3's independent action policy is the first boundary that denies it. V4
-shows durable stop before admission/effect, and V5 records the decision plus the no-change release
+makes the agent contain itself: the first denied action ends the run and latches the agent stopped
+until an operator resets it (the stop button remains as a manual brake). V5 records the decision, the halt and the no-change release
 invariant. Add `--managed-guardrail` only when the configured Bedrock Guardrail environment is
 available; otherwise V2 uses the clearly labelled deterministic local signal. For an offline test
 only, omit `--live`; never present that mode as live inference. See

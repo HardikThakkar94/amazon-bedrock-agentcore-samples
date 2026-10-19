@@ -264,6 +264,8 @@ class DemoState:
         self.busy = False
         self.revision = 0
         self.stop_requested = False
+        # Who set the stop: "operator" (the brake) or "automatic" (V4 halted the run itself).
+        self.stop_source: str = "none"
         self.active_stage = "v0"
         self._next_ticket = 90
         self.last_before_tickets: dict[str, dict[str, str]] = {}
@@ -297,6 +299,7 @@ class DemoState:
                 ),
             }
             self.stop_requested = False
+            self.stop_source = "none"
             self.active_stage = "v0"
             self._next_ticket = 90
             self.captured_response = None
@@ -328,6 +331,7 @@ class DemoState:
             for ticket in self.tickets.values():
                 ticket.status = "OPEN"
             self.stop_requested = False
+            self.stop_source = "none"
             self.last_run = None
             self.store_change_source = "Reopen local ticket effects"
             self.revision += 1
@@ -343,7 +347,8 @@ class DemoState:
             self.active_stage = STAGES[index + 1]
             for ticket in self.tickets.values():
                 ticket.status = "OPEN"
-            self.stop_requested = False
+            # A stop (operator or automatic) is a deliberate state; moving to the next build must
+            # not clear it. Only the stop toggle or a reset does.
             self.last_run = None
             self.store_change_source = f"Apply {self.active_stage.upper()} and reopen effects"
             self.revision += 1
@@ -386,6 +391,7 @@ class DemoState:
             # A stop must remain writable while inference is in flight. It does not change the
             # ticket snapshot or capture provenance, so it has its own state outside revision.
             self.stop_requested = value
+            self.stop_source = "operator" if value else "none"
 
     def update_ticket(self, ticket_id: str, subject: str, body: str, status: str) -> Ticket:
         if (
@@ -460,6 +466,7 @@ class DemoState:
             else:
                 self.active_stage = "v4"
             self.stop_requested = name == "stopped"
+            self.stop_source = "operator" if name == "stopped" else "none"
             self.last_run = None
             self.decisions = []
             self.store_change_source = f"Presenter preset: {name} (no model call)"
@@ -507,6 +514,7 @@ class DemoState:
                 "guardrail": type(self.guardrail).__name__,
                 "busy": self.busy,
                 "stop_requested": self.stop_requested,
+                "stop_source": self.stop_source,
                 "active_stage": self.active_stage,
                 "active_title": PATCH_TITLES[self.active_stage],
                 "active_lesson": PATCH_LESSONS[self.active_stage],
@@ -576,14 +584,17 @@ class DemoState:
             self.last_before_tickets = self._ticket_snapshot()
             self.store_change_source = f"{stage.upper()} agent run"
             if STAGE_NUMBER[stage] >= STAGE_NUMBER["v4"] and self.stop_requested:
+                why = (
+                    "the agent halted itself on a denied action; an operator must reset it"
+                    if self.stop_source == "automatic"
+                    else "operator requested a stop"
+                )
                 result = RunResult(
                     uuid.uuid4().hex[:12],
                     stage,
                     "admission control",
                     "STOPPED",
-                    controls=[
-                        ControlResult("durable stop", "DENY", "new work rejected before inference")
-                    ],
+                    controls=[ControlResult("durable stop", "DENY", f"new work rejected: {why}")],
                     note="Stop prevents new work; it does not undo completed effects.",
                     regression="PASS" if stage == "v5" else None,
                 )
@@ -776,13 +787,16 @@ class DemoState:
         elif stage == "v3" and result.status == "BLOCKED":
             result.note = "PROTECTED: action policy denied close_ticket before the effect."
         elif stage == "v4" and result.status == "BLOCKED":
+            skipped = sum(1 for e in result.effects if e.status == "NOT_EVALUATED")
             result.note = (
-                "Policy already blocked this action. Request durable stop before running V4 to "
-                "demonstrate admission control."
+                "CONTAINED: the first denied action ended the run"
+                + (f"; {skipped} further proposal(s) were not evaluated" if skipped else "")
+                + ". The agent stays stopped until an operator resets it."
             )
         elif stage == "v5" and result.status == "BLOCKED":
             result.note = (
-                "EVIDENCE: the denied proposal and unchanged ticket are recorded separately."
+                "EVIDENCE: the denied proposal, the halt and the unchanged ticket are recorded "
+                "separately."
             )
         if stage == "v5":
             result.regression = (
@@ -792,7 +806,15 @@ class DemoState:
 
     def _apply_proposals(self, result: RunResult, revision: int) -> None:
         patch = PATCHES[result.stage]
+        contain = STAGE_NUMBER[result.stage] >= STAGE_NUMBER["v4"]
+        halted = False
         for proposal in result.proposals:
+            if halted:
+                # V4+: the run ended at the first denied action. The rest is not judged, not run.
+                target = proposal.get("ticket_id") if isinstance(proposal, dict) else None
+                op = proposal.get("operation") if isinstance(proposal, dict) else None
+                result.effects.append(EffectResult(str(op), str(target), "NOT_EVALUATED"))
+                continue
             if not isinstance(proposal, dict):
                 result.controls.append(ControlResult("proposal", "ERROR", "non-object proposal"))
                 continue
@@ -809,6 +831,20 @@ class DemoState:
                 result.effects.append(
                     EffectResult(str(operation), str(ticket_id), decision.effect_status)
                 )
+                if contain and decision.effect_status.startswith("DENIED"):
+                    # A forbidden action was proposed. Containment: end this run and latch the
+                    # agent stopped until an operator resets it. Automatic, not a button.
+                    with self.lock:
+                        self.stop_requested = True
+                        self.stop_source = "automatic"
+                    result.controls.append(
+                        ControlResult(
+                            "automatic halt",
+                            "DENY",
+                            "run ended at the first denied action; agent stopped until reset",
+                        )
+                    )
+                    halted = True
                 continue
             if operation != "close_ticket":
                 result.effects.append(EffectResult(str(operation), str(ticket_id), "NOT_EXECUTED"))

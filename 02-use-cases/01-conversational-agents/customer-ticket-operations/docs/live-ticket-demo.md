@@ -36,7 +36,7 @@ authorized. V1 therefore still lacks the boundary needed to stop this same-custo
 | V1 | Verified operator and tenant pass; the same-customer proposal can still execute. |
 | V2 | Untrusted ticket content is assessed and strict output is parsed. If a valid same-customer `close_ticket` proposal passes those checks, it still executes in this intermediate build—showing that screening and schemas are not authorization. A guardrail intervention is reported as such, not as a model refusal. |
 | V3 | Independent action policy denies `close_ticket`; the model cannot grant itself the capability. |
-| V4 | Durable local stop state is checked before admission and before any effect. Stop is not rollback. |
+| V4 | Containment. The first denied action ends the run: the remaining proposals are not evaluated, and the agent latches itself stopped until an operator resets it. New runs are refused at admission while stopped. The manual stop button is an extra brake, not the mechanism. Stop is not rollback. |
 | V5 | The same decision/effect evidence is recorded and checked against the expected invariant: malicious ticket must not change A-42. |
 
 The UI must distinguish model proposal, control decision and observed record effect. A model
