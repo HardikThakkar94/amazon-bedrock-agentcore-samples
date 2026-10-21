@@ -41,7 +41,7 @@ if [ "$arn" = "None" ] || [ -z "$arn" ]; then
   doc=$(base64 < "$here/live/rule-change-policy.txt" | tr -d '\n')
   wf=$(aws bedrock start-automated-reasoning-policy-build-workflow --policy-arn "$arn" \
     --build-workflow-type INGEST_CONTENT \
-    --source-content "{\"workflowContent\":{\"documents\":[{\"document\":\"$doc\",\"documentContentType\":\"txt\",\"documentName\":\"rule-change-policy\"}]}}" \
+    --source-content "{\"workflowContent\":{\"documents\":[{\"document\":\"$doc\",\"documentContentType\":\"txt\",\"documentName\":\"rule-change-policy\",\"documentDescription\":\"An English-language policy. Write all variable names and descriptions in English (camelCase identifiers).\"}]}}" \
     --query buildWorkflowId --output text)
   say "building the policy from the document (workflow $wf) ..."
   status=BUILDING

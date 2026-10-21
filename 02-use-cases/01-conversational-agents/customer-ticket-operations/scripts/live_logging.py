@@ -142,9 +142,11 @@ class Logging:
                 self.bedrock.put_model_invocation_logging_configuration(loggingConfig=config)
                 break
             except ClientError as exc:
+                message = exc.response["Error"].get("Message", "").lower()
                 if (
                     exc.response["Error"]["Code"] != "ValidationException"
-                    or "assum" not in exc.response["Error"].get("Message", "").lower()
+                    # a new role or inline policy shows up as either message until IAM propagates
+                    or ("assum" not in message and "validate permissions" not in message)
                     or time.monotonic() > deadline
                 ):
                     raise

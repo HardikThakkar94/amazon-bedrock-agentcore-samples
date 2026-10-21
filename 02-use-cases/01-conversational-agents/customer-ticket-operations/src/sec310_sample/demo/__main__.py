@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections.abc import Callable
 
@@ -32,29 +33,66 @@ from sec310_sample.unsafe_agent import UnsafeAgent
 # -- output helpers -------------------------------------------------------------------------
 W = 78
 
+# Colour only on an interactive terminal; NO_COLOR disables it, FORCE_COLOR forces it.
+# Captured output (tests, pipes, recordings) stays plain text.
+_COLOR = bool(os.environ.get("FORCE_COLOR")) or (
+    sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+)
+
+
+def _c(code: str, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _COLOR else text
+
+
+BOLD, DIM, RED, GREEN, YELLOW, CYAN, MAGENTA = "1", "2", "1;31", "1;32", "1;33", "1;36", "35"
+# Fields that carry identity: the thing every patch is about.
+_IDENTITY_KEYS = ('"tenant_id"', '"principal_id"', '"account_id"', '"session_id"')
+_URL = re.compile(r"https?://[^\s'\"\]]+")
+
+
+def _hi(text: str) -> str:
+    """Highlight the outcome after the last arrow and any absolute URL."""
+    text = _URL.sub(lambda m: _c("4;31", m.group(0)), text)
+    head, sep, tail = text.rpartition(" → ")
+    return f"{head}{sep}{_c(BOLD, tail)}" if sep else text
+
 
 def banner(title: str) -> None:
-    print("\n" + "=" * W + f"\n  {title}\n" + "=" * W)
+    print("\n" + _c(CYAN, "=" * W) + f"\n  {_c(CYAN, title)}\n" + _c(CYAN, "=" * W))
 
 
 def step(text: str) -> None:
-    print(f"\n→ {text}")
+    print(f"\n{_c(YELLOW, '→')} {_c(BOLD, text)}")
 
 
 def ok(text: str) -> None:
-    print(f"  ✔ {text}")
+    print(f"  {_c(GREEN, '✔')} {_c('32', _hi(text)) if _COLOR else text}")
 
 
 def denied(text: str) -> None:
-    print(f"  ✖ {text}")
+    print(f"  {_c(RED, '✖')} {_c('31', _hi(text)) if _COLOR else text}")
 
 
 def note(text: str) -> None:
-    print(f"  · {text}")
+    print(f"  {_c(DIM, '· ' + text)}")
+
+
+def _json_line(line: str) -> str:
+    stripped = line.lstrip()
+    if stripped.startswith(_IDENTITY_KEYS):
+        key, _, rest = stripped.partition(":")
+        return line[: len(line) - len(stripped)] + _c(YELLOW, key) + ":" + _c(YELLOW, rest)
+    if stripped.startswith('"'):
+        key, sep, rest = stripped.partition(":")
+        return line[: len(line) - len(stripped)] + _c(CYAN, key) + sep + _hi(rest)
+    return line
 
 
 def show(label: str, obj: object) -> None:
-    print(f"  {label}: {json.dumps(obj, indent=2, default=str).replace(chr(10), chr(10) + '  ')}")
+    body = json.dumps(obj, indent=2, default=str)
+    if _COLOR:
+        body = "\n".join(_json_line(line) for line in body.splitlines())
+    print(f"  {_c(MAGENTA, label)}: {body.replace(chr(10), chr(10) + '  ')}")
 
 
 def fixture(name: str) -> dict:
