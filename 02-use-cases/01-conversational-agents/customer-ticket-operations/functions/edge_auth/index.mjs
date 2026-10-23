@@ -87,6 +87,24 @@ const deny = (status, message) => ({
   body: JSON.stringify({ error: message }),
 });
 
+// Browser-facing outcome pages (sign-out, wrong persona). Self-contained: no fonts or images, since
+// the visitor has no session to fetch site assets with. API paths keep JSON errors.
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const page = (status, title, message, action, href) => ({
+  status: String(status),
+  headers: {
+    "content-type": [{ key: "Content-Type", value: "text/html; charset=utf-8" }],
+    "cache-control": [{ key: "Cache-Control", value: "no-store" }],
+  },
+  body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>
+*{box-sizing:border-box}html{color-scheme:dark}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;font:450 17px/1.5 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;color:#d9d6e6;
+background:radial-gradient(80% 90% at 0% 100%,#8c1a4a 0%,transparent 55%),radial-gradient(70% 80% at 90% 10%,#3b3fe0 0%,transparent 60%),linear-gradient(110deg,#4c1a7a,#241a62 60%,#07070f)}
+main{width:min(460px,100%);padding:32px;border:1px solid rgba(245,243,239,.28);border-radius:16px;background:#0d0d18}
+small{display:block;margin-bottom:14px;color:#a7a3bd;font-size:13px;font-weight:600;letter-spacing:.12em}h1{margin:0 0 10px;color:#fff;font-size:28px;line-height:1.15}
+p{margin:0 0 24px}a{display:inline-block;padding:12px 24px;border-radius:999px;background:#ff6200;color:#0a0a14;font-weight:650;text-decoration:none}a:hover{background:#ff7f33}a:focus-visible{outline:2px solid #fff;outline-offset:3px}
+</style></head><body><main><small>AWS RE:INVENT 2026</small><h1>${esc(title)}</h1><p>${esc(message)}</p><a href="${esc(href)}">${esc(action)}</a></main></body></html>`,
+});
+
 function startLogin(cfg, host, uri, realm) {
   // End any Hosted UI session first so the next persona can sign in; then /auth/login authorizes.
   const verifier = b64url(crypto.randomBytes(32));
@@ -96,7 +114,9 @@ function startLogin(cfg, host, uri, realm) {
   const logout = new URL(`https://${cfg.domain}/logout`);
   logout.searchParams.set("client_id", cfg.client_id);
   logout.searchParams.set("logout_uri", `https://${host}/auth/login`);
-  return redirect(logout.toString(), [setCookie("sec310_pkce", pkce, 600)]);
+  // "sec310_pkce" is the attempt /auth/login authorizes next; the per-attempt copy lets the callback
+  // find its own verifier even if another tab started a login in between.
+  return redirect(logout.toString(), [setCookie("sec310_pkce", pkce, 600), setCookie(`sec310_pkce_${nonce}`, pkce, 600)]);
 }
 
 function authorize(cfg, host, jar) {
@@ -118,14 +138,16 @@ function authorize(cfg, host, jar) {
 }
 
 async function callback(cfg, host, query, jar) {
+  const params = new URLSearchParams(query);
+  const nonce = params.get("state") || "";
   let state;
   try {
-    state = JSON.parse(Buffer.from(jar.sec310_pkce || "", "base64url"));
+    state = /^[A-Za-z0-9_-]{16,64}$/.test(nonce) ? JSON.parse(Buffer.from(jar[`sec310_pkce_${nonce}`] || "", "base64url")) : null;
   } catch {
-    return deny(400, "login state missing");
+    state = null;
   }
-  const params = new URLSearchParams(query);
-  if (!params.get("code") || params.get("state") !== state.n) return deny(400, "login state mismatch");
+  // Unknown or expired attempt (e.g. a login page left open for over 10 minutes): start again.
+  if (!state || state.n !== nonce || !params.get("code")) return redirect("/", [setCookie(`sec310_pkce_${nonce}`, "", 0)]);
   const res = await fetch(`https://${cfg.domain}/oauth2/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -141,11 +163,13 @@ async function callback(cfg, host, query, jar) {
   const tokens = await res.json();
   const claims = await verify(tokens.access_token, cfg);
   if (!claims) return deny(401, "login failed");
-  if (state.r === "op" && claims.role !== "operator") return deny(403, "operators only: sign in as an operator persona");
-  if (state.r === "portal" && claims.role !== "customer") return deny(403, "customers only: sign in as a customer persona");
+  if (state.r === "op" && claims.role !== "operator")
+    return page(403, "Operators only", "The operator console needs an operator persona such as alice or bob.", "Sign in as another user", "/auth/logout");
+  if (state.r === "portal" && claims.role !== "customer")
+    return page(403, "Customers only", "The support portal needs a customer persona such as carol.", "Sign in as another user", "/auth/logout");
   return redirect(state.b, [
     setCookie(cookieName(state.r), tokens.access_token, tokens.expires_in || 3600),
-    setCookie("sec310_pkce", "", 0),
+    setCookie(`sec310_pkce_${nonce}`, "", 0),
   ]);
 }
 
@@ -170,7 +194,7 @@ export const handler = async (event) => {
       setCookie(cookieName("portal"), "", 0),
     ]);
   }
-  if (uri === "/signed-out") return deny(200, "signed out");
+  if (uri === "/signed-out") return page(200, "Signed out", "Both the operator console and the customer portal sessions have ended.", "Sign in again", "/");
 
   const realm = realmOf(uri);
   let claims = null;

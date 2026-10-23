@@ -74,7 +74,7 @@ define tf_destroy
 	         && terraform destroy -input=false $(AUTO_APPROVE) -var-file="$(TFVARS)"
 endef
 
-ROOTS := infra/iac/roots/foundation/build infra/iac/roots/foundation/observability infra/iac/roots/guardrails infra/iac/roots/identity infra/iac/roots/app infra/iac/roots/gateway infra/iac/roots/web
+ROOTS := infra/iac/roots/foundation/build infra/iac/roots/foundation/observability infra/iac/roots/guardrails infra/iac/roots/identity infra/iac/roots/app infra/iac/roots/gateway infra/iac/roots/web infra/iac/roots/agent
 
 # ── Roots ─────────────────────────────────────────────────────────────────
 plan-build-infra:    ; $(call tf_plan,infra/iac/roots/foundation/build)
@@ -118,23 +118,48 @@ plan-web:    ; $(call tf_plan,infra/iac/roots/web)
 deploy-web:  ; $(call tf_apply,infra/iac/roots/web)
 destroy-web: ; $(call tf_destroy,infra/iac/roots/web)
 
+plan-agent:    ; $(call tf_plan,infra/iac/roots/agent)
+deploy-agent:  ; $(call tf_apply,infra/iac/roots/agent)
+destroy-agent: ; $(call tf_destroy,infra/iac/roots/agent)
+
 # ── Composite targets ──────────────────────────────────────────────────────
-deploy-all:  whoami ensure-backend deploy-build-infra build deploy-observability deploy-guardrails deploy-identity deploy-app deploy-gateway deploy-web
+deploy-all:  whoami ensure-backend deploy-build-infra build deploy-observability deploy-guardrails deploy-identity deploy-app deploy-gateway deploy-web deploy-agent
 	@echo; echo "Demo URL: $$(aws ssm get-parameter --name /$(PROJECT)/$(ENV)/web/url --query Parameter.Value --output text)"; $(MAKE) -s users
-destroy-all: destroy-web destroy-gateway destroy-app destroy-identity destroy-guardrails destroy-observability destroy-build-infra
+destroy-all: destroy-agent destroy-web destroy-gateway destroy-app destroy-identity destroy-guardrails destroy-observability destroy-build-infra
 
 # Persona passwords live only in Secrets Manager.
-users:
+users: check-profile
 	@for u in alice carol bob; do echo "  $$u: aws secretsmanager get-secret-value --secret-id $(PROJECT)/$(ENV)/personas/$$u --query SecretString --output text --profile $(PROFILE) --region $(REGION)"; done
+
+# Show the demo URL and every persona's sign-in in a coloured table (prints passwords to your terminal).
+creds: check-profile
+	@URL=$$(aws ssm get-parameter --name /$(PROJECT)/$(ENV)/web/url --query Parameter.Value --output text 2>/dev/null || echo "not deployed"); \
+	for u in alice carol bob; do aws secretsmanager get-secret-value --secret-id $(PROJECT)/$(ENV)/personas/$$u --query SecretString --output text; done \
+	| URL="$$URL" python3 -c 'import json,os,sys; \
+	rows=[json.loads(l) for l in sys.stdin if l.strip()]; \
+	B,D,R,O,P,G,C="\033[1m","\033[2m","\033[0m","\033[38;2;255;98;0m","\033[38;2;255;77;139m","\033[38;2;110;231;80m","\033[38;2;104;173;255m"; \
+	col={"operator":G,"customer":P}; where={"operator":"/  (console)","customer":"/portal/"}; \
+	h=("user","password","role","customer","sign in at"); \
+	cells=[(r["username"],r["password"],r.get("role",""),r.get("customer_id",""),where.get(r.get("role"),"")) for r in rows]; \
+	w=[max(len(x) for x in c) for c in zip(h,*cells)]; \
+	line=lambda l,m,r_: D+l+m.join("─"*(n+2) for n in w)+r_+R; \
+	fmt=lambda vals,cs: D+"│"+R+(D+"│"+R).join(" "+c+v.ljust(n)+R+" " for v,n,c in zip(vals,w,cs))+D+"│"+R; \
+	print("\n  "+B+"Demo"+R+"  "+C+os.environ["URL"]+R+"\n"); \
+	print("  "+line("┌","┬","┐")); print("  "+fmt(h,[B]*5)); print("  "+line("├","┼","┤")); \
+	[print("  "+fmt(c,[B+O,"",col.get(c[2],""),"",D])) for c in cells]; \
+	print("  "+line("└","┴","┘")+"\n")'
 
 validate-infra:
 	@for r in $(ROOTS); do echo "══ validate $$r"; \
 	  (cd $$r && terraform init -backend=false -input=false >/dev/null && terraform validate) || exit 1; done
 	terraform fmt -recursive -check infra/iac
 
-whoami:
+# check-profile is silent (read-only targets); whoami also says where a deploy is going.
+check-profile:
 	@test -n "$(PROFILE)" || { echo "set PROFILE=<aws-profile>"; exit 1; }
 	@test -n "$(ACCOUNT)" || { echo "AWS profile $(PROFILE) has no working credentials"; exit 1; }
+
+whoami: check-profile
 	@echo "deploying to account $(ACCOUNT) ($(PROFILE), $(REGION))"
 
 # Create the state backend on first use; a no-op once the stack exists.
@@ -171,8 +196,9 @@ bootstrap-destroy:
 	  --stack-name $(PROJECT)-$(ENV)-tf-backend \
 	  --region $(REGION)
 
-.PHONY: whoami ensure-backend build plan-build-infra deploy-build-infra destroy-build-infra bootstrap bootstrap-destroy validate-infra deploy-all destroy-all users \
+.PHONY: whoami check-profile ensure-backend build plan-build-infra deploy-build-infra destroy-build-infra bootstrap bootstrap-destroy validate-infra deploy-all destroy-all users creds \
         plan-identity deploy-identity destroy-identity plan-app deploy-app destroy-app \
+        plan-agent deploy-agent destroy-agent \
         plan-web deploy-web destroy-web \
         plan-observability deploy-observability destroy-observability \
         plan-guardrails deploy-guardrails destroy-guardrails \

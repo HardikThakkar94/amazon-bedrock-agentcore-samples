@@ -21,22 +21,27 @@
   --ease:cubic-bezier(.22,1,.36,1)}
 html{color-scheme:dark}
 body{font-family:var(--sans);font-size:15px;line-height:1.45;background:var(--black);color:var(--body);-webkit-font-smoothing:antialiased}
+body{background:radial-gradient(1400px 420px at 35% -80px,rgba(76,26,122,.38),transparent 72%),radial-gradient(900px 320px at 95% -60px,rgba(59,63,224,.22),transparent 70%),var(--black);background-repeat:no-repeat}
 ::selection{background:var(--orange);color:var(--black)}
 a{color:var(--link)}
 /* header: logo tile + wordmark, colour blocks at the right edge like the section slides */
-header{height:auto;min-height:84px;padding:0 clamp(20px,3vw,44px) 0 0;background:var(--black);border-bottom:1px solid var(--rule);gap:14px}
+header{position:relative;overflow:hidden;height:auto;min-height:92px;padding:0 clamp(20px,3vw,44px) 0 0;border-bottom:0;gap:14px;
+  background:radial-gradient(70% 160% at 0% 100%,#8c1a4a 0%,transparent 60%),radial-gradient(60% 180% at 85% 0%,#3b3fe0 0%,transparent 65%),
+  linear-gradient(100deg,#5e1340 0%,#45197a 34%,#3428b0 66%,#241a62 86%,#120d2a 100%)}
+header>*{position:relative;z-index:1}
+.brand>div{padding:16px 0 14px}
 .brand{gap:clamp(16px,2vw,28px);align-self:stretch}
-.brand .tile{background:var(--black);display:grid;place-items:center;padding:0 clamp(18px,2vw,28px);align-self:stretch;border-right:1px solid var(--rule)}
+.brand .tile{background:transparent;display:grid;place-items:center;padding:0 clamp(18px,2vw,28px);align-self:stretch;border-right:1px solid rgba(245,243,239,.22)}
 .brand .tile img{height:34px;width:auto;display:block}
 .brand .divider{display:none}
 .brand .event{height:22px;margin:0 0 8px;display:flex;align-items:flex-end;gap:8px}.brand .event img{height:100%;width:auto;display:block}.brand .event span{font:600 17px/1 var(--sans);color:var(--white);letter-spacing:.02em}
 .brand h1{font-size:clamp(19px,1.6vw,24px);font-weight:500;letter-spacing:-.01em;color:var(--white);line-height:1.15}
-.brand p{font-size:12.5px;color:var(--muted);margin-top:4px}
+.brand p{font-size:12.5px;color:#e4dff3;margin-top:4px}
 .blocks{display:flex;align-self:stretch;margin-left:6px}.blocks i{width:22px;display:block}
 .blocks i:nth-child(1){background:var(--green)}.blocks i:nth-child(2){background:var(--orange)}
 .blocks i:nth-child(3){background:var(--purple)}.blocks i:nth-child(4){background:var(--pink)}
-.model{font:500 12px/1.3 var(--sans);background:transparent;border:1px solid var(--rule-2);color:var(--body);border-radius:2px}
-a.model{color:var(--body)}a.model:hover{border-color:var(--orange);color:var(--orange)}
+.model{font:500 12px/1.3 var(--sans);background:rgba(7,7,15,.45);border:1px solid rgba(245,243,239,.3);color:#f5f3ef;border-radius:999px;padding:8px 14px}
+a.model{color:#f5f3ef}a.model:hover{border-color:#fff;background:rgba(7,7,15,.7);color:#fff}
 main{padding:clamp(18px,2vw,30px) clamp(20px,3vw,44px) 56px}
 /* controls */
 .button{border:1px solid var(--rule-2);background:transparent;color:var(--white);border-radius:2px;font-weight:600;padding:9px 15px;transition:background .18s var(--ease),color .18s var(--ease),border-color .18s var(--ease)}
@@ -151,7 +156,7 @@ th,.section-label,.store-tools label,.source,.capture,.status,.verdict,.status-c
 </style>
 </head>
 <body>
-<header><div class="brand"><span class="tile"><img src="/assets/aws-logo.svg" alt="AWS"></span><div><div class="event"><img src="/assets/reinvent-wordmark.png" alt="AWS re:Invent"><span>2026</span></div><h1>Build a bounded agent, live</h1><p>Attacker input → Bedrock proposal → control decision → observed effect</p></div></div><span class="spacer"></span><div id="model" class="model">Loading…</div><a class="model" href="/auth/logout" style="text-decoration:none">Sign out</a><span class="blocks" aria-hidden="true"><i></i><i></i><i></i><i></i></span></header>
+<header><div class="brand"><span class="tile"><img src="/assets/aws-logo.svg" alt="AWS"></span><div><div class="event"><img src="/assets/reinvent-wordmark.png" alt="AWS re:Invent"><span>2026</span></div><h1>Build a bounded agent, live</h1><p>Attacker input → Bedrock proposal → control decision → observed effect</p></div></div><span class="spacer"></span><div id="model" class="model">Loading…</div><a class="model" href="/auth/logout" style="text-decoration:none">Sign out</a></header>
 <main>
 <div class="toolbar"><button id="reset" class="button">Reset to clean V0</button><button id="attacker" class="button attack">Open malicious submitter</button><button id="stop" class="button stop">Request durable stop</button><span class="spacer"></span><span id="stageLabel" class="stage-label"></span><button id="nextPatch" class="button patch">Apply next patch →</button></div>
 <div id="rail" class="rail"></div>

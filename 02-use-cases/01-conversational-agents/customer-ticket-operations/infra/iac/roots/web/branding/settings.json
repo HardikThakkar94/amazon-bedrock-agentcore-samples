@@ -53,18 +53,18 @@
   },
   "componentClasses": {
     "buttons": {
-      "borderRadius": 2.0
+      "borderRadius": 24.0
     },
     "divider": {
       "darkMode": {
-        "borderColor": "3a3836ff"
+        "borderColor": "f5f3ef24"
       },
       "lightMode": {
         "borderColor": "ebebf0ff"
       }
     },
     "dropDown": {
-      "borderRadius": 2.0,
+      "borderRadius": 10.0,
       "darkMode": {
         "defaults": {
           "itemBackgroundColor": "0d0d0dff"
@@ -108,11 +108,11 @@
       }
     },
     "input": {
-      "borderRadius": 2.0,
+      "borderRadius": 10.0,
       "darkMode": {
         "defaults": {
-          "backgroundColor": "000000ff",
-          "borderColor": "7e7a72ff"
+          "backgroundColor": "05050bff",
+          "borderColor": "f5f3ef47"
         },
         "placeholderColor": "8f8b83ff"
       },
@@ -249,10 +249,10 @@
       "backgroundImage": {
         "enabled": false
       },
-      "borderRadius": 0.0,
+      "borderRadius": 16.0,
       "darkMode": {
-        "backgroundColor": "0d0d0dff",
-        "borderColor": "3a3836ff"
+        "backgroundColor": "0d0d18ff",
+        "borderColor": "f5f3ef47"
       },
       "lightMode": {
         "backgroundColor": "fdfcfaff",
@@ -306,10 +306,10 @@
     },
     "pageBackground": {
       "darkMode": {
-        "color": "000000ff"
+        "color": "07070fff"
       },
       "image": {
-        "enabled": false
+        "enabled": true
       },
       "lightMode": {
         "color": "f6f4efff"
@@ -342,9 +342,9 @@
       },
       "darkMode": {
         "background": {
-          "color": "000000ff"
+          "color": "0a0a14ff"
         },
-        "borderColor": "3a3836ff"
+        "borderColor": "f5f3ef24"
       },
       "lightMode": {
         "background": {

@@ -213,6 +213,14 @@ data "aws_cloudfront_origin_request_policy" "all_except_host" {
 
 resource "aws_cloudfront_response_headers_policy" "security" {
   name = "${var.name_prefix}_security"
+  # Every response is per-user and changes with each deploy: browsers must revalidate, never guess.
+  custom_headers_config {
+    items {
+      header   = "Cache-Control"
+      value    = "no-cache"
+      override = false # keep the API's and the edge's own no-store
+    }
+  }
   security_headers_config {
     strict_transport_security {
       access_control_max_age_sec = 31536000
@@ -339,5 +347,12 @@ resource "aws_cognito_managed_login_branding" "web" {
     color_mode = "DARK"
     extension  = "PNG"
     bytes      = filebase64("${path.module}/branding/reinvent-wordmark.png")
+  }
+  # Smooth crimson → violet → blue field, generated once (same palette as the customer portal hero).
+  asset {
+    category   = "PAGE_BACKGROUND"
+    color_mode = "DARK"
+    extension  = "JPEG"
+    bytes      = filebase64("${path.module}/branding/page-background.jpg")
   }
 }
