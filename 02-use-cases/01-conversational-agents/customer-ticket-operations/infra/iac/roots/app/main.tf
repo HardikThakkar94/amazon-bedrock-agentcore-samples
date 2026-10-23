@@ -116,9 +116,11 @@ data "aws_iam_policy_document" "api" {
     resources = [aws_dynamodb_table.tickets.arn, aws_dynamodb_table.state.arn]
   }
   statement {
-    sid       = "WebClientId"
-    actions   = ["ssm:GetParameter"]
-    resources = ["arn:aws:ssm:${var.region}:${var.account_id}:parameter${local.ssm}/edge/client_id"]
+    # written by later roots (web, agent); read at request time to avoid a deploy-order cycle
+    sid     = "LaterRootOutputs"
+    actions = ["ssm:GetParameter"]
+    resources = [for p in ["edge/client_id", "agent/runtime_arn", "agent/model_id"] :
+    "arn:aws:ssm:${var.region}:${var.account_id}:parameter${local.ssm}/${p}"]
   }
 }
 
@@ -134,7 +136,7 @@ resource "aws_lambda_function" "api" {
   runtime          = "python3.12"
   architectures    = ["arm64"]
   handler          = "app.lambda_handler"
-  timeout          = 30
+  timeout          = 60 # an agent run takes 10-40 s; CloudFront waits up to 60 s for this origin
   memory_size      = 256
   s3_bucket        = module.build.bucket
   s3_key           = module.build.lambda["api"].key
@@ -147,6 +149,7 @@ resource "aws_lambda_function" "api" {
       INVOCATION_LOG_GROUP = data.aws_ssm_parameter.invocation_log_group.value
       ISSUER               = data.aws_ssm_parameter.issuer.value
       CLIENT_ID_PARAM      = "${local.ssm}/edge/client_id"
+      AGENT_PARAM_PREFIX   = "${local.ssm}/agent"
     }
   }
 }

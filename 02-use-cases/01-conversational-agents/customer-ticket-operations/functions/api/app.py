@@ -11,15 +11,19 @@ import base64
 import json
 import os
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any
 
 import boto3
-
+import runs
 from jwt_verify import InvalidToken, verify
 
 TICKETS = os.environ["TICKETS_TABLE"]
 STATE = os.environ["STATE_TABLE"]
 MAX_SUBJECT, MAX_BODY = 120, 2000
+AGENT_TIMEOUT = 50  # seconds; CloudFront waits up to 60 for the API origin
 
 _ddb = boto3.resource("dynamodb")
 ISSUER = os.environ["ISSUER"]
@@ -34,6 +38,25 @@ def client_id() -> str:
         ssm = boto3.client("ssm")
         _client_id = ssm.get_parameter(Name=os.environ["CLIENT_ID_PARAM"])["Parameter"]["Value"]
     return _client_id
+
+
+# The agent root deploys after this one; its runtime ARN and model are read from SSM on demand.
+_agent: dict[str, str] = {}
+
+
+def agent_config() -> dict[str, str]:
+    if not _agent:
+        ssm = boto3.client("ssm")
+        prefix = os.environ["AGENT_PARAM_PREFIX"]
+        for key in ("runtime_arn", "model_id"):
+            try:
+                _agent[key] = ssm.get_parameter(Name=f"{prefix}/{key}")["Parameter"]["Value"]
+            except ssm.exceptions.ParameterNotFound as exc:
+                _agent.clear()
+                raise HttpError(503, "the agent is not deployed yet (make deploy-agent)") from exc
+    return _agent
+
+
 _tickets = _ddb.Table(TICKETS)
 _state = _ddb.Table(STATE)
 _persona_cache: dict[str, tuple[float, dict[str, str]]] = {}
@@ -63,11 +86,16 @@ class HttpError(Exception):
         self.status = status
 
 
-def persona(event: dict[str, Any]) -> dict[str, str]:
+def access_token(event: dict[str, Any]) -> str:
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     token = headers.get("x-sec310-access-token")
     if not token:
         raise HttpError(401, "missing session")
+    return token
+
+
+def persona(event: dict[str, Any]) -> dict[str, str]:
+    token = access_token(event)
     cached = _persona_cache.get(token)
     if cached and cached[0] > time.time():
         return cached[1]
@@ -123,10 +151,10 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
         }
     return {
         "persona": who,
-        "model": os.environ.get("MODEL_LABEL", "agentcore-runtime (not deployed yet)"),
+        "model": model_label(),
         "live_model": True,
         "guardrail": "Amazon Bedrock Guardrails",
-        "busy": False,
+        "busy": int(st.get("busy_until", 0)) > time.time(),
         "stop_requested": bool(st.get("stop_requested")),
         "stop_source": st.get("stop_source", "none"),
         "active_stage": stage,
@@ -163,6 +191,104 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def model_label() -> str:
+    try:
+        return f"AgentCore Runtime · {agent_config()['model_id']} · tools via AgentCore Gateway"
+    except HttpError:
+        return "AgentCore Runtime (agent not deployed yet)"
+
+
+def invoke_agent(token: str, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """InvokeAgentRuntime over HTTPS with the user's own token (OAuth inbound, no SigV4)."""
+    arn = agent_config()["runtime_arn"]
+    region = arn.split(":")[3]
+    url = (
+        f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/"
+        f"{urllib.parse.quote(arn, safe='')}/invocations?qualifier=DEFAULT"
+    )
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=AGENT_TIMEOUT) as resp:
+            body = json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read()[:300].decode(errors="replace")
+        raise RuntimeError(f"AgentCore Runtime returned {exc.code}: {detail}") from exc
+    if not isinstance(body, dict) or "error" in body:
+        raise RuntimeError(
+            f"agent error: {str(body.get('error') if isinstance(body, dict) else body)[:200]}"
+        )
+    return body
+
+
+def claim_run(customer_id: str) -> None:
+    now = int(time.time())
+    try:
+        _state.update_item(
+            Key={"customer_id": customer_id},
+            UpdateExpression="SET busy_until = :until",
+            ConditionExpression="attribute_not_exists(busy_until) OR busy_until < :now",
+            ExpressionAttributeValues={":until": now + AGENT_TIMEOUT + 5, ":now": now},
+        )
+    except _state.meta.client.exceptions.ConditionalCheckFailedException as exc:
+        raise HttpError(409, "an agent run is already in progress") from exc
+
+
+def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str, Any]:
+    require(who, "operator")
+    st = demo_state(who["customer_id"])
+    stage = str(body.get("stage") or st.get("active_stage", "v0"))
+    if stage != "v0":
+        raise HttpError(
+            409, "builds V1–V5 arrive with the per-build gateways; this deployment runs V0"
+        )
+    if body.get("reuse_capture"):
+        raise HttpError(409, "exact-response replay arrives with the per-build gateways")
+    claim_run(who["customer_id"])
+    session_id = runs.uuid7()
+    try:
+        before = runs.snapshot(tickets_for(who["customer_id"]))
+        try:
+            agent = invoke_agent(
+                token, session_id, {"run_id": session_id, "operator": who["username"]}
+            )
+            result = runs.run_result(
+                stage, agent, before, runs.snapshot(tickets_for(who["customer_id"]))
+            )
+        except Exception as exc:  # noqa: BLE001 - every failure is a visible, recorded run outcome
+            result = runs.failed(
+                stage, session_id, "AgentCore Runtime", f"{type(exc).__name__}: {exc}"
+            )
+        _state.update_item(
+            Key={"customer_id": who["customer_id"]},
+            UpdateExpression=(
+                "SET last_run = :run, before_tickets = :before, store_change_source = :src, run_id = :id, "
+                "active_stage = if_not_exists(active_stage, :stage)"
+            ),
+            ExpressionAttributeValues={
+                ":run": json.dumps(result, default=str),
+                ":before": json.dumps(before),
+                ":src": f"{stage.upper()} agent run",
+                ":id": session_id,
+                ":stage": stage,
+            },
+        )
+    finally:
+        _state.update_item(
+            Key={"customer_id": who["customer_id"]}, UpdateExpression="REMOVE busy_until"
+        )
+    return {"result": result}
+
+
 def submit_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     require(who, "customer")
     subject = str(body.get("subject", "")).strip()
@@ -171,7 +297,11 @@ def submit_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         raise HttpError(400, f"subject 1–{MAX_SUBJECT} and body 1–{MAX_BODY} characters")
     existing = tickets_for(who["customer_id"])
     prefix = who["customer_id"].split("-")[-1].upper()
-    numbers = [int(t["ticket_id"].split("-")[1]) for t in existing if t["ticket_id"].split("-")[1].isdigit()]
+    numbers = [
+        int(t["ticket_id"].split("-")[1])
+        for t in existing
+        if t["ticket_id"].split("-")[1].isdigit()
+    ]
     ticket_id = f"{prefix}-{max([89, *numbers]) + 1}"
     _tickets.put_item(
         Item={
@@ -207,13 +337,21 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             return reply(200, public_state(who))
         if method == "GET" and path == "/api/code":
             stage = demo_state(who["customer_id"]).get("active_stage", "v0")
-            return reply(200, {
-                "stage": stage, "title": TITLES[stage], "path": "AgentCore Gateway policies for this build",
-                "source": "Per-build Gateway policies and agent hooks are shown here once builds are live.",
-                "diff": "", "shared_pipeline": "agent on AgentCore Runtime",
-            })
+            return reply(
+                200,
+                {
+                    "stage": stage,
+                    "title": TITLES[stage],
+                    "path": "AgentCore Gateway policies for this build",
+                    "source": "Per-build Gateway policies and agent hooks are shown here once builds are live.",
+                    "diff": "",
+                    "shared_pipeline": "agent on AgentCore Runtime",
+                },
+            )
         if method == "POST" and path == "/api/portal/tickets":
             return reply(200, submit_ticket(who, body))
+        if method == "POST" and path == "/api/run":
+            return reply(200, run_agent(who, access_token(event), body))
         raise HttpError(404, f"{method} {path} is not available yet")
     except HttpError as exc:
         return reply(exc.status, {"error": str(exc)})

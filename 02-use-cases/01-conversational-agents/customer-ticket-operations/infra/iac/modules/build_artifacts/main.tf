@@ -43,3 +43,8 @@ output "lambda" {
 output "web" {
   value = local.manifest.web
 }
+
+# name => image URI pinned by digest (repo@sha256:...), e.g. images["agent"]
+output "images" {
+  value = try(local.manifest.images, {})
+}
