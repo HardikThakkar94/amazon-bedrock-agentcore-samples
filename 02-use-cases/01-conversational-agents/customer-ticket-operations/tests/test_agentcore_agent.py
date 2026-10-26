@@ -300,7 +300,7 @@ def test_failed_run_returns_an_error_instead_of_a_runtime_500(monkeypatch):
         raise RuntimeError("model unavailable")
 
     monkeypatch.setattr(entry, "run", boom)
-    monkeypatch.setenv("GATEWAY_URL", "https://gw")
+    monkeypatch.setenv("GATEWAY_URLS", '{"v0": "https://gw"}')
     monkeypatch.setenv("MODEL_ID", "m")
     context = SimpleNamespace(request_headers={"Authorization": "Bearer t"}, session_id="s")
     assert entry.invoke({}, context) == {"error": "RuntimeError: model unavailable"}

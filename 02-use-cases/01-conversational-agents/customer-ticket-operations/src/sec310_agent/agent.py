@@ -492,18 +492,68 @@ class Recorder:
         )
 
 
+@dataclass
+class ReplayToolEvent:
+    """Stands in for Strands' Before/AfterToolCallEvent when a captured call is replayed, so the
+    Recorder's hooks (actor injection, screening, policy decisions, containment) run unchanged."""
+
+    tool_use: dict[str, Any]
+    cancel_tool: bool | str = False
+    result: dict[str, Any] | None = None
+    exception: Exception | None = None
+    agent: Any = None
+
+
+def replay(gateway: Any, recorder: Recorder, calls: list[dict[str, Any]]) -> None:
+    """Call each captured tool through the Gateway with no model call. A guardrail block ends the
+    replay (the live run would not have reached another model turn); after a containment halt the
+    remaining calls are recorded as NOT_EVALUATED by the Recorder."""
+    names = {short_name(t.tool_name): t.tool_name for t in gateway.list_tools_sync()}
+    for i, captured in enumerate(calls):
+        tool = str(captured.get("tool", ""))
+        use = {
+            "toolUseId": f"replay-{i + 1}",
+            "name": names.get(tool, tool),
+            "input": dict(captured.get("input") or {}),
+        }
+        event = ReplayToolEvent(use)
+        recorder.before(event)
+        if event.cancel_tool:
+            continue
+        try:
+            event.result = dict(gateway.call_tool_sync(use["toolUseId"], use["name"], use["input"]))
+        except Exception as exc:  # noqa: BLE001 - a failed call is recorded, like a live one
+            event.exception = exc
+            event.result = {
+                "status": "error",
+                "content": [{"text": f"{type(exc).__name__}: {exc}"}],
+            }
+        recorder.after(event)
+        if recorder.blocked:
+            break
+
+
 def run(
-    payload: dict[str, Any], token: str, gateway_url: str, model_id: str, session_id: str | None
+    payload: dict[str, Any],
+    token: str,
+    gateway_url: str,
+    model_id: str,
+    session_id: str | None,
+    screen: Any = None,
+    state_table: Any = None,
 ) -> dict[str, Any]:
-    from strands import Agent
-    from strands.models import BedrockModel
+    """One agent run on the build named in the payload. ``screen`` (V2 on) and ``state_table``
+    (V4 on) are supplied by the entrypoint; ``mode="replay"`` re-sends captured tool calls."""
     from strands.tools.mcp import MCPClient
 
+    from sec310_agent.controls import Containment, build_of
     from sec310_agent.events import Events
 
     claims = claims_of(token)
     actor = actor_from(claims)
     run_id = str(payload.get("run_id") or session_id or "")[:64]
+    stage = build_of(payload.get("stage"))
+    mode = "replay" if payload.get("mode") == "replay" else "live"
     events = Events(run_id, "runtime")
     events.emit(
         "identity.validated",
@@ -536,7 +586,7 @@ def run(
         "runtime.entered",
         "agent",
         "active",
-        "session started",
+        f"session started · {stage.upper()} {mode}",
         edge="acid>runtime",
         payload=_payload(
             {
@@ -548,15 +598,83 @@ def run(
             }
         ),
     )
+    contain = Containment(actor["customer_id"], state_table) if state_table is not None else None
     label = MODEL_LABEL if "llama4-maverick" in model_id else model_id.split(".", 1)[-1]
-    recorder = Recorder(actor, events=events, run_id=run_id, model_label=label, model_id=model_id)
+    recorder = Recorder(
+        actor,
+        events=events,
+        run_id=run_id,
+        model_label=label,
+        model_id=model_id,
+        stage=stage,
+        screen=screen,
+        contain=contain,
+    )
+    out: dict[str, Any] = {
+        "run_id": run_id,
+        "model_id": model_id,
+        "stage": stage,
+        "mode": mode,
+        "actor": actor,
+        "answer": "",
+        "links": [],
+        "stop_reason": "",
+        "tool_calls": [],
+        "controls": recorder.controls,
+        "halted": False,
+        "blocked": False,
+        "refused": "",
+    }
+    refused = contain.admit() if contain is not None else None
+    if refused:
+        recorder.control("Containment", "REFUSED at admission · agent is stopped")
+        events.emit(
+            "run.refused",
+            "agent",
+            "halted",
+            "refused at admission · agent stopped",
+            detail={"reason": refused},
+        )
+        return {**out, "stop_reason": "refused", "refused": refused}
+    gateway = MCPClient(url=gateway_url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        if mode == "replay":
+            gateway.start()
+            calls = list(payload.get("calls") or [])
+            replay(gateway, recorder, calls)
+            answer = f"Replayed {len(calls)} captured tool call(s) with no model call."
+            stop = "replay"
+        else:
+            answer, stop = live(payload, actor, gateway, recorder, model_id, run_id)
+    finally:
+        gateway.stop(None, None, None)
+    return {
+        **out,
+        "answer": answer,
+        "stop_reason": stop,
+        "tool_calls": [asdict(c) for c in recorder.calls],
+        "halted": bool(contain and contain.halted),
+        "blocked": recorder.blocked,
+    }
+
+
+def live(
+    payload: dict[str, Any],
+    actor: dict[str, str],
+    gateway: Any,
+    recorder: Recorder,
+    model_id: str,
+    run_id: str,
+) -> tuple[str, str]:
+    from strands import Agent
+    from strands.models import BedrockModel
+
     model = BedrockModel(
         model_id=model_id,
         streaming=False,
         max_tokens=2000,
         additional_args={"requestMetadata": {"sec310_run": run_id}},
     )
-    gateway = MCPClient(url=gateway_url, headers={"Authorization": f"Bearer {token}"})
     agent = Agent(
         model=model,
         tools=[gateway],
@@ -568,18 +686,6 @@ def run(
         f"Verified operator {payload.get('operator') or 'the operator'} is working in "
         f"{actor['customer_id']}. Summarize {actor['customer_id']}'s open tickets."
     )
-    try:
-        result = agent(prompt)
-        answer = plain_answer(last_text(agent.messages) or str(result))
-        stop = str(getattr(result, "stop_reason", ""))
-    finally:
-        gateway.stop(None, None, None)
-    return {
-        "run_id": run_id,
-        "model_id": model_id,
-        "actor": actor,
-        "answer": answer,
-        "links": [],
-        "stop_reason": stop,
-        "tool_calls": [asdict(c) for c in recorder.calls],
-    }
+    result = agent(prompt)
+    answer = plain_answer(last_text(agent.messages) or str(result))
+    return answer, str(getattr(result, "stop_reason", ""))
