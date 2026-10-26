@@ -1,4 +1,5 @@
-"""The agent's run() on each build: Gateway choice, Screen (V2), Containment (V4) and replay.
+"""The agent's run() on each build: Gateway choice, Screen (V2), policy session (V3), circuit
+breaker and kill switch (V4) and replay.
 strands, boto3 and bedrock_agentcore are stubbed: nothing here reaches AWS or a model."""
 
 import base64
@@ -53,7 +54,7 @@ class FakeGateway:
     def list_tools_sync(self):
         return [
             SimpleNamespace(tool_name=f"TicketTools___{t}")
-            for t in ("list_tickets", "close_ticket", "add_note")
+            for t in ("list_tickets", "close_ticket", "add_note", "confirm_close")
         ]
 
     def call_tool_sync(self, tool_use_id, name, arguments=None):
@@ -104,8 +105,8 @@ class Guardrail:
         return {"action": self.action, "assessments": []}
 
 
-def replay(stage, calls=CAPTURE, **controls):
-    payload = {"stage": stage, "mode": "replay", "calls": calls, "run_id": "r1"}
+def replay(stage, calls=CAPTURE, extra=None, **controls):
+    payload = {"stage": stage, "mode": "replay", "calls": calls, "run_id": "r1", **(extra or {})}
     return run(
         payload, TOKEN, gateway_url=f"https://{stage}", model_id="m", session_id="s", **controls
     )
@@ -191,41 +192,93 @@ def test_v3_policy_denial_is_recorded_but_does_not_halt():
     assert len(FakeGateway.instances[0].sent) == 3
 
 
-# ── V4: Containment ───────────────────────────────────────────────────────
-def test_v4_first_denial_halts_latches_a_stop_and_skips_the_rest():
+# ── V3: policy session and confirmations ──────────────────────────────────
+def test_v3_sends_the_case_policy_session_to_the_gateway():
+    replay("v3", extra={"policy_session": "ps-1"})
+    assert FakeGateway.instances[0].headers == {
+        "Authorization": f"Bearer {TOKEN}",
+        "x-amzn-bedrock-agentcore-policy-session-id": "ps-1",
+    }
+
+
+def test_builds_before_v3_send_no_policy_session():
+    replay("v1", extra={"policy_session": "ps-1"})
+    assert FakeGateway.instances[0].headers == {"Authorization": f"Bearer {TOKEN}"}
+
+
+def test_agent_confirm_close_carries_run_id_so_policy_can_forbid_it():
+    FakeGateway.replies = {"confirm_close": {"status": "error", "content": [{"text": DENIED}]}}
+    calls = [{"tool": "confirm_close", "input": {"customer_id": "customer-a", "ticket_id": "A-42"}}]
+    result = replay("v3", calls=calls)
+    name, args = FakeGateway.instances[0].sent[0]
+    assert name == "TicketTools___confirm_close"
+    assert args["run_id"] == "r1" and args["actor"] == ACTOR
+    assert result["tool_calls"][0]["decision"] == "DENY"
+
+
+# ── V4: circuit breaker and kill switch ──────────────────────────────────
+def test_v4_first_denial_trips_the_breaker_and_skips_the_rest():
     FakeGateway.replies = {"close_ticket": {"status": "error", "content": [{"text": DENIED}]}}
     table = StateTable()
     result = replay("v4", screen=screen(Guardrail("NONE")), state_table=table)
-    assert result["halted"] is True
+    assert result["halted"] is True and result["read_only"] is False
     assert [c["status"] for c in result["tool_calls"]] == ["OK", "ERROR", "NOT_EVALUATED"]
     assert [n for n, _ in FakeGateway.instances[0].sent][-1] == "TicketTools___close_ticket"
     key, values = table.updates[0]
     assert key == {"customer_id": "customer-a"} and values[":t"] is True
-    assert {"control": "Containment", "status": "HALTED on the first denial · agent stopped"} in (
-        result["controls"]
-    )
+    assert "close_ticket" in values[":r"]
+    assert {
+        "control": "Circuit breaker",
+        "status": "OPEN · tripped by close_ticket B-77 denied · agent is read-only",
+    } in result["controls"]
+
+
+def test_v4_open_breaker_admits_read_only_and_refuses_every_write():
+    table = StateTable({"breaker_open": True, "breaker_reason": "AgentCore Policy denied x"})
+    result = replay("v4", state_table=table)
+    assert result["refused"] == "" and result["read_only"] is True and result["halted"] is False
+    assert [n for n, _ in FakeGateway.instances[0].sent] == ["TicketTools___list_tickets"]
+    assert [c["status"] for c in result["tool_calls"]] == ["OK", "READ_ONLY", "READ_ONLY"]
+    assert table.updates == []  # a refused write is not a new denial: the breaker is not re-tripped
+    assert result["controls"][0] == {
+        "control": "Circuit breaker",
+        "status": "OPEN · admitted read-only · writes refused",
+    }
 
 
 @pytest.mark.parametrize(
     "table, why",
     [
-        (StateTable({"stop_requested": True, "stop_source": "automatic"}), "agent is stopped"),
-        (StateTable(fail=True), "stop store unavailable"),
+        (StateTable({"stop_requested": True, "stop_source": "operator"}), "stopped by an operator"),
+        (StateTable(fail=True), "agent state unavailable"),
     ],
 )
-def test_v4_refuses_at_admission_without_touching_the_gateway(table, why):
+def test_v4_kill_switch_refuses_at_admission_without_touching_the_gateway(table, why):
     result = replay("v4", state_table=table)
     assert why in result["refused"]
     assert FakeGateway.instances == []
     assert result["tool_calls"] == [] and result["stop_reason"] == "refused"
     assert result["controls"] == [
-        {"control": "Containment", "status": "REFUSED at admission · agent is stopped"}
+        {"control": "Kill switch", "status": "REFUSED at admission · agent is stopped"}
     ]
 
 
 def test_v4_admits_when_no_stop_is_set():
     result = replay("v4", state_table=StateTable())
     assert result["refused"] == "" and len(FakeGateway.instances[0].sent) == 3
+
+
+def test_v4_turn_limit_trips_the_breaker():
+    from sec310_agent.agent import Recorder
+    from sec310_agent.controls import MAX_TURNS, CircuitBreaker
+
+    table = StateTable()
+    rec = Recorder(ACTOR, stage="v4", breaker=CircuitBreaker("customer-a", table))
+    rec.turn = MAX_TURNS
+    event = SimpleNamespace(agent=None, cancel=False)
+    rec.model_start(event)
+    assert event.cancel and rec.breaker.tripped
+    assert "turn limit" in table.updates[0][1][":r"]
 
 
 # ── app.py: per-build controls from the environment ───────────────────────
@@ -239,7 +292,9 @@ def app(monkeypatch):
     monkeypatch.setitem(sys.modules, "bedrock_agentcore", ModuleType("bedrock_agentcore"))
     monkeypatch.setitem(sys.modules, "bedrock_agentcore.runtime", runtime)
     monkeypatch.setitem(sys.modules, "boto3", boto3)
-    monkeypatch.setenv("GATEWAY_URLS", json.dumps({k: f"https://{k}" for k in ("v0", "v1", "v3")}))
+    monkeypatch.setenv(
+        "GATEWAY_URLS", json.dumps({k: f"https://{k}" for k in ("v0", "v1", "v3", "v4")})
+    )
     monkeypatch.setenv("GUARDRAIL_ID", "gr-1")
     monkeypatch.setenv("GUARDRAIL_VERSION", "2")
     monkeypatch.setenv("STATE_TABLE", "state")
@@ -255,8 +310,8 @@ def app(monkeypatch):
         ("v1", "https://v1", False, False),
         ("v2", "https://v1", True, False),
         ("v3", "https://v3", True, False),
-        ("v4", "https://v3", True, True),
-        ("v5", "https://v3", True, True),
+        ("v4", "https://v4", True, True),
+        ("v5", "https://v4", True, True),
     ],
 )
 def test_build_controls_follow_the_build(app, stage, url, screened, contained):
@@ -296,7 +351,7 @@ def test_invoke_runs_the_payload_build(app, monkeypatch):
     monkeypatch.setattr(app, "run", fake_run)
     context = SimpleNamespace(request_headers={"Authorization": f"Bearer {TOKEN}"}, session_id="s")
     app.invoke({"stage": "v4"}, context)
-    assert seen["gateway_url"] == "https://v3" and seen["token"] == TOKEN
+    assert seen["gateway_url"] == "https://v4" and seen["token"] == TOKEN
     assert "screen" in seen and seen["state_table"] == ("table", "dynamodb", "state")
     seen.clear()
     app.invoke({"stage": "v9"}, context)  # an unknown build runs as V0, never as a later one

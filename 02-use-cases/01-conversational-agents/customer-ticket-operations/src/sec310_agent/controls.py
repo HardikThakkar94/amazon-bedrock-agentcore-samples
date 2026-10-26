@@ -4,20 +4,26 @@ the Gateway it calls and that Gateway's AgentCore Policy (Cedar), defined in Ter
     V0 unsafe    V0 gateway, no policy engine: whatever the model calls goes through
     V1 identity  V1 gateway: Cedar fence ties every call to the caller and their tenant
     V2 validate  + ticket text screened by Amazon Bedrock Guardrails, wrapped in nonce tags
-    V3 policy    V3 gateway: + Cedar forbids close_ticket for the summary task
-    V4 contain   + the first denial ends the run and latches a durable stop (fail closed)
+    V3 policy    V3 gateway: + close_ticket only after an operator's confirm_close on that ticket
+                 (AgentCore Policy temporal permit over the policy session); the agent cannot confirm
+    V4 contain   V4 gateway: + a cap on writes per session; any denial trips a circuit breaker that
+                 ends the run and leaves the agent read-only until an operator resets it
     V5 evidence  same controls as V4; releases are gated on AgentCore Evaluations
+
+The operator's kill switch (stop) is separate from the breaker: it refuses every run at admission.
 """
 
 from __future__ import annotations
 
 import json
 import secrets
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 from typing import Any
 
 BUILDS = ("v0", "v1", "v2", "v3", "v4", "v5")
-GATEWAY = {"v0": "v0", "v1": "v1", "v2": "v1", "v3": "v3", "v4": "v3", "v5": "v3"}
+GATEWAY = {"v0": "v0", "v1": "v1", "v2": "v1", "v3": "v3", "v4": "v4", "v5": "v4"}
+SESSION_HEADER = "x-amzn-bedrock-agentcore-policy-session-id"  # V3+: temporal policies
 MAX_TURNS = 12
 
 
@@ -82,37 +88,43 @@ class Screen:
         )
 
 
-# ── V4: stop on the first denial; durable stop checked at admission ────────
+# ── V4: circuit breaker; operator kill switch checked at admission ─────────
 @dataclass
-class Containment:
-    """The first Gateway denial ends the run: later proposals are not evaluated, the run is
-    cancelled before the next model call, and a durable stop is written so the next run is
-    refused at admission until an operator resets it."""
+class CircuitBreaker:
+    """Trips on the first Gateway denial (an AgentCore Policy DENY, including the write cap) or the
+    turn limit: the run ends, later proposals are not evaluated, and a durable OPEN state is
+    written. While OPEN, runs are admitted read-only: they may read and summarize, every write is
+    refused by this harness. Only an operator closes it. The operator's stop (kill switch) refuses
+    the whole run. Both are read at admission; an unreadable state refuses the run (fail closed)."""
 
     customer_id: str
     table: Any = None
-    halted: bool = False
+    tripped: bool = False  # tripped during this run
     reason: str = ""
-    skipped: list[str] = field(default_factory=list)
+    read_only: bool = False  # already OPEN when this run was admitted
+    open_reason: str = ""
 
     def admit(self) -> str | None:
-        """None to admit; otherwise why not. An unreadable stop flag refuses (fail closed)."""
+        """None to admit (possibly read-only); otherwise why not."""
         try:
             item = self.table.get_item(Key={"customer_id": self.customer_id}, ConsistentRead=True)
         except Exception as exc:  # noqa: BLE001
-            return f"stop store unavailable ({type(exc).__name__}): refusing to run"
+            return f"agent state unavailable ({type(exc).__name__}): refusing to run"
         state = item.get("Item") or {}
         if state.get("stop_requested"):
-            return f"agent is stopped ({state.get('stop_source', 'operator')}); reset to run again"
+            return "agent is stopped by an operator (kill switch); clear the stop to run again"
+        if state.get("breaker_open"):
+            self.read_only = True
+            self.open_reason = str(state.get("breaker_reason", ""))
         return None
 
-    def halt(self, reason: str) -> None:
-        self.halted, self.reason = True, reason
+    def trip(self, reason: str) -> None:
+        self.tripped, self.reason = True, reason
         try:
             self.table.update_item(
                 Key={"customer_id": self.customer_id},
-                UpdateExpression="SET stop_requested = :t, stop_source = :s, stop_reason = :r",
-                ExpressionAttributeValues={":t": True, ":s": "automatic", ":r": reason[:200]},
+                UpdateExpression="SET breaker_open = :t, breaker_reason = :r, breaker_at = :at",
+                ExpressionAttributeValues={":t": True, ":r": reason[:200], ":at": int(time.time())},
             )
         except Exception:  # noqa: BLE001 - the in-run halt still holds; the next admit fails closed
             pass
@@ -123,7 +135,8 @@ def summary(stage: str) -> dict[str, Any]:
         "build": stage,
         "gateway": GATEWAY[stage],
         "screen": at_least(stage, "v2"),
-        "contain": at_least(stage, "v4"),
+        "confirm": at_least(stage, "v3"),
+        "breaker": at_least(stage, "v4"),
         "max_turns": MAX_TURNS,
     }
 

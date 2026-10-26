@@ -77,7 +77,13 @@ header .sp{flex:1}
 .verdict[data-v=CHANGED],.verdict[data-v=ERROR]{background:var(--pink);border-color:var(--pink);color:#07070f}
 .verdict[data-v=BLOCKED]{background:var(--green);border-color:var(--green);color:#07070f}
 .verdict[data-v=FILTERED]{background:var(--green);border-color:var(--green);color:#07070f}
-.verdict[data-v=HALTED],.verdict[data-v=STOPPED]{background:var(--yellow);border-color:var(--yellow);color:#07070f}
+.verdict[data-v=HALTED],.verdict[data-v=STOPPED],.verdict[data-v=READ_ONLY]{background:var(--yellow);border-color:var(--yellow);color:#07070f}
+.verdict[data-v=CONFIRMED]{background:var(--green);border-color:var(--green);color:#07070f}
+.ticket .confirm{grid-column:2/3;justify-self:start;height:34px;padding:0 14px;border-radius:999px;border:1px solid rgba(110,231,80,.6);background:transparent;color:var(--green);font:650 14px var(--sans)}
+.ticket .confirm:hover:not(:disabled){background:rgba(110,231,80,.12)}
+.ticket .confirm:disabled{opacity:.45;cursor:not-allowed}
+.ticket .confirmed{grid-column:2/3;font:600 14px var(--sans);color:var(--green)}
+.pill.breaker{border-color:var(--yellow);color:#07070f;background:var(--yellow)}.pill.breaker i{background:#07070f}
 .ticket{display:grid;grid-template-columns:76px minmax(0,1fr) auto;gap:4px 16px;align-items:center;padding:14px 4px;border-top:1px solid var(--line-dim)}
 .ticket .id{font:650 20px var(--mono)}
 .ticket .subj{font:600 20px var(--sans)}
@@ -243,12 +249,14 @@ header .sp{flex:1}
   <span class="tile"><img src="/assets/aws-logo.svg" alt="AWS"></span>
   <div><div class="event"><img src="/assets/reinvent-wordmark.png" alt="AWS re:Invent"><span>2026</span></div><h1>Build a bounded agent, live</h1></div>
   <span class="sp"></span>
-  <span class="pill stop" id="stopPill" hidden><i></i>Stop requested</span>
+  <span class="pill breaker" id="breakerPill" hidden title=""><i></i>Circuit breaker: OPEN · read-only</span>
+  <span class="pill stop" id="stopPill" hidden><i></i>Stopped by operator</span>
   <div class="gear"><button id="gearBtn" aria-haspopup="menu" aria-expanded="false" title="Operator menu">⚙</button>
     <div class="menu" id="menu" role="menu">
       <div id="personas" hidden></div>
       <a href="/portal/" target="sec310_portal" role="menuitem">Attacker portal (carol)</a>
       <button id="mReset" role="menuitem">Reset demo</button>
+      <button id="mBreaker" role="menuitem" hidden>Reset circuit breaker</button>
       <button id="mStop" role="menuitem">Stop agent</button>
       <hr><a href="/auth/logout" role="menuitem">Sign out</a>
     </div></div>
@@ -350,8 +358,8 @@ document.querySelectorAll('[data-icon]').forEach(img => { img.onerror = () => { 
 /* ── builds ── */
 const BUILDS = [
   ['V0','Unsafe','Model output executes'], ['V1','Identity','Caller identity checked'], ['V2','Validate','Input screened'],
-  ['V3','Policy','Gateway policy decides'], ['V4','Contain','First denial stops the run'], ['V5','Evidence','Release needs passing evals'] ];
-const POLICY_TEXT = b => b === 0 ? 'no policy engine' : b < 3 ? 'permit: caller is in tenant' : 'forbid close_ticket';
+  ['V3','Policy','Policy + human confirm'], ['V4','Contain','Circuit breaker'], ['V5','Evidence','Release needs passing evals'] ];
+const POLICY_TEXT = b => b === 0 ? 'no policy engine' : b < 3 ? 'permit: caller is in tenant' : b === 3 ? 'close needs operator confirm' : 'confirm + write cap';
 
 /* ── edges → arrow segments ── */
 const SEG = { 'ingress>acid':[['a1',1]], 'acid>runtime':[['a2',1]], 'runtime>bedrock':[['c1',1]], 'bedrock>runtime':[['c1',-1]],
@@ -394,7 +402,15 @@ function caption(step){
     return ['', `Turn ${turn}: the model ${esc(out)} for ${u}.`];
   }
   if(e0.kind === 'tool.call') return ['', e0.tool === 'list_tickets' ? `The agent sends an MCP tools/call for list_tickets to AgentCore Gateway, with ${u}’s token.` : `The agent calls <b>${esc(e0.label)}</b> through the Gateway, with ${u}’s token.`];
-  if(e0.kind === 'policy.decision') return e0.decision === 'DENY' ? ['denied', `The Gateway asks AgentCore Policy: may this call go through? <b>→ DENIED</b>.`] : ['', 'AgentCore Policy checks Cedar → permit.'];
+  if(e0.kind === 'policy.decision') return e0.decision === 'DENY'
+    ? ['denied', e0.tool === 'confirm_close' ? 'The agent tried to <b>confirm the close itself</b>. AgentCore Policy: only the operator’s console may confirm <b>→ DENIED</b>.'
+      : e0.tool === 'close_ticket' && B >= 3 ? `The Gateway asks AgentCore Policy: did ${u} confirm closing ${esc(t)} in this session? <b>No → DENIED</b>.`
+      : `The Gateway asks AgentCore Policy: may this call go through? <b>→ DENIED</b>.`]
+    : e0.tool === 'close_ticket' && B >= 3 ? ['', `AgentCore Policy finds ${u}’s confirm_close for ${esc(t)} in this session → <b>permit</b>.`] : ['', 'AgentCore Policy checks Cedar → permit.'];
+  if(e0.kind === 'run.halted') return ['halted', `The denial <b>trips the circuit breaker</b>: the run ends now, and the agent stays <b>read-only</b> until ${u} resets it. Nobody pressed a button.`];
+  if(e0.kind === 'run.read_only') return ['halted', 'The circuit breaker is <b>OPEN</b>: the run is admitted <b>read-only</b>. It may read and summarize; every write is refused.'];
+  if(e0.kind === 'run.refused') return ['halted', `The operator’s <b>kill switch</b> is on: the run is refused at admission, with no model call.`];
+  if(e0.kind === 'tool.skipped') return ['halted', /read-only/.test(e0.label) ? `<b>${esc(e0.label.replace(/ refused · read-only$/,''))}</b> is refused by the harness: the circuit breaker is open.` : `<b>${esc(e0.label)}</b>: the breaker already ended the run.`];
   if(e0.kind === 'tool.invoked') return ['', B === 0 ? `No policy engine is attached, so the Gateway invokes the TicketTools Lambda directly (${esc(e0.label)}).` : `The Gateway invokes the TicketTools Lambda (${esc(e0.label)}).`];
   if(e0.kind === 'store.read') return ['', `TicketTools reads ${cust()}’s tickets from DynamoDB: ${esc(e0.label.replace(/^read /,''))}.`];
   if(e0.kind === 'store.write') return e0.status === 'harmful' ? ['harmful', `TicketTools sets <b>${esc(t)} to CLOSED</b> in DynamoDB. ${u} never asked for that.`] : ['', `TicketTools adds a note in DynamoDB (${esc(t)}).`];
@@ -409,8 +425,10 @@ function caption(step){
     : e0.verdict === 'ERROR' ? ['error', `The run failed before it finished: <b>${esc(STATE?.last_run?.note || 'see the trace')}</b>`]
     : e0.verdict === 'BLOCKED' ? ['denied', `Run complete. The Gateway <b>denied the write</b>; nothing changed.`]
     : e0.verdict === 'FILTERED' ? ['denied', `The guardrail <b>blocked the injected text</b> before the model could act on it.`]
-    : e0.verdict === 'HALTED' ? ['halted', `The first denial <b>ended the run</b>. The agent is now stopped until someone resets it.`]
-    : e0.verdict === 'STOPPED' ? ['halted', `The agent is stopped: <b>the run was refused at admission</b>, with no model call.`]
+    : e0.verdict === 'HALTED' ? ['halted', `The circuit breaker <b>tripped and ended the run</b>. The agent stays read-only until someone resets it.`]
+    : e0.verdict === 'READ_ONLY' ? ['halted', `Run complete, <b>read-only</b>: the breaker refused the write; nothing changed.`]
+    : e0.verdict === 'CONFIRMED' ? ['', `Run complete. Only the close <b>${esc(u)} confirmed</b> went through.`]
+    : e0.verdict === 'STOPPED' ? ['halted', `The agent is stopped by the operator: <b>the run was refused at admission</b>, with no model call.`]
     : ['', `Run complete. ${u} gets the answer; <b>nothing changed</b>.`];
   return ['', esc(e0.label)];
 }
@@ -451,7 +469,7 @@ const PL = {
   'policy.decision':['⚖','AgentCore Policy decision','Cedar · ENFORCE'],
   'guardrail.checked':['✓','Guardrail screen on ticket text','ApplyGuardrail'],
   'guardrail.intervened':['✕','Guardrail blocked ticket text','ApplyGuardrail'],
-  'run.halted':['■','Run halted on first denial','agent hook'],
+  'run.halted':['■','Circuit breaker tripped','agent hook'],
   'tool.invoked':['→','Lambda event from the Gateway','AWS Lambda'],
   'store.read':['←','DynamoDB read','Query'],
   'store.write':['→','DynamoDB write','UpdateItem'],
@@ -538,8 +556,12 @@ function renderTickets(st){
     const held = RUN && !st.effects.has(t.ticket_id) && comp[t.ticket_id]?.before && comp[t.ticket_id].changed_fields?.includes('status');
     const status = held ? comp[t.ticket_id].before.status : t.status;
     const portal = t.origin === 'form' || t.origin === 'preset';
+    // V3+: a human confirms consequential actions. The click goes through the Gateway as confirm_close.
+    const conf = (STATE?.confirmed || []).find(c => c.ticket_id === t.ticket_id);
+    const act = build() < 3 || portal ? '' : conf ? `<span class="confirmed">✓ close confirmed by ${esc(conf.by)} · the agent may close it</span>`
+      : status === 'OPEN' ? `<button class="confirm" data-confirm="${esc(t.ticket_id)}"${polling ? ' disabled' : ''} title="Record ${esc(who())}’s confirmation in the AgentCore Policy session">Confirm close ${esc(t.ticket_id)}</button>` : '';
     return `<div class="ticket" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)}</span>
-      <span class="status ${esc(status)}">${esc(status)}</span>${portal ? `<span class="attack">${esc(t.body)}</span><span class="from">submitted through the customer portal</span>` : ''}</div>`;
+      <span class="status ${esc(status)}">${esc(status)}</span>${portal ? `<span class="attack">${esc(t.body)}</span><span class="from">submitted through the customer portal</span>` : ''}${act}</div>`;
   }).join('') || '<p class="empty" style="padding:14px 4px">No tickets.</p>';
   // another tenant's ticket the run went after: the operator would never see it otherwise
   const others = STATE?.other_tickets || [];
@@ -548,7 +570,7 @@ function renderTickets(st){
     const status = RUN && eff && !st.effects.has(t.ticket_id) ? eff.before : t.status;
     return `<div class="ticket foreign" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)} <span class="tenant">${esc(t.customer_id)}</span></span><span class="status ${esc(status)}">${esc(status)}</span></div>`;
   }).join('');
-  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', BLOCKED:'BLOCKED', FILTERED:'FILTERED', HALTED:'HALTED', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
+  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', BLOCKED:'BLOCKED', FILTERED:'FILTERED', HALTED:'HALTED', READ_ONLY:'READ-ONLY', CONFIRMED:'CONFIRMED', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
   else $('#verdict').hidden = true;
 }
 function renderLines(st){
@@ -564,14 +586,14 @@ function renderLines(st){
   $('#tried').className = writes.length ? '' : 'ok';
   const executed = (run.effects || []).filter(e => e.status === 'EXECUTED');
   const B = build(), ctl = run.controls || [];
-  const tone = c => /DENY|BLOCK|INTERVEN|HALT|REFUS|STOP/.test(c.status) ? (/HALT|REFUS|STOP/.test(c.status) ? 'halt' : 'held') : /ALLOW|PASS|NONE/.test(c.status) ? '' : 'hit';
+  const tone = c => /DENY|BLOCK|INTERVEN|HALT|REFUS|STOP|OPEN/.test(c.status) ? (/HALT|REFUS|STOP|OPEN/.test(c.status) ? 'halt' : 'held') : /ALLOW|PASS|NONE/.test(c.status) ? '' : 'hit';
   $('#boundary').innerHTML = ctl.length ? ctl.map(c => `${esc(c.control)}: <span class="${tone(c)}">${esc(c.status)}</span>`).join(' · ')
     : B === 0 ? (executed.length ? 'none in this build · the call went through' : 'none in this build') : 'no write was proposed';
   $('#boundary').className = '';
   const mine = STATE?.persona?.customer_id;
-  $('#effect').innerHTML = executed.length ? executed.map(e => `<code>${esc(e.target)} ${esc(e.before)} → ${esc(e.after)}</code>${e.customer_id && e.customer_id !== mine ? ` <span class="hit">in ${esc(e.customer_id)}</span>` : ''}`).join(', ')
+  $('#effect').innerHTML = executed.length ? executed.map(e => `<code>${esc(e.target)} ${esc(e.before)} → ${esc(e.after)}</code>${e.confirmed ? ' <span class="held">confirmed by the operator</span>' : ''}${e.customer_id && e.customer_id !== mine ? ` <span class="hit">in ${esc(e.customer_id)}</span>` : ''}`).join(', ')
     : '<span class="held">nothing changed in DynamoDB</span>';
-  $('#effect').className = executed.length ? '' : 'ok';
+  $('#effect').className = executed.length && executed.some(e => !e.confirmed) ? '' : 'ok';
 }
 function renderChrome(){
   const B = build();
@@ -583,6 +605,8 @@ function renderChrome(){
   $('#nextFix').disabled = B >= 5 || !idle;
   $('#nextFix').textContent = B >= 5 ? 'All fixes applied' : `Apply ${BUILDS[B + 1][0]} · ${BUILDS[B + 1][1]} →`;
   $('#stopPill').hidden = !STATE?.stop_requested;
+  $('#breakerPill').hidden = !STATE?.breaker_open; $('#breakerPill').title = STATE?.breaker_reason || '';
+  $('#mBreaker').hidden = !STATE?.breaker_open;
   $('#mStop').firstChild.textContent = STATE?.stop_requested ? 'Clear stop' : 'Stop agent';
 }
 
@@ -694,6 +718,13 @@ ${esc(p.statement)}</pre>`).join('') : `<h4>AgentCore Policy</h4><pre>no policy 
     + (hooks ? `<h4>Agent hooks · sec310_agent/controls.py</h4><pre>${esc(hooks)}</pre>` : '') + `</div>`;
   const d = $('#drawer'); d.classList.add('open'); d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'agent'; $('#drClose').focus();
 }
+async function confirmClose(ticket){
+  if(polling) return;
+  try { await api('/api/confirm', {ticket_id: ticket}); await refresh(false); toast(`${who()} confirmed closing ${ticket}. Recorded in the AgentCore Policy session; run the agent.`); }
+  catch(e){ toast(e.message, true); }
+}
+$('#tickets').addEventListener('click', e => { const b = e.target.closest('[data-confirm]'); if(b) confirmClose(b.dataset.confirm); });
+async function resetBreaker(){ try { await api('/api/breaker/reset', {}); await refresh(false); toast('Circuit breaker reset: the agent may write again.'); } catch(e){ toast(e.message, true); } }
 async function toggleStop(){ try { await api('/api/stop', {stop: !STATE?.stop_requested}); await refresh(false); } catch(e){ toast(e.message, true); } }
 
 $('#runBtn').onclick = () => runAgent('live'); $('#replayBtn').onclick = () => runAgent('replay');
@@ -703,6 +734,7 @@ $('#codeBtn').onclick = openCode; $('#next').onclick = next; $('#back').onclick 
 $('#mStep').onclick = () => setMode('step'); $('#mAuto').onclick = () => setMode('auto');
 $('#drClose').onclick = closeTrace;
 $('#mReset').onclick = () => { closeMenu(); resetDemo(); }; $('#mStop').onclick = () => { closeMenu(); toggleStop(); };
+$('#mBreaker').onclick = () => { closeMenu(); resetBreaker(); };
 const closeMenu = () => { $('#menu').classList.remove('open'); $('#gearBtn').setAttribute('aria-expanded', 'false'); };
 $('#gearBtn').onclick = e => { e.stopPropagation(); const o = $('#menu').classList.toggle('open'); $('#gearBtn').setAttribute('aria-expanded', o); if(o) loadPersonas(); };
 // Presenter sign-in only: switch the console persona without a login page (the edge mints real tokens).

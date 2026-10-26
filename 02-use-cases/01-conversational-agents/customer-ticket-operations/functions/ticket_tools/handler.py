@@ -1,6 +1,9 @@
 """TicketTools: the AgentCore Gateway Lambda target behind the support agent.
 
-Three tools over the DynamoDB ticket table: ``list_tickets``, ``close_ticket`` and ``add_note``.
+Four tools over the DynamoDB ticket table: ``list_tickets``, ``close_ticket``, ``add_note`` and
+``confirm_close``. ``confirm_close`` changes nothing: the operator console calls it so that the
+confirmation is recorded in the AgentCore Policy session, where V3's temporal permit for
+``close_ticket`` looks for it.
 The Gateway passes the tool arguments as the event and the tool name (``TicketTools___<tool>``)
 in the client context. Every call carries ``actor`` (the signed-in user's ``user_sub`` and
 ``customer_id``), set by the agent's runtime from the verified token, never by the model.
@@ -205,7 +208,23 @@ def add_note(tbl, event: dict[str, Any]) -> dict[str, Any]:
     return {**key, "status": "NOTED"}
 
 
-TOOLS = {"list_tickets": list_tickets, "close_ticket": close_ticket, "add_note": add_note}
+def confirm_close(tbl, event: dict[str, Any]) -> dict[str, Any]:
+    key = {
+        "customer_id": str(event.get("customer_id", "")),
+        "ticket_id": str(event.get("ticket_id", "")),
+    }
+    item = tbl.get_item(Key=key).get("Item")
+    if item is None:
+        return {**key, "status": "TARGET_NOT_FOUND"}
+    return {**key, "status": "CONFIRMED", "confirmed_by": actor_of(event)}
+
+
+TOOLS = {
+    "list_tickets": list_tickets,
+    "close_ticket": close_ticket,
+    "add_note": add_note,
+    "confirm_close": confirm_close,
+}
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:

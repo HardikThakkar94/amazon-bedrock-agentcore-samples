@@ -26,6 +26,9 @@ SYSTEM_PROMPT = (
     "plain-text summary for the operator."
 )
 WRITE_TOOLS = ("close_ticket", "add_note")
+# confirm_close is the operator console's tool; listed to the agent, but AgentCore Policy (V3+)
+# forbids it on any call that carries the runtime's run_id, so the agent can never confirm.
+GATEWAY_TOOLS = ("list_tickets", "confirm_close", *WRITE_TOOLS)
 
 
 def claims_of(token: str) -> dict[str, Any]:
@@ -71,7 +74,8 @@ def short_name(tool: str) -> str:
 class ToolCall:
     tool: str
     input: dict[str, Any]
-    status: str = "PENDING"  # OK | ERROR (the Gateway or the tool refused) | NOT_EVALUATED
+    # OK | ERROR (the Gateway or the tool refused) | NOT_EVALUATED | READ_ONLY (breaker open)
+    status: str = "PENDING"
     result: str = ""
     seconds: float = 0.0
     decision: str = ""  # ALLOW | DENY from AgentCore Policy, on builds whose gateway has one
@@ -179,7 +183,7 @@ class Recorder:
     turn: int = 0
     stage: str = "v0"
     screen: Any = None  # controls.Screen from V2
-    contain: Any = None  # controls.Containment from V4
+    breaker: Any = None  # controls.CircuitBreaker from V4
     blocked: bool = False
     controls: list[dict[str, str]] = field(default_factory=list)
 
@@ -216,6 +220,8 @@ class Recorder:
         if self.turn > MAX_TURNS:  # a bounded loop: the run cannot spin forever
             event.cancel = f"turn limit ({MAX_TURNS}) reached"
             self.control("Turn limit", f"STOPPED at {MAX_TURNS} turns")
+            if self.breaker is not None and not self.breaker.tripped:
+                self.trip(f"turn limit ({MAX_TURNS}) reached", "turn limit")
             return
         agent = getattr(event, "agent", None)
         messages = list(getattr(agent, "messages", None) or [])
@@ -277,7 +283,7 @@ class Recorder:
         )
 
     def before(self, event: Any) -> None:
-        if short_name(event.tool_use["name"]) not in ("list_tickets", *WRITE_TOOLS):
+        if short_name(event.tool_use["name"]) not in GATEWAY_TOOLS:
             return
         event.tool_use["input"] = {
             **unwrap(event.tool_use.get("input") or {}),
@@ -288,19 +294,23 @@ class Recorder:
         call.seconds, call.started = time.monotonic(), time.time()
         self.calls.append(call)
         ticket = call.input.get("ticket_id")
-        refuse = ""
-        if self.contain is not None and self.contain.halted:
-            refuse = "not evaluated: an earlier denial ended this run"
+        refuse, status = "", "NOT_EVALUATED"
+        if self.breaker is not None and self.breaker.tripped:
+            refuse = "not evaluated: the circuit breaker tripped and ended this run"
+        elif call.tool in WRITE_TOOLS and self.breaker is not None and self.breaker.read_only:
+            refuse = "refused: the circuit breaker is OPEN, so the agent is read-only until reset"
+            status = "READ_ONLY"
         elif call.tool in WRITE_TOOLS and self.screen is not None and self.screen.unavailable:
             refuse = "refused: the guardrail could not screen the ticket text (fails closed)"
         if refuse:
             event.cancel_tool = refuse
-            call.status, call.result, call.decision = "NOT_EVALUATED", refuse, "NOT_EVALUATED"
+            call.status, call.result, call.decision = status, refuse, status
             self.emit(
                 "tool.skipped",
                 "agent",
                 "halted",
-                f"{call.tool}{f' {ticket}' if ticket else ''} not evaluated",
+                f"{call.tool}{f' {ticket}' if ticket else ''} "
+                + ("refused · read-only" if status == "READ_ONLY" else "not evaluated"),
                 tool=call.tool,
                 chip=event.tool_use.get("toolUseId", call.tool),
                 chip_status="halted",
@@ -336,7 +346,7 @@ class Recorder:
             ),
             None,
         )
-        if call is None or call.status == "NOT_EVALUATED":
+        if call is None or call.status in ("NOT_EVALUATED", "READ_ONLY"):
             return
         result = event.result or {}
         call.status = (
@@ -425,30 +435,43 @@ class Recorder:
                     "note": "a ticket submitted through the customer portal is now in the prompt"
                 },
             )
-        if call.decision == "DENY" and self.contain is not None and not self.contain.halted:
-            self.contain.halt(f"AgentCore Policy denied {call.tool} {ticket or ''}".strip())
-            self.control("Containment", "HALTED on the first denial · agent stopped")
-            agent = getattr(event, "agent", None)
-            if agent is not None:  # tools already requested finish (as NOT_EVALUATED), then stop
-                agent.cancel(
-                    message=f"Run ended: the Gateway denied {call.tool} {ticket or ''}. "
-                    "The agent is stopped until an operator resets it.",
-                    after_current_tools=True,
-                )
-            self.emit(
-                "run.halted",
-                "agent",
-                "halted",
-                "first denial · run ended, agent stopped",
-                detail={"reason": self.contain.reason},
-                payload=_payload(
-                    {
-                        "hook": "AfterToolCallEvent → agent.cancel(after_current_tools=True)",
-                        "durable stop": {"stop_requested": True, "stop_source": "automatic"},
-                        "reason": self.contain.reason,
-                    }
-                ),
+        if call.decision == "DENY" and self.breaker is not None and not self.breaker.tripped:
+            self.trip(
+                f"AgentCore Policy denied {call.tool} {ticket or ''}".strip(),
+                f"{call.tool}{f' {ticket}' if ticket else ''} denied",
+                agent=getattr(event, "agent", None),
             )
+
+    def trip(self, reason: str, what: str, agent: Any = None) -> None:
+        """V4: open the circuit breaker. The run ends (tools already requested finish as
+        NOT_EVALUATED) and the agent stays read-only until an operator resets the breaker."""
+        self.breaker.trip(reason)
+        self.control("Circuit breaker", f"OPEN · tripped by {what} · agent is read-only")
+        if agent is not None:
+            agent.cancel(
+                message=f"Run ended: {reason}. The circuit breaker is open; the agent is "
+                "read-only until an operator resets it.",
+                after_current_tools=True,
+            )
+        self.emit(
+            "run.halted",
+            "agent",
+            "halted",
+            "circuit breaker tripped · run ended, agent read-only",
+            detail={"reason": reason},
+            payload=_payload(
+                {
+                    "hook": "AfterToolCallEvent → agent.cancel(after_current_tools=True)",
+                    "trip signals": [
+                        "any AgentCore Policy DENY (incl. the write cap)",
+                        "turn limit",
+                    ],
+                    "durable state": {"breaker_open": True, "breaker_reason": reason},
+                    "while open": "runs are admitted read-only; every write is refused",
+                    "reset": "an operator only (⚙ Reset circuit breaker)",
+                }
+            ),
+        )
 
     def screen_result(self, event: Any, text: str) -> None:
         """V2: Amazon Bedrock Guardrails screens the ticket text before the model reads it."""
@@ -499,7 +522,7 @@ class Recorder:
 @dataclass
 class ReplayToolEvent:
     """Stands in for Strands' Before/AfterToolCallEvent when a captured call is replayed, so the
-    Recorder's hooks (actor injection, screening, policy decisions, containment) run unchanged."""
+    Recorder's hooks (actor injection, screening, policy decisions, circuit breaker) run unchanged."""
 
     tool_use: dict[str, Any]
     cancel_tool: bool | str = False
@@ -510,7 +533,7 @@ class ReplayToolEvent:
 
 def replay(gateway: Any, recorder: Recorder, calls: list[dict[str, Any]]) -> None:
     """Call each captured tool through the Gateway with no model call. A guardrail block ends the
-    replay (the live run would not have reached another model turn); after a containment halt the
+    replay (the live run would not have reached another model turn); after a circuit breaker trip the
     remaining calls are recorded as NOT_EVALUATED by the Recorder."""
     names = {short_name(t.tool_name): t.tool_name for t in gateway.list_tools_sync()}
     for i, captured in enumerate(calls):
@@ -550,7 +573,7 @@ def run(
     (V4 on) are supplied by the entrypoint; ``mode="replay"`` re-sends captured tool calls."""
     from strands.tools.mcp import MCPClient
 
-    from sec310_agent.controls import Containment, build_of
+    from sec310_agent.controls import SESSION_HEADER, CircuitBreaker, at_least, build_of
     from sec310_agent.events import Events
 
     claims = claims_of(token)
@@ -602,7 +625,7 @@ def run(
             }
         ),
     )
-    contain = Containment(actor["customer_id"], state_table) if state_table is not None else None
+    breaker = CircuitBreaker(actor["customer_id"], state_table) if state_table is not None else None
     label = MODEL_LABEL if "llama4-maverick" in model_id else model_id.split(".", 1)[-1]
     recorder = Recorder(
         actor,
@@ -612,7 +635,7 @@ def run(
         model_id=model_id,
         stage=stage,
         screen=screen,
-        contain=contain,
+        breaker=breaker,
     )
     out: dict[str, Any] = {
         "run_id": run_id,
@@ -626,12 +649,13 @@ def run(
         "tool_calls": [],
         "controls": recorder.controls,
         "halted": False,
+        "read_only": False,
         "blocked": False,
         "refused": "",
     }
-    refused = contain.admit() if contain is not None else None
+    refused = breaker.admit() if breaker is not None else None
     if refused:
-        recorder.control("Containment", "REFUSED at admission · agent is stopped")
+        recorder.control("Kill switch", "REFUSED at admission · agent is stopped")
         events.emit(
             "run.refused",
             "agent",
@@ -640,7 +664,21 @@ def run(
             detail={"reason": refused},
         )
         return {**out, "stop_reason": "refused", "refused": refused}
-    gateway = MCPClient(url=gateway_url, headers={"Authorization": f"Bearer {token}"})
+    if breaker is not None and breaker.read_only:
+        recorder.control("Circuit breaker", "OPEN · admitted read-only · writes refused")
+        events.emit(
+            "run.read_only",
+            "agent",
+            "halted",
+            "circuit breaker OPEN · admitted read-only",
+            detail={"reason": breaker.open_reason},
+        )
+    headers = {"Authorization": f"Bearer {token}"}
+    session = str(payload.get("policy_session") or "")[:128]
+    if at_least(stage, "v3") and session:
+        # the same policy session as the operator's confirmations: temporal policies see both
+        headers[SESSION_HEADER] = session
+    gateway = MCPClient(url=gateway_url, headers=headers)
     try:
         if mode == "replay":
             gateway.start()
@@ -657,7 +695,8 @@ def run(
         "answer": answer,
         "stop_reason": stop,
         "tool_calls": [asdict(c) for c in recorder.calls],
-        "halted": bool(contain and contain.halted),
+        "halted": bool(breaker and breaker.tripped),
+        "read_only": bool(breaker and breaker.read_only),
         "blocked": recorder.blocked,
     }
 
@@ -692,6 +731,9 @@ def live(
         f"Verified operator {payload.get('operator') or 'the operator'} is working in "
         f"{actor['customer_id']}. Summarize {actor['customer_id']}'s open tickets."
     )
+    confirmed = [str(t)[:16] for t in payload.get("confirmed") or []][:10]
+    if confirmed:  # set by the API from the operator's own confirmations, never from ticket text
+        prompt += f" The operator has confirmed closing {', '.join(confirmed)}: close them."
     result = agent(prompt)
     answer = plain_answer(last_text(agent.messages) or str(result))
     return answer, str(getattr(result, "stop_reason", ""))

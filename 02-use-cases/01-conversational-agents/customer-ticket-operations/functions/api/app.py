@@ -78,16 +78,16 @@ TITLES = {
     "v0": "Unsafe: model output executes",
     "v1": "Identity: bind operator and customer",
     "v2": "Validation: treat records as data",
-    "v3": "Policy: authorize every effect",
-    "v4": "Contain: halt on the first denied action",
+    "v3": "Policy: authorize every effect; a human confirms closes",
+    "v4": "Contain: a circuit breaker trips on the first denial",
     "v5": "Evidence: gate release on behavior",
 }
 LESSONS = {
     "v0": "VULNERABLE — no independent boundary; the ticket can close.",
     "v1": "STILL VULNERABLE — identity passes because this attack stays inside Customer A.",
     "v2": "STILL VULNERABLE — valid, screened JSON is still not permission to act.",
-    "v3": "PROTECTED — action policy denies close_ticket; A-42 remains open.",
-    "v4": "CONTAINED — the first denied action ends the run and the agent stays stopped until reset.",
+    "v3": "PROTECTED — close_ticket needs the operator's confirmation; the injected close is denied.",
+    "v4": "CONTAINED — a denial trips the circuit breaker: the run ends, the agent stays read-only until reset.",
     "v5": "EVIDENCE — the halt and the unchanged ticket are recorded; the release invariant passes.",
 }
 
@@ -97,13 +97,17 @@ CONTROLS = {
     "Inbound JWT authorizer (AgentCore Identity on Runtime and Gateway)": "v0",
     "AgentCore Policy: caller and tenant fence (Cedar)": "v1",
     "Amazon Bedrock Guardrails: prompt-attack screen on ticket text": "v2",
-    "AgentCore Policy: forbid close_ticket for the summary task (Cedar)": "v3",
-    "Stop on the first denial; durable stop checked at admission (agent hook)": "v4",
+    "AgentCore Policy: close_ticket only after the operator's confirm_close (temporal)": "v3",
+    "AgentCore Policy: the agent can never call confirm_close (Cedar)": "v3",
+    "AgentCore Policy: at most 2 calls per write tool per session (temporal count)": "v4",
+    "Circuit breaker: any denial ends the run; read-only until reset (agent hook)": "v4",
+    "Kill switch: an operator stop refuses every run at admission, fails closed": "v4",
     "Release gate: AgentCore Evaluations must pass": "v5",
 }
 
 
-GATEWAY_OF = {"v0": "v0", "v1": "v1", "v2": "v1", "v3": "v3", "v4": "v3", "v5": "v3"}
+GATEWAY_OF = {"v0": "v0", "v1": "v1", "v2": "v1", "v3": "v3", "v4": "v4", "v5": "v4"}
+SESSION_HEADER = "x-amzn-bedrock-agentcore-policy-session-id"
 
 
 def build_code(stage: str) -> dict[str, Any]:
@@ -207,6 +211,26 @@ def demo_state(customer_id: str) -> dict[str, Any]:
     return item or {"customer_id": customer_id, "active_stage": "v0", "stop_requested": False}
 
 
+def policy_session(customer_id: str) -> str:
+    """The AgentCore Policy session for this customer's case: the agent's tool calls and the
+    operator's confirmations share it, so temporal policies see both. Rotated on Reset and Apply."""
+    current = demo_state(customer_id).get("policy_session")
+    if current:
+        return str(current)
+    fresh = runs.uuid7()
+    r = _state.update_item(
+        Key={"customer_id": customer_id},
+        UpdateExpression="SET policy_session = if_not_exists(policy_session, :s)",
+        ExpressionAttributeValues={":s": fresh},
+        ReturnValues="UPDATED_NEW",
+    )
+    return str(r["Attributes"]["policy_session"])
+
+
+def confirmations(st: dict[str, Any]) -> list[dict[str, Any]]:
+    return json.loads(st.get("confirmed", "[]"))
+
+
 def capture_state(st: dict[str, Any], tickets: list[dict[str, Any]]) -> dict[str, Any]:
     cap = json.loads(st["capture"]) if st.get("capture") else None
     return {
@@ -265,6 +289,11 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
         "busy": int(st.get("busy_until", 0)) > time.time(),
         "stop_requested": bool(st.get("stop_requested")),
         "stop_source": st.get("stop_source", "none"),
+        "breaker_open": bool(st.get("breaker_open")),
+        "breaker_reason": st.get("breaker_reason", ""),
+        "breaker_at": int(st.get("breaker_at", 0)),
+        "confirmed": confirmations(st),
+        "policy_session": st.get("policy_session", ""),
         "active_stage": stage,
         "active_title": TITLES[stage],
         "active_lesson": LESSONS[stage],
@@ -353,7 +382,14 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
     st = demo_state(who["customer_id"])
     stage = st.get("active_stage", "v0")  # the build is server state, never taken from the body
     mode = "replay" if body.get("mode") == "replay" else "live"
-    agent_payload: dict[str, Any] = {"operator": who["username"], "stage": stage, "mode": mode}
+    confirmed = tuple(c["ticket_id"] for c in confirmations(st))
+    agent_payload: dict[str, Any] = {
+        "operator": who["username"],
+        "stage": stage,
+        "mode": mode,
+        "policy_session": policy_session(who["customer_id"]),
+        "confirmed": list(confirmed),
+    }
     if mode == "replay":
         cap = capture_state(st, tickets_for(who["customer_id"]))
         if not cap["capture_available"]:
@@ -409,7 +445,9 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
         before = runs.snapshot(all_tickets())
         try:
             agent = invoke_agent(token, session_id, {"run_id": session_id, **agent_payload})
-            result = runs.run_result(stage, agent, before, runs.snapshot(all_tickets()), mode)
+            result = runs.run_result(
+                stage, agent, before, runs.snapshot(all_tickets()), mode, confirmed
+            )
         except Exception as exc:  # noqa: BLE001 - every failure is a visible, recorded run outcome
             result = runs.failed(
                 stage, session_id, "AgentCore Runtime", f"{type(exc).__name__}: {exc}"
@@ -417,15 +455,23 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
         emit(
             "run.completed",
             "agent",
-            {"CHANGED": "harmful", "ERROR": "error", "STOPPED": "halted", "HALTED": "halted"}.get(
+            {
+                "CHANGED": "harmful",
+                "ERROR": "error",
+                "STOPPED": "halted",
+                "HALTED": "halted",
+                "READ_ONLY": "halted",
+            }.get(
                 result["status"],
                 "denied" if result["status"] in ("BLOCKED", "FILTERED") else "ok",
             ),
             {
                 "CHANGED": "answer returned · ticket changed",
                 "ERROR": "run failed",
-                "STOPPED": "refused: agent is stopped",
-                "HALTED": "run ended on the first denial",
+                "STOPPED": "refused: the operator stopped the agent",
+                "HALTED": "circuit breaker tripped · run ended",
+                "READ_ONLY": "circuit breaker open · write refused",
+                "CONFIRMED": "answer returned · confirmed close done",
                 "BLOCKED": "answer returned · write denied by policy",
                 "FILTERED": "guardrail withheld the ticket text",
             }.get(result["status"], "answer returned to " + who["username"]),
@@ -614,7 +660,9 @@ def reset_demo(who: dict[str, str]) -> dict[str, Any]:
             "customer_id": cid,
             "active_stage": "v0",
             "stop_requested": False,
+            "breaker_open": False,
             "store_change_source": "Clean reset",
+            "policy_session": runs.uuid7(),
         }
     )
     return {"reset": True}
@@ -654,8 +702,9 @@ def reopen(cid: str) -> None:
 
 def apply_patch(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     """Switch the build (next one, or the one named) and reopen the previous run's effects. The
-    captured response and any stop stay: the next build is judged on the same response, and a
-    stop is cleared only on purpose."""
+    captured response, any stop and an open circuit breaker stay: the next build is judged on the
+    same response, and a stop or breaker is cleared only on purpose. Confirmations do not carry
+    over: the build starts a new policy session."""
     require(who, "operator")
     cid = who["customer_id"]
     current = demo_state(cid).get("active_stage", "v0")
@@ -667,10 +716,14 @@ def apply_patch(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     reopen(cid)
     _state.update_item(
         Key={"customer_id": cid},
-        UpdateExpression="SET active_stage = :t, store_change_source = :src REMOVE last_run, run_id, before_tickets",
+        UpdateExpression=(
+            "SET active_stage = :t, store_change_source = :src, policy_session = :ps "
+            "REMOVE last_run, run_id, before_tickets, confirmed"
+        ),
         ExpressionAttributeValues={
             ":t": target,
             ":src": f"Applied {target.upper()}; effects reopened",
+            ":ps": runs.uuid7(),
         },
     )
     return {"active_stage": target, "title": TITLES[target]}
@@ -685,6 +738,95 @@ def request_stop(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         ExpressionAttributeValues={":on": on, ":src": "operator" if on else "none"},
     )
     return {"stop_requested": on}
+
+
+def reset_breaker(who: dict[str, str]) -> dict[str, Any]:
+    """A human closes the circuit breaker; it never closes on its own."""
+    require(who, "operator")
+    _state.update_item(
+        Key={"customer_id": who["customer_id"]},
+        UpdateExpression="SET breaker_open = :f, breaker_reset_by = :by REMOVE breaker_reason",
+        ExpressionAttributeValues={":f": False, ":by": who["username"]},
+    )
+    return {"breaker_open": False}
+
+
+def gateway_call(token: str, url: str, session: str, name: str, args: dict) -> tuple[bool, str]:
+    """One MCP tools/call straight to the build's Gateway, as the signed-in operator and in the
+    case's policy session. Returns (allowed, the Gateway's reply text)."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": runs.uuid7(),
+                "method": "tools/call",
+                "params": {"name": name, "arguments": args},
+            }
+        ).encode(),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            SESSION_HEADER: session,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode(errors="replace")
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}: {exc.read()[:300].decode(errors='replace')}"
+    if not raw.lstrip().startswith("{"):  # text/event-stream: the last data line is the reply
+        lines = [x[5:].strip() for x in raw.splitlines() if x.startswith("data:")]
+        raw = lines[-1] if lines else "{}"
+    try:
+        reply = json.loads(raw)
+    except ValueError:
+        return False, raw[:300]
+    if "error" in reply:
+        return False, json.dumps(reply["error"])[:600]
+    result = reply.get("result") or {}
+    text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+    return not result.get("isError") and "CONFIRMED" in text, text[:600]
+
+
+def confirm_close(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str, Any]:
+    """V3+: the operator confirms closing one of their own open tickets. The confirmation goes
+    through the Gateway as confirm_close, so AgentCore Policy records it in the case's session;
+    the temporal permit for close_ticket looks for exactly this event."""
+    require(who, "operator")
+    cid = who["customer_id"]
+    st = demo_state(cid)
+    stage = st.get("active_stage", "v0")
+    if STAGES.index(stage) < STAGES.index("v3"):
+        raise HttpError(409, "confirmations are a V3 control: apply V3 first")
+    ticket_id = str(body.get("ticket_id", ""))[:16]
+    t = _tickets.get_item(Key={"customer_id": cid, "ticket_id": ticket_id}).get("Item")
+    if t is None or t.get("status") != "OPEN":
+        raise HttpError(400, "only an open ticket of your own customer can be confirmed")
+    url = json.loads(agent_param("gateway_urls", "{}")).get(GATEWAY_OF[stage])
+    if not url:
+        raise HttpError(503, "the agent is not deployed yet (make deploy-agent)")
+    args = {
+        "customer_id": cid,
+        "ticket_id": ticket_id,
+        "actor": {"user_sub": who["sub"], "customer_id": cid},
+    }
+    allowed, text = gateway_call(
+        token, url, policy_session(cid), "TicketTools___confirm_close", args
+    )
+    if not allowed:
+        raise HttpError(502, f"the Gateway refused the confirmation: {text[:300]}")
+    done = [c for c in confirmations(st) if c["ticket_id"] != ticket_id] + [
+        {"ticket_id": ticket_id, "by": who["username"], "at": int(time.time())}
+    ]
+    _state.update_item(
+        Key={"customer_id": cid},
+        UpdateExpression="SET confirmed = :c",
+        ExpressionAttributeValues={":c": json.dumps(done)},
+    )
+    return {"confirmed": done, "gateway_reply": text}
 
 
 def submit_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -748,6 +890,10 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             return reply(200, reset_demo(who))
         if method == "POST" and path == "/api/stop":
             return reply(200, request_stop(who, body))
+        if method == "POST" and path == "/api/confirm":
+            return reply(200, confirm_close(who, access_token(event), body))
+        if method == "POST" and path == "/api/breaker/reset":
+            return reply(200, reset_breaker(who))
         if method == "POST" and path == "/api/patch":
             return reply(200, apply_patch(who, body))
         if method == "POST" and path == "/api/run":

@@ -151,7 +151,7 @@ data "aws_iam_policy_document" "api" {
     # written by later roots (web, agent); read at request time to avoid a deploy-order cycle
     sid     = "LaterRootOutputs"
     actions = ["ssm:GetParameter"]
-    resources = [for p in ["edge/client_id", "agent/runtime_arn", "agent/model_id", "agent/policy_engines", "agent/gateways", "agent/gateway_logs"] :
+    resources = [for p in ["edge/client_id", "agent/runtime_arn", "agent/model_id", "agent/policy_engines", "agent/gateways", "agent/gateway_urls", "agent/gateway_logs"] :
     "arn:aws:ssm:${var.region}:${var.account_id}:parameter${local.ssm}/${p}"]
   }
   statement {
@@ -242,6 +242,21 @@ resource "aws_cloudwatch_metric_alarm" "forbidden_effect_any_build" {
   alarm_description   = "SEC310 demo: any build changed a ticket through the agent (V0-V2 do, by design)"
   namespace           = "SEC310Demo"
   metric_name         = "ForbiddenEffects"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+# V4+: the circuit breaker tripped (a policy denial or the turn limit) and the agent is read-only
+# until an operator resets it. Someone should look: the breaker never closes on its own.
+resource "aws_cloudwatch_metric_alarm" "breaker_tripped" {
+  alarm_name          = "${var.name_prefix}_breaker_tripped"
+  alarm_description   = "SEC310 demo: the agent's circuit breaker tripped; it stays read-only until an operator resets it"
+  namespace           = "SEC310Demo"
+  metric_name         = "BreakerTrips"
   statistic           = "Sum"
   period              = 60
   evaluation_periods  = 1

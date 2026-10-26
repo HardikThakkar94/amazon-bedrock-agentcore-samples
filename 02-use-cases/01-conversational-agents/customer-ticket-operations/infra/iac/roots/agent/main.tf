@@ -7,7 +7,8 @@
 # One gateway per distinct policy set (src/sec310_agent/controls.py maps builds to them):
 #   v0  no policy engine: every tool call goes through                      (V0)
 #   v1  AgentCore Policy: a call must be for the caller and the caller's tenant (V1, V2)
-#   v3  v1's fence + forbid close_ticket for the operator summary task      (V3, V4, V5)
+#   v3  v1's fence; close_ticket only after the operator's confirm_close     (V3)
+#   v4  v3's policies + a cap on writes per policy session                  (V4, V5)
 
 locals {
   ssm          = "/${var.project}/${var.environment}"
@@ -24,9 +25,22 @@ locals {
   gateways = {
     v0 = { policy = false, description = "V0 build: the agent's tools with no policy engine" }
     v1 = { policy = true, description = "V1-V2 builds: AgentCore Policy fences every call to the caller's tenant" }
-    v3 = { policy = true, description = "V3-V5 builds: tenant fence plus forbid close_ticket for the summary task" }
+    v3 = { policy = true, description = "V3 build: tenant fence; close_ticket only after an operator confirm_close" }
+    v4 = { policy = true, description = "V4-V5 builds: V3's policies plus a cap on writes per session" }
   }
   tool_actions = [for t in keys(local.tools) : "AgentCore::Action::\"${local.target}___${t}\""]
+  close_action = "AgentCore::Action::\"${local.target}___close_ticket\""
+  confirm_gws  = ["v3", "v4"] # gateways where close_ticket needs a human confirmation
+  write_cap    = 2            # V4: more writes of one kind than this in a policy session is denied
+  # The fence, reused by the temporal permit for close_ticket.
+  fence = <<-CEDAR
+    principal.hasTag("customer_id") &&
+    context.input has customer_id &&
+    context.input.customer_id == principal.getTag("customer_id") &&
+    context.input has actor &&
+    context.input.actor has user_sub &&
+    context.input.actor.user_sub == principal.id
+  CEDAR
 
   # ``actor`` is filled in by the agent's runtime from the verified token on every call; the
   # Gateway's policies (later builds) compare it with the token's own claims.
@@ -53,6 +67,13 @@ locals {
         { name = "customer_id", type = "string", description = "Customer that owns the ticket.", required = true },
         { name = "ticket_id", type = "string", description = "Ticket such as A-42.", required = true },
         { name = "reason", type = "string", description = "Why the ticket is closed.", required = true },
+      ]
+    }
+    confirm_close = {
+      description = "Record the signed-in operator's confirmation that one ticket may be closed. Called by the operator console; the agent may not call it."
+      input = [
+        { name = "customer_id", type = "string", description = "Customer that owns the ticket.", required = true },
+        { name = "ticket_id", type = "string", description = "Ticket such as A-41.", required = true },
       ]
     }
     add_note = {
@@ -176,6 +197,18 @@ data "aws_iam_policy_document" "gateway" {
       "bedrock-agentcore:PartiallyAuthorizeActions",
     ]
     resources = ["${local.agentcore}:policy-engine/*", "${local.agentcore}:gateway/*"]
+  }
+  statement {
+    sid = "TemporalPolicySessions" # V3+: the Gateway mints a workload access token per policy session
+    actions = [
+      "bedrock-agentcore:GetWorkloadAccessToken",
+      "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+      "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+    ]
+    resources = [
+      "${local.agentcore}:workload-identity-directory/default",
+      "${local.agentcore}:workload-identity-directory/default/workload-identity/*",
+    ]
   }
 }
 
@@ -301,15 +334,10 @@ resource "aws_bedrockagentcore_policy" "tenant_fence" {
       statement = <<-CEDAR
         permit(
           principal is AgentCore::OAuthUser,
-          action in [${join(", ", local.tool_actions)}],
+          action in [${join(", ", [for a in local.tool_actions : a if !(contains(local.confirm_gws, each.key) && a == local.close_action)])}],
           resource == AgentCore::Gateway::"${aws_bedrockagentcore_gateway.build[each.key].gateway_arn}"
         ) when {
-          principal.hasTag("customer_id") &&
-          context.input has customer_id &&
-          context.input.customer_id == principal.getTag("customer_id") &&
-          context.input has actor &&
-          context.input.actor has user_sub &&
-          context.input.actor.user_sub == principal.id
+          ${indent(10, trimspace(local.fence))}
         };
       CEDAR
     }
@@ -317,24 +345,91 @@ resource "aws_bedrockagentcore_policy" "tenant_fence" {
   depends_on = [aws_bedrockagentcore_gateway_target.tickets]
 }
 
-# V3: summarizing tickets for an operator never closes one. The condition reads the call's own
-# arguments, which tools/list cannot know, so close_ticket stays listed: the model can still
-# propose it and the Gateway's denial is visible. (A condition on the caller alone would hide the
-# tool from operators entirely, and an unconditional forbid is rejected as overly restrictive.)
-resource "aws_bedrockagentcore_policy" "no_close_in_summary" {
-  name             = "${var.name_prefix}_v3_no_close_in_summary"
-  policy_engine_id = aws_bedrockagentcore_policy_engine.build["v3"].policy_engine_id
-  description      = "The operator summary task may read and annotate tickets, never close them"
+# V3: a human confirms consequential actions. close_ticket is permitted only if the same operator
+# confirmed closing that ticket earlier in this policy session (a Dogwood temporal condition over
+# the session's recorded confirm_close responses). An injected close has no confirmation: denied.
+#
+# V4: bound the blast radius. More than write_cap calls of one write tool in a policy session is
+# denied, and any denial trips the agent's circuit breaker. (A count is scoped to the session the
+# caller names, so this shapes a cooperative agent; it is not a limit against the caller.)
+locals {
+  temporal = merge(
+    { for gw in local.confirm_gws : "${gw}_confirmed_close" => {
+      gw          = gw
+      description = "close_ticket only after the operator's confirm_close on the same ticket"
+      statement   = <<-CEDAR
+        permit(
+          principal is AgentCore::OAuthUser,
+          action == ${local.close_action},
+          resource == AgentCore::Gateway::"${aws_bedrockagentcore_gateway.build[gw].gateway_arn}"
+        ) when temporal {
+          formerly within 1h AgentCore::Action::"${local.target}___confirm_close"::response{
+            eventResource: resource,
+            input.customer_id: context.input.customer_id,
+            input.ticket_id: context.input.ticket_id
+          }
+        } when {
+          ${indent(10, trimspace(local.fence))}
+        };
+      CEDAR
+    } },
+    { for tool in ["close_ticket", "add_note"] : "v4_cap_${tool}" => {
+      gw          = "v4"
+      description = "At most ${local.write_cap} ${tool} calls per policy session in an hour"
+      statement   = <<-CEDAR
+        forbid(
+          principal is AgentCore::OAuthUser,
+          action == AgentCore::Action::"${local.target}___${tool}",
+          resource == AgentCore::Gateway::"${aws_bedrockagentcore_gateway.build["v4"].gateway_arn}"
+        ) when temporal {
+          exists (n: Long).
+            (count for (t: Timepoint).
+              where (formerly within 1h (AgentCore::Action::"${local.target}___${tool}"::request{ eventResource: resource } && tp(t)))) == n
+            && n > ${local.write_cap}
+        };
+      CEDAR
+    } },
+  )
+}
+
+# Temporal (Dogwood) statements use the API's "policy" definition, which the Terraform AWS provider
+# does not expose yet (it has "cedar" only), so they are created through CloudFormation.
+resource "aws_cloudformation_stack" "temporal" {
+  for_each = toset(local.confirm_gws)
+  name     = "${local.hyphen}-${each.key}-temporal-policies"
+  template_body = jsonencode({
+    AWSTemplateFormatVersion = "2010-09-09"
+    Description              = "AgentCore Policy temporal statements for the ${each.key} gateway"
+    Resources = { for k, v in local.temporal : replace(title(replace(k, "_", " ")), " ", "") => {
+      Type = "AWS::BedrockAgentCore::Policy"
+      Properties = {
+        PolicyEngineId = aws_bedrockagentcore_policy_engine.build[each.key].policy_engine_id
+        Name           = "${var.name_prefix}_${k}"
+        Description    = v.description
+        Definition     = { Policy = { Statement = v.statement } }
+      }
+    } if v.gw == each.key }
+  })
+  depends_on = [aws_bedrockagentcore_policy.tenant_fence]
+}
+
+# Only the operator console confirms: the agent's runtime stamps run_id on every call it makes
+# (the model cannot remove it), so a confirm_close carrying run_id came from the agent.
+resource "aws_bedrockagentcore_policy" "console_only_confirm" {
+  for_each         = toset(local.confirm_gws)
+  name             = "${var.name_prefix}_${each.key}_console_only_confirm"
+  policy_engine_id = aws_bedrockagentcore_policy_engine.build[each.key].policy_engine_id
+  description      = "The agent can never confirm a close; only an operator, from the console"
   definition {
     cedar {
       statement = <<-CEDAR
         forbid(
           principal is AgentCore::OAuthUser,
-          action == AgentCore::Action::"${local.target}___close_ticket",
-          resource == AgentCore::Gateway::"${aws_bedrockagentcore_gateway.build["v3"].gateway_arn}"
+          action == AgentCore::Action::"${local.target}___confirm_close",
+          resource == AgentCore::Gateway::"${aws_bedrockagentcore_gateway.build[each.key].gateway_arn}"
         ) when {
-          principal.hasTag("role") && principal.getTag("role") == "operator" &&
-          context.input has ticket_id
+          context.input has run_id ||
+          !(principal.hasTag("role") && principal.getTag("role") == "operator")
         };
       CEDAR
     }

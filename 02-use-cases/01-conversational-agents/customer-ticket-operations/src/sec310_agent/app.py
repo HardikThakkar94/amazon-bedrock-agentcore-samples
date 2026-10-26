@@ -55,12 +55,13 @@ def invoke(payload: dict[str, Any], context: Any) -> dict[str, Any]:
         log.exception("run failed")
         return {"error": f"{type(exc).__name__}: {exc}"[:500]}
     log.info(
-        "run %s (%s %s): %d tool calls, halted=%s blocked=%s refused=%s",
+        "run %s (%s %s): %d tool calls, tripped=%s read_only=%s blocked=%s refused=%s",
         result["run_id"],
         result["stage"],
         result["mode"],
         len(result["tool_calls"]),
         result["halted"],
+        result.get("read_only", False),
         result["blocked"],
         bool(result["refused"]),
     )
