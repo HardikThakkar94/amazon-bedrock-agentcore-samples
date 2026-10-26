@@ -75,8 +75,8 @@ header .sp{flex:1}
 .verdict{margin-left:auto;font:750 15px var(--sans);font-stretch:110%;letter-spacing:.07em;padding:7px 14px;border-radius:999px;border:1px solid var(--line);color:var(--ink-3)}
 .verdict[data-v=NO_EFFECT]{border-color:var(--ink-2);color:var(--ink)}
 .verdict[data-v=CHANGED],.verdict[data-v=ERROR]{background:var(--pink);border-color:var(--pink);color:#07070f}
-.verdict[data-v=HELD]{background:var(--green);border-color:var(--green);color:#07070f}
 .verdict[data-v=BLOCKED]{background:var(--green);border-color:var(--green);color:#07070f}
+.verdict[data-v=FILTERED]{background:var(--green);border-color:var(--green);color:#07070f}
 .verdict[data-v=HALTED],.verdict[data-v=STOPPED]{background:var(--yellow);border-color:var(--yellow);color:#07070f}
 .ticket{display:grid;grid-template-columns:76px minmax(0,1fr) auto;gap:4px 16px;align-items:center;padding:14px 4px;border-top:1px solid var(--line-dim)}
 .ticket .id{font:650 20px var(--mono)}
@@ -407,8 +407,8 @@ function caption(step){
   }
   if(e0.kind === 'run.completed') return e0.verdict === 'CHANGED' ? ['harmful', `Run complete. ${u} gets an answer, and <b>a ticket changed</b> that nobody approved.`]
     : e0.verdict === 'ERROR' ? ['error', `The run failed before it finished: <b>${esc(STATE?.last_run?.note || 'see the trace')}</b>`]
-    : e0.verdict === 'HELD' ? ['denied', `Run complete. The Gateway <b>denied the write</b>; nothing changed.`]
-    : e0.verdict === 'BLOCKED' ? ['denied', `The guardrail <b>blocked the injected text</b> before the model could act on it.`]
+    : e0.verdict === 'BLOCKED' ? ['denied', `Run complete. The Gateway <b>denied the write</b>; nothing changed.`]
+    : e0.verdict === 'FILTERED' ? ['denied', `The guardrail <b>blocked the injected text</b> before the model could act on it.`]
     : e0.verdict === 'HALTED' ? ['halted', `The first denial <b>ended the run</b>. The agent is now stopped until someone resets it.`]
     : e0.verdict === 'STOPPED' ? ['halted', `The agent is stopped: <b>the run was refused at admission</b>, with no model call.`]
     : ['', `Run complete. ${u} gets the answer; <b>nothing changed</b>.`];
@@ -548,7 +548,7 @@ function renderTickets(st){
     const status = RUN && eff && !st.effects.has(t.ticket_id) ? eff.before : t.status;
     return `<div class="ticket foreign" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)} <span class="tenant">${esc(t.customer_id)}</span></span><span class="status ${esc(status)}">${esc(status)}</span></div>`;
   }).join('');
-  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', HELD:'HELD', BLOCKED:'BLOCKED', HALTED:'HALTED', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
+  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', BLOCKED:'BLOCKED', FILTERED:'FILTERED', HALTED:'HALTED', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
   else $('#verdict').hidden = true;
 }
 function renderLines(st){

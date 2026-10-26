@@ -419,15 +419,15 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
             "agent",
             {"CHANGED": "harmful", "ERROR": "error", "STOPPED": "halted", "HALTED": "halted"}.get(
                 result["status"],
-                "denied" if result["status"] in ("HELD", "BLOCKED") else "ok",
+                "denied" if result["status"] in ("BLOCKED", "FILTERED") else "ok",
             ),
             {
                 "CHANGED": "answer returned · ticket changed",
                 "ERROR": "run failed",
                 "STOPPED": "refused: agent is stopped",
                 "HALTED": "run ended on the first denial",
-                "HELD": "answer returned · write denied",
-                "BLOCKED": "guardrail blocked the model input",
+                "BLOCKED": "answer returned · write denied by policy",
+                "FILTERED": "guardrail withheld the ticket text",
             }.get(result["status"], "answer returned to " + who["username"]),
             verdict=result["status"],
             payload=json.dumps(
