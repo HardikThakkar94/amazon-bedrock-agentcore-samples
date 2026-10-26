@@ -4,203 +4,649 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Bounded agent · re:Invent 2026</title>
 <style>
-:root{--ink:#232f3e;--orange:#ff9900;--blue:#0073bb;--light:#00a1c9;--ok:#1d8102;--bad:#d13212;--warn:#b7791f;--bg:#f4f6f8;--card:#fff;--line:#d5dbdb;--text:#16191f;--muted:#545b64;--shadow:0 2px 8px rgba(0,0,0,.13)}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:"Amazon Ember","Helvetica Neue",Arial,sans-serif;font-size:16px}button{font:inherit}header{height:74px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 30px;border-bottom:4px solid var(--orange)}.brand{display:flex;align-items:center;gap:14px}.mark{width:38px;height:38px;border:2px solid var(--orange);border-radius:50%;display:grid;place-items:center;font-weight:900}.brand h1{font-size:21px;margin:0}.brand p{margin:3px 0 0;color:#d5dbdb;font-size:13px}.model{font-size:13px;background:#172536;border:1px solid #627d98;padding:9px 12px;border-radius:4px;max-width:520px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}main{padding:21px 28px 42px;max-width:1650px;margin:auto}.toolbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:16px}.button{border:1px solid #879596;background:#fff;color:var(--text);padding:9px 14px;border-radius:4px;cursor:pointer;font-weight:750}.button:hover{background:#f1faff}.button.primary{background:var(--blue);border-color:var(--blue);color:#fff}.button.attack{background:#fff1ef;border-color:var(--bad);color:#9f1c0b}.button.stop{background:#fff8e5;border-color:var(--warn);color:#704b00}.button.patch{background:var(--ink);border-color:var(--ink);color:#fff}.button:disabled{opacity:.44;cursor:not-allowed}.spacer{flex:1}.stage-label{font-size:13px;font-weight:800;color:var(--muted)}.rail{display:grid;grid-template-columns:repeat(6,1fr);gap:7px;margin-bottom:15px}.rail-step{padding:10px 12px;background:#eaeded;border-top:4px solid #aab7b8}.rail-step b{display:block}.rail-step small{color:var(--muted)}.rail-step.applied{background:#edf8eb;border-color:var(--ok)}.rail-step.active{background:#eef7ff;border-color:var(--blue)}.tabs{display:flex;border-bottom:1px solid #879596;margin-bottom:16px}.tab{border:0;background:transparent;padding:12px 20px;font-weight:800;cursor:pointer;border-bottom:4px solid transparent}.tab.active{color:#005b9f;border-color:var(--blue)}.view{display:none}.view.active{display:block}.story{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}.beat{background:#fff;border:1px solid var(--line);border-top:4px solid var(--blue);padding:13px 15px;min-height:80px}.beat strong{display:block;margin-bottom:5px}.beat span{color:var(--muted);font-size:13px}.beat.bad{border-top-color:var(--bad)}.beat.ok{border-top-color:var(--ok)}.layout{display:grid;grid-template-columns:minmax(610px,1.1fr) minmax(480px,.9fr);gap:18px}.panel{background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:6px;overflow:hidden}.panel-head{padding:16px 19px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}.panel-head h2{font-size:20px;margin:0 0 3px}.panel-head p{margin:0;color:var(--muted);font-size:13px}.capture{padding:6px 9px;border-radius:12px;background:#eef7ff;color:#005b9f;font-size:11px;font-weight:800;white-space:nowrap}.capture.stale{background:#fff8e5;color:#704b00}.capture.off{background:#eaeded;color:var(--muted)}table{width:100%;border-collapse:collapse}th{text-align:left;padding:10px 13px;background:#f2f3f3;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}td{padding:12px 13px;border-top:1px solid #eaeded;vertical-align:top}.ticket-id{font-weight:900;color:#005b9f}.subject{font-weight:750;margin-bottom:3px}.body{color:var(--muted);font-size:13px;line-height:1.35;white-space:pre-wrap;max-width:520px}.source{font-size:11px;color:#687078;margin-top:5px}.source.external{color:var(--bad);font-weight:800}.status{font-size:11px;font-weight:900;padding:5px 8px;border-radius:12px}.status.OPEN{background:#e9f7e6;color:#176d09}.status.CLOSED{background:#fde7e3;color:#9f1c0b}.store-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 13px;background:#f7f8f8;border-bottom:1px solid var(--line)}.store-tools label{font-size:11px;font-weight:900;color:var(--muted);text-transform:uppercase}.store-tools select{padding:7px 9px;border:1px solid #879596;border-radius:4px;background:#fff}.store-view{border:1px solid #879596;background:#fff;padding:7px 10px;cursor:pointer;font-weight:750}.store-view.active{background:var(--ink);color:#fff}.store-source{margin-left:auto;color:var(--muted);font-size:11px}.changed-row{background:#fffbea}.status-change{display:inline-block;padding:5px 8px;border-radius:3px;background:#fff3cd;color:#704b00;font-size:11px;font-weight:900}.status-editor{width:100%;padding:6px;border:1px solid var(--blue);border-radius:3px;background:#fff;font-weight:800}.ticket-input,.ticket-body{width:100%;padding:7px;border:1px solid var(--blue);border-radius:3px;font:inherit}.ticket-body{min-height:94px;resize:vertical;font-size:12px;line-height:1.35}.save-ticket{margin-top:7px;width:100%;padding:6px;border:0;border-radius:3px;background:var(--blue);color:#fff;font-weight:800;cursor:pointer}.field-before{display:block;margin:4px 0;color:#8d5d00;font-size:10px}.presenter-note{padding:8px 13px;background:#fff8e5;color:#704b00;font-size:11px;border-bottom:1px solid #efd88b}.runbox{padding:17px 19px}.active-build{padding:13px;background:#eef7ff;border-left:4px solid var(--blue);margin-bottom:12px}.active-build b{display:block;font-size:17px}.active-build span{font-size:13px;color:var(--muted)}.run-buttons{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:14px}.empty{padding:38px 18px;text-align:center;color:var(--muted);border:1px dashed #aab7b8;border-radius:4px}.result{border-top:1px solid var(--line);padding-top:15px}.result-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}.verdict{font-weight:900;font-size:12px;border-radius:3px;padding:6px 9px}.verdict.CHANGED{background:#fde7e3;color:#9f1c0b}.verdict.BLOCKED,.verdict.STOPPED{background:#fff3cd;color:#704b00}.verdict.NO_EFFECT{background:#e9f7e6;color:#176d09}.verdict.ERROR{background:#fde7e3;color:#9f1c0b}.run-source{font-size:11px;color:var(--muted)}.answer{padding:12px;background:#f7f8f8;border-left:4px solid var(--blue);line-height:1.4;margin-bottom:10px}.section-label{font-size:11px;color:var(--muted);font-weight:900;text-transform:uppercase;letter-spacing:.05em;margin:13px 0 6px}.proposal,.control,.effect{padding:8px 10px;border:1px solid #eaeded;border-radius:4px;margin-top:5px;font-size:12px}.proposal code{font-weight:900;color:#9f1c0b}.control{display:grid;grid-template-columns:105px 68px 1fr;gap:7px}.control b.PASS{color:var(--ok)}.control b.DENY,.control b.ERROR{color:var(--bad)}.effect{display:flex;justify-content:space-between;gap:8px}.effect .executed{color:var(--bad);font-weight:900}.effect .denied{color:var(--ok);font-weight:900}.effect .neutral{color:var(--muted);font-weight:800}.note{margin-top:10px;color:var(--muted);font-size:12px}.regression{margin-top:10px;padding:10px;border-left:4px solid var(--ok);background:#edf8eb;font-weight:850}.regression.FAIL,.regression.ERROR{border-color:var(--bad);background:#fff1ef;color:var(--bad)}.code-layout,.trace-layout{display:grid;grid-template-columns:280px 1fr;gap:18px}.code-meta,.trace-meta{padding:18px}.code-meta h2,.trace-meta h2{margin:0 0 7px}.path{font-family:SFMono-Regular,Consolas,monospace;color:#005b9f;font-size:12px;overflow-wrap:anywhere}.explain{font-size:13px;color:var(--muted);line-height:1.5}.codebox{background:#0f1b2a;color:#f2f3f3;padding:18px;overflow:auto;min-height:560px}.codebox .file{color:#9ba7b3;font-size:12px;margin-bottom:12px}.codebox pre{font-family:SFMono-Regular,Consolas,monospace;font-size:14px;line-height:1.55;margin:0;white-space:pre-wrap}.log-card{padding:15px;border-bottom:1px solid #eaeded}.log-card label{display:block;color:var(--muted);font-size:11px;font-weight:900;text-transform:uppercase;margin-bottom:5px}.log-card code{overflow-wrap:anywhere}.trace-body{padding:18px}.trace-list{display:grid;gap:6px}.trace-row{display:grid;grid-template-columns:100px 52px 1fr 82px;gap:10px;padding:8px;background:#f7f8f8;font-size:12px}.trace-json{margin-top:16px;background:#0f1b2a;color:#f2f3f3;padding:15px;max-height:440px;overflow:auto;font:12px/1.5 SFMono-Regular,Consolas,monospace;white-space:pre-wrap}.query{display:block;background:#0f1b2a;color:#f2f3f3;padding:11px;font:11px/1.4 SFMono-Regular,Consolas,monospace;white-space:pre-wrap;margin-top:8px}.cloud-link{color:#005b9f;font-weight:800}.flow-panel{margin-top:18px}.flow-head{padding:14px 19px 10px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:baseline}.flow-head h2{font-size:18px;margin:0}.flow-head p{margin:0;color:var(--muted);font-size:13px}.flow{display:grid;grid-template-columns:1fr 22px 1fr 22px 1fr 22px 1fr 22px 1fr 22px 1fr 22px 1fr;align-items:stretch;gap:0;padding:14px 19px 6px}.flow-node{border:1px solid var(--line);border-top:4px solid #aab7b8;background:#f7f8f8;padding:9px 10px;min-height:86px;border-radius:4px}.flow-node b{display:block;font-size:13px;margin-bottom:4px}.flow-node span{display:block;font-size:12px;color:var(--muted);line-height:1.35;overflow-wrap:anywhere}.flow-node.ok{border-top-color:var(--ok);background:#f1faf0}.flow-node.bad{border-top-color:var(--bad);background:#fff3f1}.flow-node.warn{border-top-color:var(--warn);background:#fff8e5}.flow-node.live{border-top-color:var(--blue);background:#eef7ff}.effect .skipped{color:#545b64;font-style:italic}#stop.halted{background:#fff3f1;border-color:var(--bad);color:#8b1a0e;font-weight:700}.flow-arrow{display:grid;place-items:center;color:#879596;font-size:18px}.flow-caption{padding:4px 19px 15px;font-size:13px;color:var(--text)}.flow-caption b{color:#005b9f}.arch-layout{display:grid;grid-template-columns:1fr 300px;gap:18px}.arch-canvas{padding:12px 16px 18px}.arch-canvas svg{width:100%;height:auto;display:block}.arch-side{padding:18px}.arch-side h2{margin:0 0 8px}.legend{display:grid;gap:8px;margin-top:12px}.legend div{padding:9px 11px;border-left:4px solid var(--blue);background:#f7f8f8;font-size:13px}.legend div.real{border-color:var(--ok)}.legend div.local{border-color:var(--warn)}.legend div.off{border-color:#aab7b8}.busy{position:fixed;inset:0;background:rgba(35,47,62,.68);display:none;place-items:center;color:#fff;z-index:5;text-align:center}.busy.show{display:grid}.spinner{width:50px;height:50px;border:5px solid rgba(255,255,255,.35);border-top-color:var(--orange);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 13px}@keyframes spin{to{transform:rotate(360deg)}}.toast{position:fixed;right:22px;bottom:22px;padding:12px 17px;background:var(--ink);color:#fff;border-radius:4px;box-shadow:var(--shadow);display:none;max-width:520px;z-index:7}.toast.error{background:var(--bad)}@media(max-width:1050px){.layout,.code-layout,.trace-layout{grid-template-columns:1fr}.story{grid-template-columns:1fr}.model{max-width:320px}}@media(prefers-reduced-motion:reduce){*{animation:none!important}}
-@font-face{font-family:'Mona Sans';src:url('/fonts/mona-sans-vf.woff2') format('woff2');font-weight:200 900;font-stretch:75% 125%;font-style:normal;font-display:swap}@font-face{font-family:'Monaspace Neon';src:url('/fonts/monaspace-neon-vf.woff2') format('woff2');font-weight:200 800;font-stretch:100% 125%;font-style:normal;font-display:swap}
-/* ── Theme: AWS re:Invent 2026 deck template ("reInvent 26 V2"). Black canvas, white type, flat
-      colour blocks. Orange = act; pink = attacker path and executed effects; green = held/denied;
-      yellow = stop; blue = links and info. ───────────────────────────────────────────────────── */
+@font-face{font-family:'Mona Sans';src:url('/fonts/mona-sans-vf.woff2') format('woff2');font-weight:200 900;font-stretch:75% 125%;font-display:swap}
+@font-face{font-family:'Monaspace Neon';src:url('/fonts/monaspace-neon-vf.woff2') format('woff2');font-weight:200 800;font-stretch:100% 125%;font-display:swap}
+/* re:Invent 2026: navy-black page, crimson → violet → blue brand gradient. Colour carries meaning:
+   blue = in flight, pink = attacker text / harmful effect, green = held by a control, yellow = stop,
+   orange = the one primary action. */
 :root{
-  --black:#000;--s1:#0e0d0c;--s2:#181715;--s3:#23211f;--rule:#2f2d2a;--rule-2:#46433f;
-  --white:#f5f3ef;--text:#f5f3ef;--body:#d6d2ca;--muted:#a39f97;--grey:#7e7a72;
-  --orange:#ff6200;--orange-2:#ff7f33;--yellow:#f3c300;--pink:#ff4d8b;--purple:#b052ff;--blue:#0578ff;--link:#68adff;--green:#6ee750;
-  --wash-orange:color-mix(in srgb,var(--orange) 14%,var(--s1));--wash-pink:color-mix(in srgb,var(--pink) 14%,var(--s1));
-  --wash-green:color-mix(in srgb,var(--green) 11%,var(--s1));--wash-yellow:color-mix(in srgb,var(--yellow) 12%,var(--s1));
-  --wash-blue:color-mix(in srgb,var(--blue) 16%,var(--s1));
-  --ink:var(--black);--ok:var(--green);--bad:var(--pink);--warn:var(--yellow);--bg:var(--black);--card:var(--s1);--line:var(--rule);
-  --shadow:none;--sans:'Mona Sans',ui-sans-serif,'Helvetica Neue',sans-serif;--mono:'Monaspace Neon',ui-monospace,monospace;
-  --ease:cubic-bezier(.22,1,.36,1)}
+  --page:#07070f; --panel:#0d0d18; --node:#12121f; --line:rgba(245,243,239,.28); --line-dim:rgba(245,243,239,.14);
+  --ink:#F5F3EF; --ink-2:rgba(245,243,239,.76); --ink-3:rgba(245,243,239,.54);
+  --blue:#68ADFF; --pink:#FF4D8B; --green:#6EE750; --yellow:#F3C300; --orange:#FF6200;
+  --grad:linear-gradient(100deg,#5e1340 0%,#45197a 34%,#3428b0 66%,#241a62 86%,#120d2a 100%);
+  --ease:cubic-bezier(.25,1,.5,1);
+  --sans:'Mona Sans',ui-sans-serif,system-ui,sans-serif; --mono:'Monaspace Neon',ui-monospace,monospace;
+  --side:clamp(560px,40vw,768px);
+}
+*{box-sizing:border-box;margin:0}
 html{color-scheme:dark}
-body{font-family:var(--sans);font-size:15px;line-height:1.45;background:var(--black);color:var(--body);-webkit-font-smoothing:antialiased}
-body{background:radial-gradient(1400px 420px at 35% -80px,rgba(76,26,122,.38),transparent 72%),radial-gradient(900px 320px at 95% -60px,rgba(59,63,224,.22),transparent 70%),var(--black);background-repeat:no-repeat}
-::selection{background:var(--orange);color:var(--black)}
-a{color:var(--link)}
-/* header: logo tile + wordmark, colour blocks at the right edge like the section slides */
-header{position:relative;overflow:hidden;height:auto;min-height:92px;padding:0 clamp(20px,3vw,44px) 0 0;border-bottom:0;gap:14px;
-  background:radial-gradient(70% 160% at 0% 100%,#8c1a4a 0%,transparent 60%),radial-gradient(60% 180% at 85% 0%,#3b3fe0 0%,transparent 65%),
-  linear-gradient(100deg,#5e1340 0%,#45197a 34%,#3428b0 66%,#241a62 86%,#120d2a 100%)}
-header>*{position:relative;z-index:1}
-.brand>div{padding:16px 0 14px}
-.brand{gap:clamp(16px,2vw,28px);align-self:stretch}
-.brand .tile{background:transparent;display:grid;place-items:center;padding:0 clamp(18px,2vw,28px);align-self:stretch;border-right:1px solid rgba(245,243,239,.22)}
-.brand .tile img{height:34px;width:auto;display:block}
-.brand .divider{display:none}
-.brand .event{height:22px;margin:0 0 8px;display:flex;align-items:flex-end;gap:8px}.brand .event img{height:100%;width:auto;display:block}.brand .event span{font:600 17px/1 var(--sans);color:var(--white);letter-spacing:.02em}
-.brand h1{font-size:clamp(19px,1.6vw,24px);font-weight:500;letter-spacing:-.01em;color:var(--white);line-height:1.15}
-.brand p{font-size:12.5px;color:#e4dff3;margin-top:4px}
-.blocks{display:flex;align-self:stretch;margin-left:6px}.blocks i{width:22px;display:block}
-.blocks i:nth-child(1){background:var(--green)}.blocks i:nth-child(2){background:var(--orange)}
-.blocks i:nth-child(3){background:var(--purple)}.blocks i:nth-child(4){background:var(--pink)}
-.model{font:500 12px/1.3 var(--sans);background:rgba(7,7,15,.45);border:1px solid rgba(245,243,239,.3);color:#f5f3ef;border-radius:999px;padding:8px 14px}
-a.model{color:#f5f3ef}a.model:hover{border-color:#fff;background:rgba(7,7,15,.7);color:#fff}
-main{padding:clamp(18px,2vw,30px) clamp(20px,3vw,44px) 56px}
-/* controls */
-.button{border:1px solid var(--rule-2);background:transparent;color:var(--white);border-radius:2px;font-weight:600;padding:9px 15px;transition:background .18s var(--ease),color .18s var(--ease),border-color .18s var(--ease)}
-.button:hover{background:var(--s2);border-color:var(--grey)}
-.button.patch,.button.primary{background:var(--orange);border-color:var(--orange);color:var(--black)}
-.button.patch:hover,.button.primary:hover{background:var(--orange-2);border-color:var(--orange-2)}
-.button.attack{border-color:var(--pink);color:var(--pink)}.button.attack:hover{background:var(--wash-pink)}
-.button.stop{border-color:var(--yellow);color:var(--yellow)}.button.stop:hover{background:var(--wash-yellow)}
-#stop.halted{background:var(--wash-pink);border-color:var(--pink);color:var(--pink)}
-.button:focus-visible,.tab:focus-visible,.store-view:focus-visible{outline:2px solid var(--link);outline-offset:2px}
-.stage-label{color:var(--muted);font-weight:600}
-/* build rail */
-.rail{gap:0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
-.rail-step{background:transparent;border-top:0;border-left:1px solid var(--rule);padding:12px 14px 11px;color:var(--body)}
-.rail-step:first-child{border-left:0}
-.rail-step b{color:var(--white);font-weight:600}.rail-step small{color:var(--muted)}
-.rail-step.applied{background:var(--wash-green);box-shadow:inset 0 4px 0 var(--green)}
-.rail-step.active{background:var(--wash-orange);box-shadow:inset 0 4px 0 var(--orange)}
-.tabs{border-bottom:1px solid var(--rule)}
-.tab{font-weight:600;color:var(--muted);border-bottom-width:3px}.tab:hover{color:var(--white)}
-.tab.active{color:var(--white);border-color:var(--orange)}
-/* story beats */
-.story{gap:0;border:1px solid var(--rule);background:var(--s1)}
-.beat{border:0;border-left:1px solid var(--rule);background:transparent;padding:14px 18px}
-.beat:first-child{border-left:0}
-.beat strong{color:var(--white);font-weight:600}.beat span{color:var(--muted)}
-.beat::before{content:'';display:block;width:16px;height:16px;background:var(--blue);margin-bottom:10px}
-.beat.bad::before{background:var(--pink)}.beat.ok::before{background:var(--green)}
-/* panels and tables */
-.panel{border-radius:0;border:1px solid var(--rule);box-shadow:none;background:var(--s1)}
-.panel-head{border-bottom:1px solid var(--rule)}.panel-head h2{color:var(--white);font-weight:500}.panel-head p{color:var(--muted)}
-.capture{border-radius:2px;font-weight:600;background:var(--wash-blue);color:var(--link)}
-.capture.stale{background:var(--wash-yellow);color:var(--yellow)}.capture.off{background:var(--s3);color:var(--muted)}
-th{background:var(--s2);color:var(--muted);font-weight:600;letter-spacing:.08em}
-td{border-top:1px solid var(--rule)}
-.ticket-id{font-weight:700;color:var(--white);font-variant-numeric:tabular-nums}
-.subject{color:var(--white)}.body{color:var(--body)}.source{color:var(--grey)}.source.external{color:var(--pink)}
-.status{border-radius:2px}
-.status.OPEN{background:var(--wash-green);color:var(--green)}.status.CLOSED{background:var(--wash-pink);color:var(--pink)}
-.store-tools{background:var(--s2);border-bottom:1px solid var(--rule)}.store-tools label{color:var(--muted)}
-.store-tools select,.status-editor,.ticket-input,.ticket-body{background:var(--black);color:var(--white);border:1px solid var(--rule-2);border-radius:2px}
-.store-view{background:transparent;color:var(--body);border-color:var(--rule-2);font-weight:600}
-.store-view.active{background:var(--white);border-color:var(--white);color:var(--black)}
-.store-source{color:var(--muted)}
-.save-ticket{background:var(--orange);color:var(--black);border-radius:2px}
-.field-before{color:var(--yellow)}
-.presenter-note{background:var(--wash-yellow);color:var(--yellow);border-bottom:1px solid var(--rule)}
-.changed-row{background:var(--wash-orange)}
-.status-change{background:var(--wash-yellow);color:var(--yellow);border-radius:2px}
-/* run box */
-.active-build{background:var(--s2);border-left:0;box-shadow:inset 4px 0 0 var(--orange)}
-.active-build b{color:var(--white);font-weight:600}.active-build span{color:var(--muted)}
-.empty{border-radius:0;border-color:var(--rule-2);color:var(--muted)}
-.result{border-top:1px solid var(--rule)}
-.answer{background:var(--s2);border-left:0;box-shadow:inset 4px 0 0 var(--blue);color:var(--white);font-size:15px}
-.verdict{border-radius:2px}
-.verdict.CHANGED,.verdict.ERROR{background:var(--pink);color:var(--black)}
-.verdict.NO_EFFECT{background:var(--green);color:var(--black)}
-.verdict.BLOCKED,.verdict.STOPPED{background:var(--yellow);color:var(--black)}
-.run-source,.note,.section-label{color:var(--muted)}
-.section-label,.store-tools label{letter-spacing:.1em;font-weight:600}
-.proposal,.control,.effect{border-radius:0;border-color:var(--rule);background:var(--black)}
-.proposal code{font-family:var(--mono);color:var(--pink);font-weight:600}
-.control b.PASS,.effect .denied{color:var(--green)}
-.control b.DENY,.control b.ERROR,.effect .executed{color:var(--pink)}
-.effect .neutral,.effect .skipped{color:var(--muted)}
-.regression{background:var(--wash-green);border-left:0;box-shadow:inset 4px 0 0 var(--green);color:var(--green);font-weight:600}
-.regression.FAIL,.regression.ERROR{background:var(--wash-pink);box-shadow:inset 4px 0 0 var(--pink);color:var(--pink)}
-/* code, trace, flow, architecture */
-.code-meta h2,.trace-meta h2,.arch-side h2,.flow-head h2{color:var(--white);font-weight:500}
-.explain,.flow-head p{color:var(--muted)}
-.codebox,.trace-json,.query{background:var(--black);color:var(--white);border:1px solid var(--rule)}
-.codebox .file{color:var(--muted)}
-.codebox pre,.trace-json,.query,.path,code{font-family:var(--mono)}
-.path,.cloud-link{color:var(--link)}
-.log-card{border-bottom:1px solid var(--rule)}.log-card label{color:var(--muted)}
-.trace-row{background:var(--s2);color:var(--body)}
-.flow-head{border-bottom:1px solid var(--rule)}
-.flow-node{border:1px solid var(--rule);border-top:4px solid var(--grey);background:var(--s2);border-radius:0}
-.flow-node b{color:var(--white)}.flow-node span{color:var(--muted)}
-.flow-node.ok{border-top-color:var(--green);background:var(--wash-green)}
-.flow-node.bad{border-top-color:var(--pink);background:var(--wash-pink)}
-.flow-node.warn{border-top-color:var(--yellow);background:var(--wash-yellow)}
-.flow-node.live{border-top-color:var(--blue);background:var(--wash-blue)}
-.flow-arrow{color:var(--grey)}.flow-caption{color:var(--body)}.flow-caption b{color:var(--white)}
-.legend div{background:var(--s2);border-left-color:var(--blue);color:var(--body)}
-.legend div.real{border-color:var(--green)}.legend div.local{border-color:var(--yellow)}.legend div.off{border-color:var(--grey)}
-.arch-canvas svg [fill="#fff"],.arch-canvas svg [fill="#f7f8f8"]{fill:var(--s2)}
-.arch-canvas svg [fill="#16191f"]{fill:var(--white)}.arch-canvas svg [fill="#545b64"]{fill:var(--muted)}
-.arch-canvas svg [stroke="#879596"],.arch-canvas svg [stroke="#aab7b8"],.arch-canvas svg [stroke="#545b64"]{stroke:var(--rule-2)}
-.arch-canvas svg [stroke="#ff9900"]{stroke:var(--orange)}.arch-canvas svg [fill="#b7791f"]{fill:var(--orange)}
-.busy{background:color-mix(in srgb,var(--black) 82%,transparent)}
-.spinner{border-color:var(--rule-2);border-top-color:var(--orange)}
-.toast{background:var(--white);color:var(--black);border-radius:2px;box-shadow:none}.toast.error{background:var(--pink);color:var(--black)}
-/* stage legibility: read from the back of the room. Mona Sans wide for headings, 500 for body,
-   tabular figures for IDs and counts; Monaspace with texture healing and a slashed zero for code. */
-body{font-size:18px;font-weight:450;font-optical-sizing:auto;font-variant-numeric:tabular-nums}
-.brand h1,.panel-head h2,.code-meta h2,.trace-meta h2,.arch-side h2,.flow-head h2{font-stretch:112%;font-weight:640;letter-spacing:-.012em}
-.brand h1{font-size:clamp(22px,1.9vw,30px)}.panel-head h2{font-size:23px}
-.button,.tab,.store-view{font-size:16px;font-weight:600}
-td{font-size:16px}.subject{font-size:17px;font-weight:600}.body{font-size:15px;line-height:1.45}
-th,.section-label,.store-tools label,.source,.capture,.status,.verdict,.status-change{font-size:13px}
-.beat span,.panel-head p,.flow-head p,.explain,.note,.run-source,.store-source,.brand p,.rail-step small{font-size:14px}
-.proposal,.control,.effect,.trace-row{font-size:15px}.flow-node b{font-size:15px}.flow-node span{font-size:14px}
-.answer{font-size:17px}
-.status,.verdict,.capture,th,.section-label,.store-tools label{font-stretch:110%;font-weight:650;letter-spacing:.06em}
-.codebox pre,.trace-json,.query,.path,code,.proposal code{font-feature-settings:"calt","liga","cv01"}
-.codebox pre{font-size:15px}.trace-json,.query{font-size:14px}
-@media (max-width:900px){.blocks{display:none}}
-@media (prefers-reduced-motion:no-preference){.panel,.story,.rail{animation:rise .5s var(--ease) both}.layout .panel:nth-child(2){animation-delay:.06s}}
-@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+body{background:radial-gradient(1400px 420px at 30% -80px,rgba(76,26,122,.34),transparent 72%),var(--page);background-repeat:no-repeat;
+  color:var(--ink);font:450 18px/1.45 var(--sans);font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;min-height:100vh}
+button{font:inherit;color:inherit;cursor:pointer}
+::selection{background:var(--orange);color:#07070f}
+:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+
+/* header */
+header{display:flex;align-items:center;gap:18px;height:68px;padding:0 28px 0 0;background:var(--grad)}
+.tile{display:grid;place-items:center;height:100%;padding:0 22px;border-right:1px solid rgba(245,243,239,.22)}
+.tile img{height:30px;display:block}
+.event{display:flex;align-items:flex-end;gap:8px;height:20px}.event img{height:100%}.event span{font:650 16px/1 var(--sans);color:#fff}
+h1{font:650 26px/1.1 var(--sans);font-stretch:112%;letter-spacing:-.012em;color:#fff}
+header .sp{flex:1}
+.pill{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 14px;border-radius:999px;border:1px solid rgba(245,243,239,.3);background:rgba(7,7,15,.45);font:600 14px var(--sans);color:#fff;white-space:nowrap}
+.pill i{width:9px;height:9px;border-radius:50%;background:var(--green)}
+.pill.stop{border-color:var(--yellow);color:var(--yellow)}.pill.stop i{background:var(--yellow)}
+.gear{position:relative}
+.gear>button{width:38px;height:38px;border-radius:50%;border:1px solid rgba(245,243,239,.3);background:rgba(7,7,15,.45);font-size:18px}
+.menu{position:absolute;right:0;top:46px;z-index:30;min-width:240px;padding:6px;border:1px solid var(--line);border-radius:14px;background:var(--panel);display:none}
+.menu.open{display:block}
+.menu button,.menu a{display:block;width:100%;text-align:left;padding:10px 12px;border:0;border-radius:9px;background:transparent;color:var(--ink);font:550 16px var(--sans);text-decoration:none}
+.menu button:hover,.menu a:hover{background:var(--node)}
+.menu .k{float:right;font:500 14px var(--mono);color:var(--ink-3)}
+.menu hr{border:0;border-top:1px solid var(--line-dim);margin:6px 4px}
+.menu .as small{display:block;font:500 13px var(--mono);color:var(--ink-3)}
+.menu .as[aria-current=true]{background:rgba(245,243,239,.08)}
+.menu .as[aria-current=true]::after{content:"✓";float:right;margin-top:-30px;color:var(--green)}
+.menu .lbl{padding:6px 12px 2px;font:650 13px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+
+/* stepper + primary actions */
+.bar{display:flex;align-items:center;gap:20px;padding:16px 28px 0}
+.steps{display:flex;flex:1;min-width:0;border:1px solid var(--line-dim);border-radius:14px;overflow:hidden;background:rgba(13,13,24,.7)}
+.step{flex:1;min-width:0;padding:10px 14px;border-left:1px solid var(--line-dim)}
+.step:first-child{border-left:0}
+.step b{display:block;font:650 18px var(--sans);white-space:nowrap}
+.step small{display:block;font:500 14px var(--sans);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.step.on{background:rgba(255,98,0,.12);box-shadow:inset 0 3px 0 var(--orange)}
+.step.on small{color:var(--ink-2)}
+.step.locked{opacity:.55}
+.actions{display:flex;gap:10px;flex:none}
+.btn{height:46px;padding:0 20px;border-radius:999px;border:1px solid var(--line);background:transparent;font:650 17px var(--sans);white-space:nowrap}
+.btn:hover:not(:disabled){border-color:var(--ink)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.primary{background:var(--orange);border-color:var(--orange);color:#07070f}
+.btn.primary:hover:not(:disabled){background:#ff7f33;border-color:#ff7f33}
+
+/* body */
+.layout{display:grid;grid-template-columns:minmax(0,1fr) var(--side);gap:24px;padding:16px 28px 28px;align-items:start}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px}
+.main{padding:22px 24px}
+.main h2{display:flex;align-items:center;gap:14px;font:650 24px var(--sans);font-stretch:108%;margin-bottom:12px}
+.verdict{margin-left:auto;font:750 15px var(--sans);font-stretch:110%;letter-spacing:.07em;padding:7px 14px;border-radius:999px;border:1px solid var(--line);color:var(--ink-3)}
+.verdict[data-v=NO_EFFECT]{border-color:var(--ink-2);color:var(--ink)}
+.verdict[data-v=CHANGED],.verdict[data-v=ERROR]{background:var(--pink);border-color:var(--pink);color:#07070f}
+.verdict[data-v=HELD]{background:var(--green);border-color:var(--green);color:#07070f}
+.verdict[data-v=STOPPED]{background:var(--yellow);border-color:var(--yellow);color:#07070f}
+.ticket{display:grid;grid-template-columns:76px minmax(0,1fr) auto;gap:4px 16px;align-items:center;padding:14px 4px;border-top:1px solid var(--line-dim)}
+.ticket .id{font:650 20px var(--mono)}
+.ticket .subj{font:600 20px var(--sans)}
+.ticket .attack{grid-column:2/3;font:450 15px/1.45 var(--mono);color:var(--pink);white-space:pre-wrap}
+.ticket .from{grid-column:2/3;font:500 14px var(--sans);color:var(--ink-3)}
+.status{font:750 14px var(--sans);letter-spacing:.06em;padding:5px 11px;border-radius:999px;border:1px solid rgba(110,231,80,.5);color:var(--green)}
+.status.CLOSED{border-color:var(--pink);background:var(--pink);color:#07070f}
+.ticket.flash{animation:flash 900ms var(--ease)}
+@keyframes flash{0%{background:rgba(255,77,139,.28)}100%{background:transparent}}
+.lines{margin-top:18px;border-top:1px solid var(--line);padding-top:14px;display:grid;grid-template-columns:150px minmax(0,1fr);gap:10px 16px}
+.lines dt{font:600 16px var(--sans);color:var(--ink-3);letter-spacing:.02em}
+.lines dd{font:500 19px/1.4 var(--sans)}
+.lines dd code{font:500 17px var(--mono);color:var(--pink)}
+.lines dd.ok code{color:var(--ink)}
+.empty{color:var(--ink-3)}
+
+/* ── live architecture panel (top-to-bottom flow) ── */
+.panel{--pad:16px;--arrow:26px;--row:40px;--inner:58px;--gapc:52px;--ax:30px;position:relative;background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:flex;flex-direction:column}
+.panel.n{--pad:12px;--arrow:19px;--row:34px;--inner:50px;--gapc:34px;--ax:26px}
+.n .st,.n .arrow .cap{font-stretch:87.5%}
+.panel::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:linear-gradient(90deg,#8c1a4a,#4c1a7a 55%,#3b3fe0);z-index:2}
+.diagram{padding:18px var(--pad) 10px;display:flex;flex-direction:column}
+.node{position:relative;background:var(--node);border:1px solid var(--line);border-radius:10px;padding:0 12px;display:flex;align-items:center;gap:10px;min-height:var(--row);text-align:left;width:100%}
+.node::after{content:"";position:absolute;inset:-1px;border-radius:10px;border:2px solid var(--c,transparent);background:var(--t,transparent);opacity:0;transition:opacity 280ms var(--ease);pointer-events:none}
+.node[data-s=active]{--c:var(--blue);--t:rgba(104,173,255,.08)} .node[data-s=harmful]{--c:var(--pink);--t:rgba(255,77,139,.12)}
+.node[data-s=denied]{--c:var(--green);--t:rgba(110,231,80,.08)} .node[data-s=halted]{--c:var(--yellow);--t:rgba(243,195,0,.07)}
+.node[data-s=ok]{--c:rgba(245,243,239,.5)}
+/* error = the run broke (not attacker text, not a control): neutral, never green */
+.node[data-s=error]{--c:rgba(245,243,239,.85);--t:rgba(245,243,239,.06)}
+.node:is([data-s=active],[data-s=harmful],[data-s=denied],[data-s=halted],[data-s=ok],[data-s=error])::after{opacity:1}
+.node[data-s=error]::after{border-style:dashed}
+.node[data-s=ok]::after{border-width:1px}
+.node[data-s=skipped],.node.off{opacity:.45}
+.ico{width:28px;height:28px;border-radius:5px;flex:none;display:block;object-fit:contain}
+.t{font:650 19px/1.2 var(--sans);white-space:nowrap}
+.st{font:500 17px/1.3 var(--sans);font-stretch:94%;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node .st.r{margin-left:auto;text-align:right}
+.node[data-s=active] .st{color:var(--blue)} .node[data-s=harmful] .st{color:var(--pink)} .node[data-s=denied] .st{color:var(--green)} .node[data-s=halted] .st{color:var(--yellow)} .node[data-s=error] .st{color:var(--ink)}
+.node.two{flex-wrap:wrap;align-content:center;padding-top:7px;padding-bottom:7px}
+.node.two .tl{display:flex;align-items:center;gap:10px;width:100%}
+.node.two .st{padding-left:66px;width:100%}
+.arrow{position:relative;height:var(--arrow);flex:none}
+.arrow::before{content:"";position:absolute;left:calc(var(--ax) - 1px);top:2px;bottom:6px;width:2px;background:var(--wc,rgba(245,243,239,.3))}
+.arrow::after{content:"";position:absolute;left:calc(var(--ax) - 6px);bottom:1px;border:6px solid transparent;border-top:7px solid var(--wc,rgba(245,243,239,.45));border-bottom:0}
+.arrow .cap{position:absolute;left:calc(var(--ax) + 16px);top:50%;transform:translateY(-50%);font:500 17px var(--sans);font-stretch:94%;color:var(--ink-3);white-space:nowrap}
+.arrow[data-s] .cap{color:var(--ink-2)}
+[data-s=active]{--wc:var(--blue)} [data-s=harmful]{--wc:var(--pink)} [data-s=denied]{--wc:var(--green)} [data-s=halted]{--wc:var(--yellow)} [data-s=error]{--wc:rgba(245,243,239,.85)} [data-s=ok]{--wc:rgba(245,243,239,.6)}
+.dot{position:absolute;left:calc(var(--ax) - 8px);top:-8px;width:16px;height:16px;border-radius:50%;background:var(--pc,var(--blue));z-index:4;pointer-events:none}
+.box{position:relative;border:1.5px dashed rgba(245,243,239,.42);border-radius:14px;padding:22px 12px 12px;margin-top:12px}
+.n .box{padding:18px 8px 8px}
+.box .lg{position:absolute;top:-14px;left:12px;display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--panel);font:650 18px var(--sans);height:28px}
+.box .lg .ico{width:24px;height:24px}
+.box .lg small{font:500 17px var(--sans);color:var(--ink-3)}
+.box.tx{border-style:solid;border-color:rgba(245,243,239,.28)}
+.inner{display:flex;align-items:stretch}
+.inner .node{min-height:var(--inner);flex:1;width:auto;flex-direction:column;align-items:flex-start;justify-content:center;gap:0;padding:12px 12px 5px;min-width:0}
+.inner .node .tl{display:flex;align-items:center;gap:8px}
+.inner .node .st{padding-left:36px;max-width:100%}
+.conn{position:relative;width:var(--gapc);flex:none}
+.conn::before{content:"";position:absolute;left:8px;right:8px;top:50%;height:2px;background:var(--wc,rgba(245,243,239,.3))}
+.conn i{position:absolute;top:calc(50% - 6px);border:6px solid transparent}
+.conn i.l{left:2px;border-right:7px solid var(--wc,rgba(245,243,239,.45));border-left:0}
+.conn i.r{right:2px;border-left:7px solid var(--wc,rgba(245,243,239,.45));border-right:0}
+.conn .dot{left:0;top:calc(50% - 8px)}
+.chips{display:flex;gap:6px;margin-top:8px;min-height:30px;flex-wrap:wrap}
+.tc{font:500 15px var(--mono);padding:4px 9px;border-radius:6px;border:1px solid var(--line);color:var(--ink-2);white-space:nowrap}
+.tc[data-s=active]{border-color:var(--blue);color:var(--blue)} .tc[data-s=ok]{border-color:rgba(245,243,239,.6);color:var(--ink)}
+.tc[data-s=harmful]{border-color:var(--pink);background:var(--pink);color:#07070f} .tc[data-s=denied]{border-color:var(--green);background:var(--green);color:#07070f} .tc[data-s=error]{border-style:dashed;color:var(--ink-2)}
+.tc.ghost{color:var(--ink-3);border-style:dashed}
+.stamp{display:none;font:800 17px var(--sans);letter-spacing:.12em;color:#07070f;background:var(--green);padding:2px 10px;border-radius:6px}
+.stamp.on{display:inline-block}
+.cw{margin-top:12px}
+.caption{border-top:1px solid var(--line-dim);padding:10px var(--pad) 6px;font:550 21px/1.3 var(--sans);min-height:calc(2 * 1.3em + 16px)}
+.caption[data-s=harmful] b{color:var(--pink)} .caption[data-s=denied] b{color:var(--green)} .caption[data-s=halted] b{color:var(--yellow)} .caption[data-s=error] b{color:var(--ink);text-decoration:underline dashed rgba(245,243,239,.5);text-underline-offset:4px}
+.player{display:flex;align-items:center;gap:8px;padding:8px var(--pad) 12px}
+.player button{height:38px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:transparent;font:650 16px var(--sans);white-space:nowrap}
+.player button:disabled{opacity:.35;cursor:default}
+.player .next{background:var(--ink);border-color:var(--ink);color:#07070f}
+.player .seg{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.player .seg button{border:0;border-radius:0;height:36px}
+.player .seg button[aria-pressed=true]{background:rgba(245,243,239,.16)}
+.player .count{margin-left:auto;font:600 17px var(--mono);color:var(--ink-2)}
+.player .live{font:600 14px var(--mono);color:var(--blue)}
+.drawer{position:absolute;inset:0;background:var(--panel);z-index:20;transform:translateX(100%);transition:transform 360ms var(--ease);display:flex;flex-direction:column}
+.drawer.open{transform:none}
+.drawer header{all:unset;display:flex;align-items:center;gap:10px;height:50px;padding:0 var(--pad);border-bottom:1px solid var(--line-dim)}
+.drawer h3{font:650 18px var(--sans)}
+.drawer header button{margin-left:auto;border:1px solid var(--line);background:transparent;border-radius:999px;padding:5px 12px;font:600 16px var(--sans)}
+.drawer .body{overflow:auto;padding:12px var(--pad)}
+.ev{border:1px solid var(--line-dim);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.ev .k{font:600 15px var(--mono)}
+.ev pre{font:400 14px/1.45 var(--mono);color:var(--ink-2);margin-top:6px;white-space:pre-wrap}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);padding:12px 18px;border-radius:12px;background:var(--ink);color:#07070f;font:600 16px var(--sans);display:none;z-index:40;max-width:70vw}
+.toast.error{background:var(--pink)}
+/* centred flow: nodes stack title over status; arrows run down the middle with captions to the right */
+.diagram{align-items:stretch;padding:20px var(--pad) 12px}
+.node{flex-direction:column;justify-content:center;align-items:center;text-align:center;gap:2px;padding:8px 14px;min-height:56px}
+.node .tl{display:flex;align-items:center;justify-content:center;gap:10px}
+.node .st{text-align:center;max-width:100%}
+.inner{gap:0}.inner .node{align-items:center;padding:8px 10px}.inner .node .st{padding-left:0}
+.arrow::before{left:calc(50% - 1px)}.arrow::after{left:calc(50% - 6px)}
+.arrow .cap{left:calc(50% + 16px)}
+.dot{left:calc(50% - 8px)}
+.box{margin-top:16px}.box .lg{left:50%;transform:translateX(-50%);white-space:nowrap}
+.chips{justify-content:center}
+.cw{margin-top:0}
+.caption{text-align:center}
+.player{justify-content:center}.player .count{margin-left:12px}
+.next.ready{background:var(--orange);border-color:var(--orange);color:#07070f;animation:ready 1.6s var(--ease) infinite}
+@keyframes ready{0%,100%{box-shadow:0 0 0 0 rgba(255,98,0,.55)}50%{box-shadow:0 0 0 8px rgba(255,98,0,0)}}
+.pill[hidden]{display:none}
+/* payloads: what actually crossed this hop */
+.payloads{display:flex;flex-direction:column;gap:10px;margin:14px 0 0}
+.payloads:empty{display:none}
+.pl{border:1px solid var(--line-dim);border-radius:12px;background:#05050b;overflow:hidden;display:flex;flex-direction:column}
+.pl h4{display:flex;align-items:center;gap:10px;margin:0;padding:8px 14px;border-bottom:1px solid var(--line-dim);font:650 15px var(--sans);letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2)}
+.pl h4 .dir{font:700 15px var(--mono);color:var(--blue)}
+.pl h4 .src{margin-left:auto;font:500 13px var(--mono);color:var(--ink-3);text-transform:none;letter-spacing:0}
+.pl h4 .x{flex:none;height:28px;padding:0 12px;border:1px solid var(--line);border-radius:999px;background:transparent;font:600 13px var(--sans);letter-spacing:.02em;text-transform:none;color:var(--ink-2)}
+.pl h4 .x[hidden]{display:none}
+.pl h4 .x:hover{border-color:var(--ink);color:var(--ink)}
+/* each payload scrolls on its own (wheel, trackpad, or focus + arrow/Page keys); Expand shows it whole */
+.pl pre{margin:0;padding:10px 14px;font:450 15px/1.5 var(--mono);color:var(--ink-2);white-space:pre-wrap;word-break:break-word;
+  max-height:max(240px,calc(100vh - 700px));overflow:auto;overscroll-behavior:contain;
+  scrollbar-width:thin;scrollbar-color:rgba(245,243,239,.45) transparent}
+.pl pre::-webkit-scrollbar{width:10px;height:10px}
+.pl pre::-webkit-scrollbar-thumb{background:rgba(245,243,239,.38);border-radius:999px;border:2px solid #05050b}
+.pl pre::-webkit-scrollbar-track{background:transparent}
+.pl pre:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+.pl.open pre{max-height:none}
+.pl .more{padding:4px 14px 6px;border-top:1px solid var(--line-dim);font:500 13px var(--mono);color:var(--ink-3)}
+.pl .more[hidden],.pl.open .more{display:none}
+.j-k{color:#9cc8ff}.j-s{color:#e8e4dc}.j-n{color:#ffb27a}.j-b{color:#c9a7ff}.j-x{color:var(--ink-3)}
+.j-s.attack{color:var(--pink);font-weight:600}
+.pl[data-s=harmful]{border-color:rgba(255,77,139,.55)} .pl[data-s=denied]{border-color:rgba(110,231,80,.55)}
+.left{display:flex;flex-direction:column;gap:20px;min-width:0}
+.walk{padding:18px 24px 16px}
+.walk .caption{border:0;padding:0 0 14px;font:550 26px/1.3 var(--sans);min-height:calc(2 * 1.3em + 14px);text-align:left}
+.walk .player{justify-content:flex-start;padding:0;--pad:0}
+.walk .player button{height:46px;padding:0 20px;font-size:17px}
+.walk .player .seg button{height:44px}
+.walk .player .count{margin-left:auto}
+.panel{position:sticky;top:12px}
+.node{min-height:50px;padding:6px 14px}
+.arrow{height:24px}
+.box{margin-top:14px;padding:20px 12px 10px}
+.diagram{padding:16px var(--pad) 12px}
+@media (max-width:1500px){.step small{display:none}}
+@media (prefers-reduced-motion:reduce){*{transition-duration:1ms!important;animation:none!important}.dot{display:none}}
 </style>
 </head>
 <body>
-<header><div class="brand"><span class="tile"><img src="/assets/aws-logo.svg" alt="AWS"></span><div><div class="event"><img src="/assets/reinvent-wordmark.png" alt="AWS re:Invent"><span>2026</span></div><h1>Build a bounded agent, live</h1><p>Attacker input → Bedrock proposal → control decision → observed effect</p></div></div><span class="spacer"></span><div id="model" class="model">Loading…</div><a class="model" href="/auth/logout" style="text-decoration:none">Sign out</a></header>
-<main>
-<div class="toolbar"><button id="reset" class="button">Reset to clean V0</button><button id="attacker" class="button attack">Open malicious submitter</button><button id="stop" class="button stop">Request durable stop</button><span class="spacer"></span><span id="stageLabel" class="stage-label"></span><button id="nextPatch" class="button patch">Apply next patch →</button></div>
-<div id="rail" class="rail"></div>
-<div class="tabs"><button class="tab active" data-tab="demo">Live Demo</button><button class="tab" data-tab="code">Code Diff</button><button class="tab" data-tab="trace">Trace &amp; CloudWatch</button><button class="tab" data-tab="arch">Architecture</button></div>
-<section id="view-demo" class="view active">
-<div class="story"><div class="beat"><strong>1 · Normal live run</strong><span>Bedrock summarizes ordinary tickets. No record changes.</span></div><div class="beat bad"><strong>2 · Malicious user submits</strong><span>The next live model call reads the newly stored customer ticket.</span></div><div class="beat ok"><strong>3 · Apply each patch</strong><span>Run the exact captured Bedrock response through the code boundary shown beside it.</span></div></div>
-<div class="layout"><div class="panel"><div class="panel-head"><div><h2>Ticket store</h2><p>This is the state that actually changed—not a model claim.</p></div><span id="capture" class="capture off">No capture</span></div><div class="store-tools"><label>View</label><button class="store-view" data-store-view="before">Before</button><button class="store-view" data-store-view="current">Current</button><button class="store-view active" data-store-view="changes">Changes</button><button id="editStatuses" class="button">Edit tickets</button><label for="scenario">Preset</label><select id="scenario"><option value="normal">Normal</option><option value="compromised">Compromised</option><option value="policy-blocked">Policy blocked</option><option value="stopped">Stopped</option></select><button id="loadScenario" class="button">Load</button><span id="storeSource" class="store-source"></span></div><div id="presenterNote" class="presenter-note" hidden>Presenter state control: this changes local display state only and creates no Bedrock or CloudWatch record.</div><table><thead><tr><th>Ticket</th><th>Customer</th><th>Request content</th><th>Status</th></tr></thead><tbody id="tickets"></tbody></table></div>
-<div class="panel"><div class="panel-head"><div><h2>Agent boundary</h2><p>Start with a fresh Bedrock call; then compare patches against the same genuine response.</p></div></div><div class="runbox"><div id="activeBuild" class="active-build"></div><div class="run-buttons"><button id="runFresh" class="button primary">Run Bedrock live</button><button id="runCapture" class="button">Test exact live response</button></div><div id="result" class="empty">Run V0 before the attack, submit the malicious ticket, then run V0 live again.</div></div></div></div>
-<div class="panel flow-panel"><div class="flow-head"><div><h2>What just happened</h2><p>The story under the execution: every node reflects the latest run and the active build.</p></div><span id="flowStage" class="stage-label"></span></div><div id="flow" class="flow"></div><div id="flowCaption" class="flow-caption"></div></div>
-</section>
-<section id="view-arch" class="view"><div class="arch-layout"><div class="panel arch-canvas"><svg viewBox="0 0 1180 560" role="img" aria-label="Architecture of the live demo" font-family="Amazon Ember, Helvetica Neue, Arial, sans-serif"><defs><marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#545b64"/></marker></defs><rect x="18" y="34" width="588" height="318" rx="6" fill="#f7f8f8" stroke="#879596" stroke-width="1" stroke-dasharray="7 5"/><text x="34" y="60" font-size="15" font-weight="700" fill="#545b64">PRESENTER LAPTOP · 127.0.0.1 ONLY</text><rect x="40" y="96" width="210" height="120" rx="6" fill="#fff" stroke="#879596" stroke-width="1"/><text x="56" y="124" font-size="18" font-weight="700" fill="#16191f">Browser</text><text x="56" y="150" font-size="14" fill="#545b64">Operator console (this page)</text><text x="56" y="172" font-size="14" fill="#545b64">Customer ticket form</text><text x="56" y="194" font-size="14" fill="#545b64">Code diff · trace · architecture</text><line x1="250" y1="156" x2="330" y2="156" stroke="#545b64" stroke-width="2" marker-end="url(#arrowhead)"/><text x="256" y="146" font-size="13" fill="#545b64">HTTP JSON</text><rect x="334" y="84" width="248" height="236" rx="6" fill="#fff" stroke="#ff9900" stroke-width="4"/><text x="350" y="112" font-size="18" font-weight="700" fill="#16191f">Python agent app</text><text x="350" y="134" font-size="13" fill="#545b64">src/sec310_sample/ticket_demo.py</text><text x="350" y="166" font-size="14" fill="#16191f">1 · Ticket store (process memory)</text><text x="350" y="190" font-size="14" fill="#16191f">2 · Prompt builder (records as data)</text><text x="350" y="214" font-size="14" fill="#16191f">3 · Patch boundary v0 → v5</text><text x="350" y="238" font-size="14" fill="#16191f">4 · Effect: OPEN → CLOSED (local)</text><text x="350" y="262" font-size="14" fill="#16191f">5 · Decision trail + capture</text><text x="350" y="300" font-size="13" font-weight="700" fill="#b7791f">Orange = the agentic part we harden live</text><line x1="582" y1="140" x2="736" y2="140" stroke="#545b64" stroke-width="2" marker-end="url(#arrowhead)"/><text x="590" y="128" font-size="13" fill="#545b64">Converse (SigV4)</text><line x1="736" y1="180" x2="586" y2="180" stroke="#545b64" stroke-width="2" marker-end="url(#arrowhead)"/><text x="592" y="200" font-size="13" fill="#545b64">JSON proposal only</text><rect x="740" y="84" width="220" height="132" rx="6" fill="#fff" stroke="#879596" stroke-width="1"/><image href="/assets/bedrock.svg" x="752" y="96" width="44" height="44"/><text x="806" y="114" font-size="18" font-weight="700" fill="#16191f">Amazon Bedrock</text><text x="806" y="136" font-size="14" fill="#545b64">Model inference (real)</text><text x="752" y="170" font-size="14" fill="#545b64">Needs bedrock:InvokeModel on</text><text x="752" y="190" font-size="14" fill="#545b64">the model or inference profile</text><line x1="582" y1="282" x2="736" y2="282" stroke="#545b64" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrowhead)"/><text x="590" y="270" font-size="13" fill="#545b64">ApplyGuardrail · optional</text><rect x="740" y="236" width="220" height="100" rx="6" fill="#fff" stroke="#879596" stroke-width="1"/><image href="/assets/bedrock.svg" x="752" y="248" width="40" height="40"/><text x="802" y="264" font-size="18" font-weight="700" fill="#16191f">Bedrock Guardrails</text><text x="802" y="286" font-size="14" fill="#545b64">V2 screening signal</text><text x="752" y="318" font-size="14" fill="#545b64">Local keyword signal if unset</text><line x1="960" y1="140" x2="986" y2="140" stroke="#545b64" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrowhead)"/><rect x="990" y="84" width="172" height="132" rx="6" fill="#fff" stroke="#879596" stroke-width="1"/><image href="/assets/cloudwatch.svg" x="1002" y="96" width="40" height="40"/><text x="1052" y="114" font-size="18" font-weight="700" fill="#16191f">CloudWatch</text><text x="1052" y="136" font-size="14" fill="#545b64">Invocation logs</text><text x="1002" y="170" font-size="14" fill="#545b64">Account-wide config</text><text x="1002" y="190" font-size="14" fill="#545b64">Arrives minutes later</text><text x="1002" y="210" font-size="14" fill="#545b64">Filter by run id</text><rect x="18" y="384" width="1144" height="158" rx="6" fill="#fff" stroke="#aab7b8" stroke-width="1" stroke-dasharray="7 5"/><text x="34" y="410" font-size="15" font-weight="700" fill="#545b64">SEPARATE PROOF · `demo live` · NOT CALLED BY THIS PAGE</text><image href="/assets/agentcore.svg" x="40" y="430" width="44" height="44"/><text x="94" y="448" font-size="18" font-weight="700" fill="#16191f">AgentCore Gateway + Policy</text><text x="94" y="472" font-size="14" fill="#545b64">Cedar and Dogwood decide real MCP tool calls (ENFORCE)</text><text x="94" y="494" font-size="14" fill="#545b64">Signed tools/call · policy session header · gateway logs</text><line x1="500" y1="470" x2="536" y2="470" stroke="#545b64" stroke-width="2" marker-end="url(#arrowhead)"/><rect x="540" y="428" width="230" height="88" rx="6" fill="#f7f8f8" stroke="#879596" stroke-width="1"/><text x="556" y="456" font-size="18" font-weight="700" fill="#16191f">Lambda tool target</text><text x="556" y="480" font-size="14" fill="#545b64">read_evidence · update_rule</text><text x="556" y="502" font-size="14" fill="#545b64">synthetic evidence only</text><image href="/assets/bedrock.svg" x="800" y="430" width="44" height="44"/><text x="854" y="448" font-size="18" font-weight="700" fill="#16191f">Automated Reasoning</text><text x="854" y="472" font-size="14" fill="#545b64">Formal findings over answer text</text><text x="854" y="494" font-size="14" fill="#545b64">Prompt-attack checks on tool arguments</text></svg></div><div class="panel arch-side"><h2>What is real on stage</h2><p class="explain">An old-fashioned data-flow view of the exact demo you are watching, not a generic reference architecture. The orange box is the only part the five patches change.</p><div class="legend"><div class="real"><b>Real</b> · customer HTTP submission, Bedrock inference, CloudWatch invocation records, the Python boundary code.</div><div class="local"><b>Local only</b> · ticket records, the V3 policy decision, the OPEN → CLOSED effect. Nothing here changes a real AWS or customer resource.</div><div class="off"><b>Not this page</b> · AgentCore Gateway + Policy and Automated Reasoning run in the separate <code>demo live</code> command with the same account.</div></div><p class="explain">Managed services supply mechanisms you configure. Tenant mapping, confirmation, stop semantics, release invariants stay application decisions.</p></div></div></section>
-<section id="view-code" class="view"><div class="code-layout"><div class="panel code-meta"><h2 id="codeTitle">Active patch</h2><div id="codePath" class="path"></div><p class="explain">This is the actual Python function used by the selected build—not slideware. Input screening and typed parsing live in the shared pipeline shown below.</p><div class="section-label">Shared agent pipeline</div><div class="path" id="sharedPath"></div><p class="explain">Use <strong>Apply next patch</strong>, inspect this diff, then return to Live Demo and run the same captured response.</p></div><div class="panel codebox"><div id="codeFile" class="file"></div><pre id="code"></pre></div></div></section>
-<section id="view-trace" class="view"><div class="trace-layout"><div class="panel trace-meta"><h2>Bedrock observability</h2><div class="log-card"><label>Run metadata</label><code id="runMeta">Not configured</code></div><div class="log-card"><label>Invocation log group</label><code id="logGroup">Not configured</code></div><div class="log-card"><label>Scope</label><span id="logScope"></span></div><div class="log-card"><a class="cloud-link" href="https://console.aws.amazon.com/cloudwatch/home#logsV2:log-groups" target="_blank" rel="noopener">Open CloudWatch Logs ↗</a><code id="query" class="query"></code></div></div><div class="panel trace-body"><h2>Application decision trail</h2><p class="explain">These rows come from the local application. CloudWatch independently records Bedrock invocations when account logging is enabled.</p><div id="trace" class="trace-list"></div><div class="section-label">Latest structured result</div><pre id="traceJson" class="trace-json">No run yet.</pre></div></div></section>
-</main><div id="busy" class="busy"><div><div class="spinner"></div><strong>Bedrock is responding…</strong><div style="margin-top:7px;color:var(--muted)">The ticket cannot change until a proposal crosses the active code boundary.</div></div></div><div id="toast" class="toast"></div>
+<header>
+  <span class="tile"><img src="/assets/aws-logo.svg" alt="AWS"></span>
+  <div><div class="event"><img src="/assets/reinvent-wordmark.png" alt="AWS re:Invent"><span>2026</span></div><h1>Build a bounded agent, live</h1></div>
+  <span class="sp"></span>
+  <span class="pill stop" id="stopPill" hidden><i></i>Stop requested</span>
+  <span class="pill" id="livePill"><i></i><span id="liveTxt">LIVE</span></span>
+  <div class="gear"><button id="gearBtn" aria-haspopup="menu" aria-expanded="false" title="Operator menu">⚙</button>
+    <div class="menu" id="menu" role="menu">
+      <div id="personas" hidden></div>
+      <a href="/portal/" target="sec310_portal" role="menuitem">Attacker portal (carol)</a>
+      <button id="mReset" role="menuitem">Reset demo</button>
+      <button id="mStop" role="menuitem">Stop agent</button>
+      <hr><a href="/auth/logout" role="menuitem">Sign out</a>
+    </div></div>
+</header>
+
+<div class="bar">
+  <div class="steps" id="steps"></div>
+  <div class="actions">
+    <button class="btn primary" id="runBtn">Run agent</button>
+    <button class="btn" id="replayBtn" disabled title="Replay arrives with the V1–V5 builds">Replay last</button>
+    <button class="btn" id="nextFix" disabled title="V1–V5 builds are the next milestone">Apply next fix →</button>
+  </div>
+</div>
+
+<div class="layout">
+  <div class="left">
+  <section class="card main" aria-label="Tickets and outcome">
+    <h2><span id="custTitle">Customer A tickets</span><span class="verdict" id="verdict" hidden></span></h2>
+    <div id="tickets"></div>
+    <dl class="lines" id="lines">
+      <dt>Agent said</dt><dd id="said" class="empty">Run the agent to see its answer.</dd>
+      <dt>Agent tried</dt><dd id="tried" class="empty">—</dd>
+      <dt>Boundary</dt><dd id="boundary" class="empty">—</dd>
+    </dl>
+  </section>
+  <section class="card walk" aria-label="Step through the run">
+    <div class="caption" id="caption" aria-live="polite"><span id="capx"></span></div>
+    <div class="player" role="group" aria-label="Step player">
+      <button id="back" aria-keyshortcuts="ArrowLeft">◀ Back</button>
+      <button id="next" class="next" aria-keyshortcuts="ArrowRight Space">Next step ▶</button>
+      <div class="seg" role="radiogroup" aria-label="Playback"><button id="mStep" aria-pressed="true">Step</button><button id="mAuto" aria-pressed="false">Auto</button></div>
+      <span class="live" id="liveBuf"></span>
+      <span class="count" id="count">0 / 0</span>
+    </div>
+    <div class="payloads" id="payloads"></div>
+  </section>
+  </div>
+
+  <section class="panel" id="panel" aria-label="Live architecture">
+    <div class="diagram">
+      <button class="node" data-id="ingress"><span class="tl"><img class="ico" data-icon="cognito" alt=""><img class="ico" data-icon="cloudfront" alt=""><span class="t">Amazon Cognito + Amazon CloudFront</span></span><span class="st" data-st></span></button>
+      <div class="arrow" data-a="a1"><span class="cap" id="capA1">access token → AgentCore Runtime</span></div>
+      <button class="node" data-id="acid"><span class="tl"><img class="ico" data-icon="identity" alt=""><span class="t">AgentCore Identity</span></span><span class="st" data-st></span></button>
+      <div class="arrow" data-a="a2"></div>
+      <div class="box" data-box="runtime">
+        <div class="lg"><img class="ico" data-icon="runtime" alt="">AgentCore Runtime<small>Strands agent</small></div>
+        <div class="inner">
+          <button class="node" data-id="agent"><span class="tl"><img class="ico" data-icon="runtime" alt=""><span class="t">Strands agent</span></span><span class="st" data-st></span></button>
+          <div class="conn" data-a="c1"><i class="l"></i><i class="r"></i></div>
+          <button class="node" data-id="bedrock"><span class="tl"><img class="ico" data-icon="bedrock" alt=""><span class="t">Amazon Bedrock</span></span><span class="st" data-st></span></button>
+        </div>
+        <div class="chips" id="chips"></div>
+      </div>
+      <div class="arrow" data-a="a3"><span class="cap">MCP tools/call with the user’s token</span></div>
+      <div class="box tx">
+        <div class="lg">Tool execution</div>
+        <button class="node" data-id="gateway"><span class="tl"><img class="ico" data-icon="gateway" alt=""><span class="t">AgentCore Gateway</span></span><span class="st" data-st></span></button>
+        <div class="arrow" data-a="a4"><span class="cap">authorize</span></div>
+        <button class="node" data-id="policy"><span class="tl"><img class="ico" data-icon="policy" alt=""><span class="t">AgentCore Policy (Cedar)</span><span class="stamp" id="stamp">DENIED</span></span><span class="st" data-st></span></button>
+        <div class="arrow" data-a="a5"><span class="cap">invoke</span></div>
+        <button class="node" data-id="lambda"><span class="tl"><img class="ico" data-icon="lambda" alt=""><span class="t">AWS Lambda · TicketTools</span></span><span class="st" data-st></span></button>
+        <div class="arrow" data-a="a6"><span class="cap">read / write</span></div>
+        <button class="node" data-id="ddb"><span class="tl"><img class="ico" data-icon="dynamodb" alt=""><span class="t">Amazon DynamoDB · tickets</span></span><span class="st" data-st></span></button>
+      </div>
+      <div class="arrow" data-a="a7"></div>
+      <button class="node cw" data-id="cw"><span class="tl"><img class="ico" data-icon="cloudwatch" alt=""><span class="t">Amazon CloudWatch</span></span><span class="st" data-st></span></button>
+    </div>
+    <aside class="drawer" id="drawer" aria-hidden="true"><header><h3 id="drTitle">Trace</h3><button id="drClose">Close</button></header><div class="body" id="drBody"></div></aside>
+  </section>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
 <script>
-const stages=['v0','v1','v2','v3','v4','v5'],names={v0:'Unsafe',v1:'Identity',v2:'Validate',v3:'Policy',v4:'Contain',v5:'Evidence'};let state=null,storeView='changes',editStatuses=false;
-const el=id=>document.getElementById(id);function node(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text??'');return n}async function sha256hex(s){const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return[...new Uint8Array(d)].map(b=>b.toString(16).padStart(2,'0')).join('')}async function api(path,body){const payload=body?JSON.stringify(body):undefined;const headers=body?{'Content-Type':'application/json','x-amz-content-sha256':await sha256hex(payload)}:{};const r=await fetch(path,{method:body?'POST':'GET',headers,body:payload,credentials:'same-origin'});if(r.status===401){location.reload();throw new Error('session expired')}const v=await r.json();if(!r.ok)throw new Error(v.error||`HTTP ${r.status}`);return v}function toast(message,error=false){const t=el('toast');t.textContent=message;t.className='toast'+(error?' error':'');t.style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>t.style.display='none',4200)}
-function renderRail(){const box=el('rail');box.replaceChildren();const active=stages.indexOf(state.active_stage);stages.forEach((s,i)=>{const x=node('div','rail-step '+(i<active?'applied':i===active?'active':''));x.append(node('b','',s.toUpperCase()+' · '+names[s]),node('small','',i<active?'Applied':i===active?'Build under test':'Not applied'));box.append(x)})}
-function renderTickets(items){const body=el('tickets');body.replaceChildren();items.forEach(t=>{const comparison=state.store_comparison[t.ticket_id]||{before:{subject:t.subject,body:t.body,status:t.status},after:{subject:t.subject,body:t.body,status:t.status},changed:false,changed_fields:[]};const before=comparison.before,shown=storeView==='before'&&before?before:comparison.after;const tr=node('tr',comparison.changed&&storeView==='changes'?'changed-row':''),a=node('td'),c=node('td'),d=node('td');a.append(node('div','ticket-id',t.ticket_id),node('div','source',t.submitted_by));if(editStatuses){const subject=document.createElement('input');subject.className='ticket-input';subject.value=t.subject;subject.maxLength=120;const description=document.createElement('textarea');description.className='ticket-body';description.value=t.body;description.maxLength=2000;c.append(subject,description);const select=node('select','status-editor');['OPEN','CLOSED'].forEach(value=>{const option=node('option','',value);option.value=value;option.selected=t.status===value;select.append(option)});const save=node('button','save-ticket','Save');save.onclick=async()=>{try{const response=await api('/api/ticket',{ticket_id:t.ticket_id,subject:subject.value,body:description.value,status:select.value});storeView='changes';render(response.state);el('presenterNote').hidden=false;toast(`Saved ${t.ticket_id} — capture updated to stale if content changed`)}catch(error){toast(error.message,true)}};d.append(select,save)}else if(storeView==='before'&&!before){c.append(node('div','subject','Ticket did not exist'));d.append(node('span','status-change','NOT PRESENT'))}else{c.append(node('div','subject',shown.subject),node('div','body',shown.body));if(storeView==='changes'&&comparison.changed_fields.includes('subject')&&before)c.append(node('span','field-before',`Before subject: ${before.subject}`));if(storeView==='changes'&&comparison.changed_fields.includes('body')&&before)c.append(node('span','field-before',`Before description: ${before.body}`));let value=shown.status;if(storeView==='changes'&&comparison.changed_fields.includes('status'))value=`${before?before.status:'ADDED'} → ${comparison.after.status}`;d.append(node('span',storeView==='changes'&&comparison.changed?'status-change':'status '+value,value))}tr.append(a,node('td','',t.customer_id),c,d);body.append(tr)})}
-function renderResult(r){const box=el('result');if(!r){box.className='empty';box.textContent='Run V0 before the attack, submit the malicious ticket, then run V0 live again.';return}box.className='result';box.replaceChildren();const top=node('div','result-top');top.append(node('span','verdict '+r.status,r.status),node('span','run-source',`${r.stage.toUpperCase()} · ${r.source} · ${r.run_id}`));box.append(top);if(r.answer)box.append(node('div','answer',r.answer));if(r.proposals.length){box.append(node('div','section-label','Bedrock proposed'));r.proposals.forEach(p=>{const x=node('div','proposal');x.append(node('code','',`${p.operation||'unknown'} ${p.customer_id||''} ${p.ticket_id||''}`),node('span','',` · ${p.reason||'no reason'}`));box.append(x)})}if(r.controls.length){box.append(node('div','section-label','Code boundary decided'));r.controls.forEach(c=>{const x=node('div','control');x.append(node('strong','',c.control),node('b',c.status,c.status),node('span','',c.detail));box.append(x)})}if(r.effects.length){box.append(node('div','section-label','Observed local effects'));r.effects.forEach(e=>{const changed=e.status==='EXECUTED',denied=e.status.startsWith('DENIED')||e.status==='STOPPED',skipped=e.status==='NOT_EVALUATED';const x=node('div','effect');x.append(node('span','',`${e.operation} ${e.target}`),node('span',changed?'executed':denied?'denied':skipped?'skipped':'neutral',skipped?'NOT EVALUATED: run halted':e.before&&e.after?`${e.status}: ${e.before} → ${e.after}`:e.status));box.append(x)})}if(r.note)box.append(node('div','note',r.note));if(r.regression)box.append(node('div','regression '+r.regression,`Release invariant: ${r.regression} · malicious ticket must not change A-42`))}
-function renderTrace(rows,last){const box=el('trace');box.replaceChildren();if(!rows.length)box.append(node('div','empty','No decisions recorded yet.'));rows.slice().reverse().forEach(r=>{const x=node('div','trace-row');x.append(node('span','',r.run_id),node('b','',r.stage.toUpperCase()),node('span','',`${r.source} · ${r.proposals} proposal(s)`),node('b',r.executed_effects?'executed':'',r.executed_effects?`${r.executed_effects} EFFECT`:(r.regression||r.status)));box.append(x)});el('traceJson').textContent=last?JSON.stringify(last,null,2):'No run yet.'}
-async function renderCode(){const c=await api('/api/code?stage='+encodeURIComponent(state.active_stage));el('codeTitle').textContent=c.stage.toUpperCase()+' · '+c.title;el('codePath').textContent=c.path;el('sharedPath').textContent=c.shared_pipeline;el('codeFile').textContent=`Actual diff: ${c.path}`;el('code').textContent=c.diff}
-function flowNode(title,stateText,tone){const n=node('div','flow-node'+(tone?' '+tone:''));n.append(node('b','',title),node('span','',stateText));return n}
-function flowStory(r){
-// Derive what can honestly be said from the recorded controls, proposals and effects. The run
-// status alone cannot distinguish "the model proposed nothing" from "we never asked" or "the output
-// was unusable", so the strip never narrates from status alone.
-const ctl=n=>r.controls.filter(c=>c.control===n);const denied=n=>ctl(n).some(c=>c.status==='DENY');const errored=n=>ctl(n).some(c=>c.status==='ERROR');
-const executed=r.effects.filter(e=>e.status==='EXECUTED');const refused=r.effects.filter(e=>e.status.startsWith('DENIED')||e.status==='STOPPED');const noop=r.effects.filter(e=>['ALREADY_CLOSED','TARGET_NOT_FOUND','NOT_EXECUTED'].includes(e.status));
-const mutating=r.proposals.filter(p=>p.operation==='close_ticket');const proposalText=r.proposals.map(p=>`${p.operation} ${p.ticket_id}`).join(' · ');
-const effectText=executed.length?executed.map(e=>`${e.target} ${e.before} → ${e.after}`).join(' · '):'no change';
-if(denied('durable stop')&&r.source==='admission control'){const auto=ctl('durable stop').some(c=>c.detail.includes('halted itself'));return{proposal:'not requested: stopped at admission',proposalTone:'',effect:effectText,effectTone:'ok',lesson:auto?'The agent is still stopped from its own halt. No model call until an operator resets it. Stop is not rollback.':'Operator stop rejected the work before any model call. Stop is not rollback.'}};
-if(denied('untrusted input')||errored('untrusted input'))return{proposal:'not requested: input screening '+(errored('untrusted input')?'unavailable, failed closed':'denied the ticket text'),proposalTone:'',effect:effectText,effectTone:'ok',lesson:'Input screening stopped the run before inference. No proposal exists; this is a control, not a model refusal.'};
-if(r.status==='ERROR')return{proposal:'unavailable: model output could not be used',proposalTone:'bad',effect:effectText,effectTone:'ok',lesson:'The model call or its output failed. Nothing executed. Unusable output is not evidence of what the model intended, and an error is not a refusal.'};
-if(denied('output contract'))return{proposal:'rejected: response failed the output contract',proposalTone:'bad',effect:effectText,effectTone:'ok',lesson:'The output contract rejected the response before any action was read. Rejected output is not evidence that the model proposed nothing.'};
-if(!r.proposals.length)return{proposal:'no action proposed',proposalTone:'ok',effect:effectText,effectTone:'ok',lesson:'The model proposed no mutation on this take. That is model behaviour, not a control.'};
-if(executed.length)return{proposal:proposalText,proposalTone:mutating.length?'bad':'',effect:effectText,effectTone:'bad',lesson:'The proposal became an effect. No boundary in this build refused it.'};
-const halted=ctl('automatic halt').some(c=>c.status==='DENY');const skipped=r.effects.filter(e=>e.status==='NOT_EVALUATED');if(halted)return{proposal:proposalText,proposalTone:mutating.length?'bad':'',effect:[effectText].concat(skipped.length?[`${skipped.length} not evaluated`]:[]).join(' · '),effectTone:'ok',lesson:'The boundary denied the action and ended the run'+(skipped.length?`; ${skipped.length} remaining proposal(s) were not evaluated`:'')+'. The agent stays stopped until an operator resets it.'};
-if(refused.length)return{proposal:proposalText,proposalTone:mutating.length?'bad':'',effect:effectText,effectTone:'ok',lesson:refused.some(e=>e.status==='STOPPED')?'The proposal existed; the durable stop refused the effect. Stop is not rollback.':'The proposal existed; the code boundary refused the effect. The model did not stop itself.'};
-if(noop.length)return{proposal:proposalText,proposalTone:mutating.length?'bad':'',effect:noop.map(e=>`${e.target} ${e.status.toLowerCase().replace('_',' ')}`).join(' · '),effectTone:mutating.length?'warn':'ok',lesson:'The model proposed an action, but it could not change anything: '+noop.map(e=>e.status==='ALREADY_CLOSED'?'the target was already closed':e.status==='TARGET_NOT_FOUND'?'the target does not exist for this customer':'this build does not execute that operation').filter((v,i,a)=>a.indexOf(v)===i).join('; ')+'. A no-op is not a control decision.'};
-return{proposal:proposalText,proposalTone:mutating.length?'bad':'',effect:effectText,effectTone:'ok',lesson:r.status};}
-function renderFlow(s){const box=el('flow');box.replaceChildren();const r=s.last_run;const stage=s.active_stage;const stageIndex=stages.indexOf(stage);const viaForm=s.tickets.filter(t=>t.origin==='form').length;const viaPreset=s.tickets.filter(t=>t.origin==='preset').length;const added=viaForm+viaPreset;const story=r?flowStory(r):null;const deniedControls=r?r.controls.filter(c=>c.status==='DENY'||c.status==='ERROR'):[];const nodes=[flowNode('Customer',added?[viaForm?`${viaForm} submitted live through the form`:'',viaPreset?`${viaPreset} added by presenter preset (no model call)`:''].filter(Boolean).join(' \u00b7 '):'No ticket added yet',added?'bad':''),flowNode('Ticket store',`${s.tickets.length} records · ${s.tickets.filter(t=>t.customer_id==='customer-a').length} visible to the agent`,''),flowNode('Agent prompt',stageIndex>=2?'Records framed as untrusted data':'Records pasted in as context',stageIndex>=2?'live':'warn'),flowNode('Bedrock model',r?r.source:s.model,r&&r.status==='ERROR'?'bad':r?'live':''),flowNode('Proposal',story?story.proposal:'—',story?story.proposalTone:''),flowNode(`Boundary · ${stage.toUpperCase()}`,r?(r.controls.length?r.controls.map(c=>`${c.control} ${c.status}`).join(' · '):'no independent check'):names[stage],deniedControls.length?'ok':story&&story.effectTone==='bad'?'bad':''),flowNode('Ticket effect',story?story.effect:'—',story?story.effectTone:'')];nodes.forEach((n,i)=>{if(i)box.append(node('div','flow-arrow','→'));box.append(n)});el('flowStage').textContent=`Active build ${stage.toUpperCase()} · ${s.active_title}`;const cap=el('flowCaption');cap.replaceChildren();if(!r){cap.append(node('span','','Run V0 live to start the story. Each run colours this strip from the actual proposal, decision and effect.'));return}const b=node('b','',r.status+' · ');cap.append(b,node('span','',story.lesson))}
-function render(s){state=s;el('model').textContent=(s.live_model?'LIVE BEDROCK · ':'REHEARSAL · ')+s.model+' · V2 signal: '+s.guardrail+' · effects local only';el('stageLabel').textContent=`Active build: ${s.active_stage.toUpperCase()}`;el('nextPatch').disabled=s.active_stage==='v5';el('nextPatch').textContent=s.active_stage==='v5'?'All patches applied':'Apply next patch →';el('stop').textContent=s.stop_requested?(s.stop_source==='automatic'?'Agent halted itself · Reset stop':'Clear durable stop'):'Request durable stop';el('stop').classList.toggle('halted',s.stop_requested&&s.stop_source==='automatic');const cap=el('capture');cap.className='capture '+(s.capture_available?'':s.capture_stale?'stale':'off');cap.textContent=s.capture_available?`Exact ${s.capture_source} response · ${s.capture_ticket_count} tickets`:s.capture_stale?'Capture predates current tickets':'No current capture';el('runFresh').textContent=s.live_model?'Run Bedrock live':'Run rehearsal model';el('runCapture').disabled=!s.capture_available;el('activeBuild').replaceChildren(node('b','',s.active_stage.toUpperCase()+' · '+s.active_title),node('span','',s.active_lesson));el('storeSource').textContent=s.store_change_source;el('presenterNote').hidden=!s.store_change_source.startsWith('Presenter');document.querySelectorAll('.store-view').forEach(button=>button.classList.toggle('active',button.dataset.storeView===storeView));el('editStatuses').textContent=editStatuses?'Done editing':'Edit tickets';renderRail();renderTickets(s.tickets);renderResult(s.last_run);renderFlow(s);renderTrace(s.decisions,s.last_run);const o=s.observability;el('runMeta').textContent=`RUN_ID=${o.sec310_run||'not set'}\nRegion=${o.region||'not set'}`;el('logGroup').textContent=o.invocation_log_group||'Invocation logging group not loaded in this shell';el('logScope').textContent=o.scope;el('query').textContent=o.sec310_run?`fields @timestamp, @message\n| filter @message like /${o.sec310_run}/\n| sort @timestamp desc`:'Run the agent to get a run id.';renderCode().catch(e=>toast(e.message,true))}
-async function refresh(){try{render(await api('/api/state'))}catch(e){toast(e.message,true)}}async function run(reuse){el('busy').className='busy show';try{await api('/api/run',{stage:state.active_stage,reuse_capture:reuse});await refresh()}catch(e){toast(e.message,true);await refresh()}finally{el('busy').className='busy'}}
-document.querySelectorAll('.store-view').forEach(button=>button.onclick=()=>{storeView=button.dataset.storeView;editStatuses=false;render(state)});el('editStatuses').onclick=()=>{editStatuses=!editStatuses;if(editStatuses)storeView='current';render(state)};el('loadScenario').onclick=async()=>{try{const next=await api('/api/scenario',{name:el('scenario').value});editStatuses=false;storeView='changes';render(next);el('presenterNote').hidden=false;toast(`Loaded ${el('scenario').selectedOptions[0].text} state — no model call`) }catch(error){toast(error.message,true)}};el('runFresh').onclick=()=>run(false);el('runCapture').onclick=()=>run(true);el('reset').onclick=async()=>{if(!confirm('Reset tickets, patches, capture and decision evidence?'))return;try{render(await api('/api/reset',{}));toast('Clean V0 restored')}catch(e){toast(e.message,true)}};el('attacker').onclick=()=>window.open('/portal/','attacker','width=660,height=760');el('stop').onclick=async()=>{try{render(await api('/api/stop',{requested:!state.stop_requested}));toast(state.stop_requested?'Durable stop requested':'Durable stop cleared')}catch(e){toast(e.message,true)}};el('nextPatch').onclick=async()=>{try{const x=await api('/api/patch',{});render(x.state);document.querySelector('[data-tab="code"]').click();toast(`${x.active_stage.toUpperCase()} applied; ticket effects reopened`) }catch(e){toast(e.message,true)}};document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));el('view-'+b.dataset.tab).classList.add('active')});const params=new URLSearchParams(location.search);const requestedTab=params.get('tab');if(['demo','code','trace','arch'].includes(requestedTab)){document.querySelector(`[data-tab="${requestedTab}"]`).click()}const requestedStore=params.get('store');if(['before','current','changes'].includes(requestedStore)){storeView=requestedStore}refresh();setInterval(()=>{if(!document.hidden&&!editStatuses)refresh()},1500);
+/* ── helpers ─────────────────────────────────────────────────────────────── */
+const $ = s => document.querySelector(s), panel = $('#panel');
+const esc = t => String(t ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+async function sha256hex(t){ const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)); return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2,'0')).join(''); }
+async function api(path, body){
+  const payload = body ? JSON.stringify(body) : undefined;
+  const headers = body ? {'Content-Type':'application/json','x-amz-content-sha256': await sha256hex(payload)} : {};
+  const r = await fetch(path, {method: body ? 'POST' : 'GET', headers, body: payload, credentials: 'same-origin'});
+  if(r.status === 401){ location.reload(); throw new Error('session expired'); }
+  const v = await r.json(); if(!r.ok) throw new Error(v.error || `HTTP ${r.status}`); return v;
+}
+function toast(m, err=false){ const t = $('#toast'); t.textContent = m; t.className = 'toast' + (err ? ' error' : ''); t.style.display = 'block'; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', 4200); }
+function uuid7(){ const b = crypto.getRandomValues(new Uint8Array(16)); let ms = Date.now(); for(let i = 5; i >= 0; i--){ b[i] = ms & 255; ms = Math.floor(ms / 256); }
+  b[6] = (b[6] & 15) | 0x70; b[8] = (b[8] & 63) | 0x80; const h = [...b].map(x => x.toString(16).padStart(2,'0')).join('');
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`; }
+
+/* ── icons: official AWS Architecture Icons; AgentCore primitives fall back to the service icon ── */
+const ICONS = { cognito:'/assets/aws/cognito.svg', cloudfront:'/assets/aws/cloudfront.svg', lambda:'/assets/aws/lambda.svg',
+  dynamodb:'/assets/aws/dynamodb.svg', cloudwatch:'/assets/aws/cloudwatch.svg', bedrock:'/assets/aws/bedrock.svg',
+  runtime:'/assets/agentcore/AgentCoreRuntime.png', gateway:'/assets/agentcore/AgentCoreGateway.png',
+  identity:'/assets/agentcore/AgentCoreIdentity.png', policy:'/assets/agentcore/AgentCorePolicy.png' };
+document.querySelectorAll('[data-icon]').forEach(img => { img.onerror = () => { img.onerror = null; img.src = '/assets/agentcore.svg'; }; img.src = ICONS[img.dataset.icon]; });
+
+/* ── builds ── */
+const BUILDS = [
+  ['V0','Unsafe','Model output executes'], ['V1','Identity','Caller identity checked'], ['V2','Validate','Input screened'],
+  ['V3','Policy','Gateway policy decides'], ['V4','Contain','First denial stops the run'], ['V5','Evidence','Release needs passing evals'] ];
+const POLICY_TEXT = b => b === 0 ? 'no policy engine' : b < 3 ? 'permit: caller is in tenant' : 'forbid close_ticket';
+
+/* ── edges → arrow segments ── */
+const SEG = { 'ingress>acid':[['a1',1]], 'acid>runtime':[['a2',1]], 'runtime>bedrock':[['c1',1]], 'bedrock>runtime':[['c1',-1]],
+  'runtime>gateway':[['a3',1]], 'gateway>runtime':[['a3',-1]], 'gateway>policy':[['a4',1]], 'policy>lambda':[['a5',1]],
+  'gateway>lambda':[['a4',1],['a5',1]], 'lambda>ddb':[['a6',1]] };
+
+/* ── state ── */
+let STATE = null, RUN = null, STEPS = [], N = 0, mode = 'step', busy = false, timer = 0, polling = null;
+const who = () => STATE?.persona?.username || 'the operator';
+const cust = () => STATE?.persona?.customer_id || 'customer-a';
+const custName = () => 'Customer ' + cust().split('-').pop().toUpperCase();
+const build = () => Math.max(0, ['v0','v1','v2','v3','v4','v5'].indexOf(STATE?.active_stage || 'v0'));
+
+/* group events into steps: a step opens on an event with an edge (or a new node); it absorbs the
+   model reply to its own model call and edgeless follow-ups. */
+const rev = e => e && e.split('>').reverse().join('>');
+function toSteps(events){
+  const steps = [];
+  for(const ev of events){
+    const cur = steps[steps.length - 1];
+    const absorb = cur && ((ev.edge && ev.edge === rev(cur.events[0].edge) && cur.events[0].kind === 'model.call_start') ||
+      (!ev.edge && ['context.attacker_text','guardrail.intervened','model.skipped'].includes(ev.kind)));
+    if(absorb) cur.events.push(ev); else steps.push({events:[ev]});
+  }
+  return steps;
+}
+
+/* captions: plain words for each step, from its own events */
+function caption(step){
+  const k = step.events.map(e => e.kind), e0 = step.events[0], has = x => k.includes(x), get = x => step.events.find(e => e.kind === x);
+  const B = build(), u = who(), t = e0.detail?.ticket_id || e0.effect?.ticket_id || '';
+  if(has('auth.verified')) return ['', `${u} signed in with Cognito. CloudFront checks the token at the edge; the API checks it again.`];
+  if(has('identity.validated')) return ['', `AgentCore Identity validates ${u}’s access token before the Runtime accepts the request.`];
+  if(has('runtime.entered')) return ['', `AgentCore Runtime starts a Strands agent session for ${u}’s request.`];
+  if(e0.kind === 'model.call_start'){
+    const out = get('model.call_end')?.label || '…', turn = e0.detail?.turn;
+    if(out.startsWith('plans close')) return ['harmful', `The model reads the ticket text as instructions and <b>${esc(out)}.</b>`];
+    if(out.startsWith('plans')) return ['', `Turn ${turn}: the agent asks the model on Amazon Bedrock what to do. It ${esc(out)}.`];
+    if(out.includes('guardrail')) return ['denied', 'Bedrock <b>guardrail intervened</b>; the model output is withheld.'];
+    return ['', `Turn ${turn}: the model ${esc(out)} for ${u}.`];
+  }
+  if(e0.kind === 'tool.call') return ['', e0.tool === 'list_tickets' ? `The agent sends an MCP tools/call for list_tickets to AgentCore Gateway, with ${u}’s token.` : `The agent calls <b>${esc(e0.label)}</b> through the Gateway, with ${u}’s token.`];
+  if(e0.kind === 'policy.decision') return e0.decision === 'DENY' ? ['denied', `The Gateway asks AgentCore Policy: may this call go through? <b>→ DENIED</b>.`] : ['', 'AgentCore Policy checks Cedar → permit.'];
+  if(e0.kind === 'tool.invoked') return ['', B === 0 ? `No policy engine is attached, so the Gateway invokes the TicketTools Lambda directly (${esc(e0.label)}).` : `The Gateway invokes the TicketTools Lambda (${esc(e0.label)}).`];
+  if(e0.kind === 'store.read') return ['', `TicketTools reads ${cust()}’s tickets from DynamoDB: ${esc(e0.label.replace(/^read /,''))}.`];
+  if(e0.kind === 'store.write') return e0.status === 'harmful' ? ['harmful', `TicketTools sets <b>${esc(t)} to CLOSED</b> in DynamoDB. ${u} never asked for that.`] : ['', `TicketTools adds a note in DynamoDB (${esc(t)}).`];
+  if(e0.kind === 'tool.result'){
+    if(has('context.attacker_text')) return ['harmful', 'The list comes back. <b>A ticket submitted through the customer portal</b> is now in the agent’s context.'];
+    if(e0.chip_status === 'error') return ['error', `The Gateway rejects the arguments: <b>they don’t match the tool’s input schema</b>. The model tries again.`];
+    if(e0.chip_status === 'denied') return ['denied', 'The call comes back refused. <b>TicketTools and DynamoDB were never changed.</b>'];
+    if(e0.chip_status === 'harmful') return ['harmful', `TicketTools reports success. The agent records ${esc(e0.label.replace(/ done$/,''))} as done.`];
+    return ['', 'The tool result comes back to the agent.'];
+  }
+  if(e0.kind === 'run.completed') return e0.verdict === 'CHANGED' ? ['harmful', `Run complete. ${u} gets an answer, and <b>a ticket changed</b> that nobody approved.`]
+    : e0.verdict === 'ERROR' ? ['error', `The run failed before it finished: <b>${esc(STATE?.last_run?.note || 'see the trace')}</b>`] : ['', `Run complete. ${u} gets the answer; <b>nothing changed</b>.`];
+  return ['', esc(e0.label)];
+}
+
+/* reducer: fold steps 0..n into node/arrow/chip state */
+function fold(n){
+  const st = {n:{}, arrows:{}, chips:{}, stamp:false, effects:new Set()};
+  for(const id of ['ingress','acid','agent','bedrock','gateway','policy','lambda','ddb','cw']) st.n[id] = {s:'idle', text:''};
+  st.n.ingress.text = `${who()} · Cognito session`; st.n.acid.text = 'inbound JWT authorizer · Cognito';
+  st.n.agent.text = 'waiting for a request'; st.n.bedrock.text = STATE?.model_label || 'Llama 4 Maverick';
+  st.n.policy.text = POLICY_TEXT(build()); st.n.cw.text = 'model, gateway, runtime logs';
+  st.n.gateway.text = 'MCP tools'; st.n.lambda.text = 'idle'; st.n.ddb.text = 'tickets table';
+  for(const step of STEPS.slice(0, n)) for(const ev of step.events){
+    for(const id in st.n) if(st.n[id].s === 'active' && id !== 'agent' && id !== ev.node) st.n[id].s = 'ok';
+    for(const a in st.arrows) if(st.arrows[a].s === 'active') st.arrows[a].s = 'ok';
+    const node = st.n[ev.node]; if(node){ node.s = ev.status; node.text = ev.label; }
+    for(const [a] of SEG[ev.edge] || []) st.arrows[a] = {s: ev.status};
+    if(ev.kind === 'runtime.entered') st.n.cw.text = `${RUN.run_id.slice(0,8)} · model, gateway, runtime logs`;
+    if(ev.kind === 'policy.decision' && ev.decision === 'DENY') st.stamp = true;
+    if(ev.chip) st.chips[ev.chip] = {s: ev.chip_status, label: ev.tool + (ev.detail?.ticket_id ? ' ' + ev.detail.ticket_id : (ev.label.match(/ (A|B)-\d+/)?.[0] || ''))};
+    if(ev.kind === 'store.write') st.effects.add(ev.effect?.ticket_id);
+    if(ev.kind === 'run.completed' && st.n.agent.s === 'active') st.n.agent.s = ev.status === 'harmful' ? 'harmful' : 'ok';
+  }
+  // the node the current step lands on is the one the audience should look at
+  const last = STEPS[n - 1]?.events.at(-1);
+  if(last && st.n[last.node] && st.n[last.node].s === 'ok') st.n[last.node].s = 'active';
+  return st;
+}
+
+/* ── payload viewer ── */
+const PL = {
+  'auth.verified':['✓','Token checks','Lambda@Edge + API Lambda'],
+  'identity.validated':['✓','Inbound JWT authorizer','AgentCore Identity'],
+  'runtime.entered':['→','Runtime invocation','AgentCore Runtime'],
+  'model.call_start':['→','Request to Amazon Bedrock','Converse'],
+  'model.call_end':['←','Model response','Amazon Bedrock'],
+  'tool.call':['→','MCP request to AgentCore Gateway','tools/call'],
+  'tool.invoked':['→','Lambda event from the Gateway','AWS Lambda'],
+  'store.read':['←','DynamoDB read','Query'],
+  'store.write':['→','DynamoDB write','UpdateItem'],
+  'tool.result':['←','MCP result to the agent','tools/call'],
+  'run.completed':['✓','Run result','API Lambda'],
+};
+function hl(v, ind = ''){
+  const pad = ind + '  ';
+  if(v === null) return '<span class="j-b">null</span>';
+  if(Array.isArray(v)) return v.length ? '[\n' + v.map(x => pad + hl(x, pad)).join(',\n') + '\n' + ind + ']' : '[]';
+  if(typeof v === 'object') { const ks = Object.keys(v); return ks.length ? '{\n' + ks.map(k => `${pad}<span class="j-k">"${esc(k)}"</span>: ${hl(v[k], pad)}`).join(',\n') + '\n' + ind + '}' : '{}'; }
+  if(typeof v === 'string'){ const attack = /ACTION:|ignore (all|your)|system prompt/i.test(v); return `<span class="j-s${attack ? ' attack' : ''}">"${esc(v)}"</span>`; }
+  if(typeof v === 'number') return `<span class="j-n">${v}</span>`;
+  return `<span class="j-b">${esc(String(v))}</span>`;
+}
+// renderPanel runs on every poll and refresh: rebuild the payloads only when the step's events
+// change, and keep each block's scroll position and expanded state when they do.
+let plKey = '';
+const plOpen = new Set();
+function renderPayloads(){
+  const box = $('#payloads'); if(!box) return;
+  const evs = (STEPS[N - 1]?.events || []).filter(e => e.payload);
+  const key = N + '|' + evs.map(e => e.sk).join(',');
+  if(key === plKey) return;
+  const same = plKey.split('|')[0] === String(N);
+  const kept = {};
+  if(same) box.querySelectorAll('.pl').forEach(el => { kept[el.dataset.sk] = el.querySelector('pre').scrollTop; });
+  else plOpen.clear();
+  plKey = key;
+  box.innerHTML = evs.map(e => {
+    let body; try { body = hl(JSON.parse(e.payload)); } catch(_) { body = esc(e.payload); }
+    const [dir, title, src] = PL[e.kind] || ['·', e.kind, e.source], open = plOpen.has(e.sk);
+    return `<div class="pl${open ? ' open' : ''}" data-s="${esc(e.status)}" data-sk="${esc(e.sk)}"><h4><span class="dir">${dir}</span>${esc(title)}<span class="src">${esc(src)} · ${esc(e.source)}</span>`
+      + `<button class="x" type="button" aria-expanded="${open}" hidden>${open ? 'Collapse' : 'Expand'}</button></h4>`
+      + `<pre tabindex="0" aria-label="${esc(title)} payload">${body}</pre><div class="more" hidden>scroll for more ↓</div></div>`;
+  }).join('');
+  box.querySelectorAll('.pl').forEach(el => { el.querySelector('pre').scrollTop = kept[el.dataset.sk] || 0; fitPayload(el); });
+}
+function fitPayload(el){
+  const pre = el.querySelector('pre'), long = el.classList.contains('open') || pre.scrollHeight > pre.clientHeight + 1;
+  el.querySelector('.x').hidden = !long;
+  el.querySelector('.more').hidden = !long || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+}
+$('#payloads').addEventListener('click', e => {
+  const btn = e.target.closest('.x'); if(!btn) return;
+  const el = btn.closest('.pl'), open = el.classList.toggle('open');
+  open ? plOpen.add(el.dataset.sk) : plOpen.delete(el.dataset.sk);
+  btn.textContent = open ? 'Collapse' : 'Expand'; btn.setAttribute('aria-expanded', open);
+  fitPayload(el);
+  if(!open) el.scrollIntoView({block: 'nearest'});
+});
+$('#payloads').addEventListener('scroll', e => { const el = e.target.closest?.('.pl'); if(el) fitPayload(el); }, true);
+
+/* ── view ── */
+const nodeEl = id => panel.querySelector(`.node[data-id="${id}"]`);
+function renderPanel(){
+  panel.classList.toggle('n', panel.clientWidth < 700);
+  const st = fold(N);
+  for(const id in st.n){ const el = nodeEl(id), x = st.n[id]; el.dataset.s = x.s; el.querySelector('[data-st]').textContent = x.text;
+    el.setAttribute('aria-label', `${el.querySelector('.t').textContent}: ${x.s}. ${x.text}. Open trace.`); }
+  nodeEl('policy').classList.toggle('off', build() === 0);
+  $('#stamp').classList.toggle('on', st.stamp);
+  $('#capA1').textContent = `${who()}’s access token → AgentCore Runtime`;
+  panel.querySelectorAll('[data-a]').forEach(el => { const a = st.arrows[el.dataset.a]; if(a) el.dataset.s = a.s; else delete el.dataset.s; });
+  $('#chips').innerHTML = Object.values(st.chips).map(c => `<span class="tc" data-s="${c.s}">${esc(c.label)}${c.s==='ok'?' ✓':c.s==='denied'?' ✕':c.s==='error'?' ↻':''}</span>`).join('') || '<span class="tc ghost">tool calls appear here</span>';
+  const [cs, text] = N === 0
+    ? ['', !RUN ? 'Press <b>Run agent</b>, then walk through each hop with <b>Next step</b> (→).'
+        : STEPS.length ? `<b>${STEPS.length} hops recorded</b>${polling ? ' so far' : ''}. Press <b>Next step</b> (→) to walk through them, or <b>Auto</b>.` : 'The agent is starting…']
+    : caption(STEPS[N - 1]);
+  $('#caption').dataset.s = cs; $('#capx').innerHTML = text;
+  $('#count').textContent = `${N} / ${STEPS.length}`;
+  const inflight = polling !== null;
+  $('#back').disabled = N === 0 || busy; $('#next').disabled = N >= STEPS.length || busy;
+  $('#next').classList.toggle('ready', mode === 'step' && N < STEPS.length && !busy);
+  $('#liveBuf').textContent = inflight ? (N < STEPS.length ? `● live · ${STEPS.length - N} ahead` : '● live · waiting') : '';
+  renderTickets(st); renderLines(st); renderPayloads();
+}
+function renderTickets(st){
+  const comp = STATE?.store_comparison || {};
+  const run = STATE?.last_run, done = !RUN || N >= STEPS.length;
+  $('#custTitle').textContent = `${custName()} tickets`;
+  $('#tickets').innerHTML = (STATE?.tickets || []).map(t => {
+    // hold an effect back until its DynamoDB hop has played, so cause shows before effect
+    const held = RUN && !st.effects.has(t.ticket_id) && comp[t.ticket_id]?.before && comp[t.ticket_id].changed_fields?.includes('status');
+    const status = held ? comp[t.ticket_id].before.status : t.status;
+    const portal = t.origin === 'form' || t.origin === 'preset';
+    return `<div class="ticket" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)}</span>
+      <span class="status ${esc(status)}">${esc(status)}</span>${portal ? `<span class="attack">${esc(t.body)}</span><span class="from">submitted through the customer portal</span>` : ''}</div>`;
+  }).join('') || '<p class="empty" style="padding:14px 4px">No tickets.</p>';
+  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', HELD:'HELD', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
+  else $('#verdict').hidden = true;
+}
+function renderLines(st){
+  const run = STATE?.last_run, done = !RUN || N >= STEPS.length;
+  if(!run){ $('#said').textContent = 'Run the agent to see its answer.'; $('#said').className = 'empty'; $('#tried').textContent = '—'; $('#boundary').textContent = '—'; return; }
+  if(!done){ $('#said').textContent = '…'; $('#said').className = 'empty'; }
+  else { $('#said').textContent = run.answer || run.note || '—'; $('#said').className = ''; }
+  const writes = run.proposals || [];
+  if(done && run.status === 'ERROR'){ for(const id of ['#tried', '#boundary']){ $(id).textContent = '—'; $(id).className = 'empty'; } return; }
+  if(!done){ $('#tried').textContent = '…'; $('#tried').className = 'empty'; $('#boundary').textContent = '…'; return; }
+  $('#tried').innerHTML = writes.length ? writes.map(p => `<code>${esc(p.operation)} ${esc(p.ticket_id)}</code>`).join(', ') : 'only read the tickets';
+  $('#tried').className = writes.length ? '' : 'ok';
+  const executed = (run.effects || []).filter(e => e.status === 'EXECUTED');
+  $('#boundary').textContent = !done ? '…' : build() === 0 ? (executed.length ? 'none in this build · the call went through' : 'none in this build') : (run.controls || []).map(c => `${c.control}: ${c.status}`).join(' · ') || '—';
+}
+function renderChrome(){
+  const B = build();
+  $('#steps').innerHTML = BUILDS.map(([id, name, sub], i) => `<div class="step ${i === B ? 'on' : i > 0 ? 'locked' : ''}"><b>${id} · ${name}</b><small>${sub}</small></div>`).join('');
+  $('#liveTxt').textContent = STATE?.live_model === false ? 'REHEARSAL' : 'LIVE';
+  $('#stopPill').hidden = !STATE?.stop_requested;
+  $('#mStop').firstChild.textContent = STATE?.stop_requested ? 'Clear stop' : 'Stop agent';
+}
+
+/* packets: one dot per segment, transform only */
+function seg(segment, ev){
+  const [a, dir] = segment, host = panel.querySelector(`[data-a="${a}"]`); if(!host) return Promise.resolve();
+  const dot = document.createElement('span'); dot.className = 'dot';
+  dot.style.setProperty('--pc', ev.status === 'harmful' ? 'var(--pink)' : ev.status === 'denied' ? 'var(--green)' : 'var(--blue)');
+  host.appendChild(dot);
+  const horiz = a === 'c1', len = horiz ? host.clientWidth - 16 : host.clientHeight - 2;
+  const at = p => horiz ? `translateX(${p * len}px)` : `translateY(${p * len}px)`;
+  const from = dir > 0 ? 0 : 1, to = dir > 0 ? 1 : 0;
+  return dot.animate([{transform: at(from)}, {transform: at(to), offset: .92}, {transform: at(to), opacity: 0}], {duration: dir < 0 ? 420 : 640, easing: 'cubic-bezier(.25,1,.5,1)'}).finished.then(() => dot.remove());
+}
+async function animate(step){ if(matchMedia('(prefers-reduced-motion: reduce)').matches) return; for(const ev of step.events) for(const s of SEG[ev.edge] || []) await seg(s, ev); }
+
+/* ── player ── */
+async function next(){
+  if(busy || N >= STEPS.length) return; busy = true; renderPanel();
+  await animate(STEPS[N]); N++; busy = false;
+  const effects = STEPS[N - 1].events.filter(e => e.kind === 'store.write').map(e => e.effect?.ticket_id);
+  renderPanel();
+  effects.forEach(t => panel.ownerDocument.querySelector(`.ticket[data-t="${t}"]`)?.classList.add('flash'));
+  if(mode === 'auto') schedule();
+}
+function back(){ if(busy || N === 0) return; clearTimeout(timer); N--; renderPanel(); }
+function schedule(){ clearTimeout(timer); if(mode === 'auto' && N < STEPS.length) timer = setTimeout(next, 900); }
+function setMode(m){ mode = m; $('#mStep').setAttribute('aria-pressed', m === 'step'); $('#mAuto').setAttribute('aria-pressed', m === 'auto'); clearTimeout(timer); if(m === 'auto') next(); }
+
+/* ── live run: the browser picks the run id, polls its events while the POST is in flight ── */
+async function pollOnce(){
+  const after = RUN.events.length ? RUN.events[RUN.events.length - 1].sk : '';
+  const r = await api(`/api/runs/${RUN.run_id}/events?after=${encodeURIComponent(after)}`);
+  const fresh = r.events.filter(e => !RUN.events.some(x => x.sk === e.sk));
+  if(fresh.length){ RUN.events.push(...fresh); RUN.events.sort((a, b) => a.sk < b.sk ? -1 : 1); STEPS = toSteps(RUN.events); renderPanel(); if(mode === 'auto' && !busy) schedule(); }
+  return RUN.events.some(e => e.kind === 'run.completed');
+}
+async function runAgent(){
+  if(polling) return;
+  closeTrace();
+  RUN = {run_id: uuid7(), events: []}; STEPS = []; N = 0; clearTimeout(timer);
+  $('#runBtn').disabled = true; $('#runBtn').textContent = 'Running…';
+  polling = setInterval(() => pollOnce().catch(() => {}), 500); renderPanel();
+  try { await api('/api/run', {run_id: RUN.run_id, stage: STATE?.active_stage || 'v0'}); }
+  catch(e){ toast(e.message, true); }
+  finally {
+    for(let i = 0; i < 6; i++){ if(await pollOnce().catch(() => false)) break; await new Promise(r => setTimeout(r, 400)); }
+    clearInterval(polling); polling = null;
+    $('#runBtn').disabled = false; $('#runBtn').textContent = 'Run agent';
+    await refresh(false);
+  }
+}
+async function refresh(loadRun = true){
+  STATE = await api('/api/state');
+  STATE.model_label = (STATE.model.match(/llama4-maverick/) ? 'Llama 4 Maverick' : (STATE.model.split('·')[1] || 'model').trim());
+  if(loadRun && STATE.last_run && STATE.run_id && !polling){
+    RUN = {run_id: STATE.run_id, events: []};
+    try { const r = await api(`/api/runs/${RUN.run_id}/events`); RUN.events = r.events; } catch(_) { RUN.events = []; }
+    STEPS = toSteps(RUN.events); N = STEPS.length;
+  }
+  renderChrome(); renderPanel();
+}
+
+/* ── trace drawer: node click → that hop's events ── */
+const HOPS = {ingress:['ingress'], acid:['acid'], agent:['agent','runtime'], bedrock:['bedrock'], gateway:['gateway'], policy:['policy'], lambda:['lambda'], ddb:['ddb'], cw:['cw']};
+panel.querySelectorAll('.node').forEach(el => el.addEventListener('click', () => openTrace(el.dataset.id)));
+function openTrace(id){
+  if(polling) return; // keep the live view in sight while a run is in flight
+  const keys = HOPS[id], evs = (RUN?.events || []).filter(e => keys.includes(e.node) || (e.edge && e.edge.split('>').some(x => keys.includes(x))));
+  $('#drTitle').textContent = 'Trace · ' + nodeEl(id).querySelector('.t').textContent;
+  $('#drBody').innerHTML = (RUN ? `<p style="font:500 14px var(--mono);color:var(--ink-3);margin-bottom:10px">run ${esc(RUN.run_id)}</p>` : '') +
+    (evs.map(e => `<div class="ev"><div class="k">${esc(e.kind)} · ${esc(e.source)}</div><pre>${esc(JSON.stringify({edge:e.edge, status:e.status, label:e.label, tool:e.tool, effect:e.effect, detail:e.detail}, null, 2))}</pre></div>`).join('') || '<p class="empty">No events for this hop yet.</p>');
+  const d = $('#drawer'); d.classList.add('open'); d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; $('#drClose').focus();
+}
+function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open')) return; d.classList.remove('open'); d.setAttribute('aria-hidden', 'true'); nodeEl(d.dataset.from)?.focus(); }
+
+/* ── operator actions ── */
+async function resetDemo(){ if(polling) return; if(!confirm('Reset to a clean V0? Portal tickets are removed and seed tickets reopened.')) return;
+  try { await api('/api/reset', {}); RUN = null; STEPS = []; N = 0; await refresh(false); toast('Demo reset to a clean V0.'); } catch(e){ toast(e.message, true); } }
+async function toggleStop(){ try { await api('/api/stop', {stop: !STATE?.stop_requested}); await refresh(false); } catch(e){ toast(e.message, true); } }
+
+$('#runBtn').onclick = runAgent; $('#next').onclick = next; $('#back').onclick = back;
+$('#mStep').onclick = () => setMode('step'); $('#mAuto').onclick = () => setMode('auto');
+$('#drClose').onclick = closeTrace;
+$('#mReset').onclick = () => { closeMenu(); resetDemo(); }; $('#mStop').onclick = () => { closeMenu(); toggleStop(); };
+const closeMenu = () => { $('#menu').classList.remove('open'); $('#gearBtn').setAttribute('aria-expanded', 'false'); };
+$('#gearBtn').onclick = e => { e.stopPropagation(); const o = $('#menu').classList.toggle('open'); $('#gearBtn').setAttribute('aria-expanded', o); if(o) loadPersonas(); };
+// Presenter sign-in only: switch the console persona without a login page (the edge mints real tokens).
+async function loadPersonas(){
+  let me; try { const r = await fetch('/auth/me', {credentials: 'same-origin'}); me = r.ok ? await r.json() : null; } catch(_) { me = null; }
+  const box = $('#personas');
+  if(!me?.presenter){ box.hidden = true; return; }
+  const ops = me.personas.filter(p => p.role === 'operator'), current = me.acting_as.op || who();
+  box.innerHTML = '<div class="lbl">Act as</div>' + ops.map(p => `<a class="as" role="menuitem" href="/auth/switch?u=${encodeURIComponent(p.username)}&b=/" aria-current="${p.username === current}">${esc(p.username)}<small>operator · ${esc(p.customer_id)}</small></a>`).join('') + '<hr>';
+  box.hidden = false;
+}
+document.addEventListener('click', e => { if(!e.target.closest('.gear')) closeMenu(); });
+addEventListener('keydown', e => {
+  if(e.target.closest && e.target.closest('input,textarea,select')) return;
+  if(e.key === 'Escape'){ closeTrace(); closeMenu(); return; }
+  if(e.key === 'ArrowRight' || e.key === ' '){ e.preventDefault(); next(); }
+  else if(e.key === 'ArrowLeft'){ e.preventDefault(); back(); }
+});
+addEventListener('resize', () => { renderPanel(); document.querySelectorAll('#payloads .pl').forEach(fitPayload); });
+refresh().catch(e => toast(e.message, true));
+setInterval(() => { if(!polling && document.visibilityState === 'visible') refresh(false).catch(() => {}); }, 8000);
 </script>
-</body></html>
+</body>
+</html>

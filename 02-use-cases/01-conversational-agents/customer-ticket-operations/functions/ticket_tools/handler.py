@@ -11,12 +11,48 @@ Gateway's job (AgentCore Policy, per build). In the V0 build nothing stands in b
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any
 
 MAX_NOTE = 500
 _table = None
+_events = None
+
+
+def emit(
+    event: dict[str, Any], kind: str, node: str, status: str, label: str, edge: str, **extra: Any
+) -> None:
+    """Live-panel event: this Lambda is the only witness of the Lambda and DynamoDB hops."""
+    global _events
+    run_id = str(event.get("run_id", ""))[:64]
+    name = os.environ.get("EVENTS_TABLE", "")
+    if not run_id or not name:
+        return
+    try:
+        if _events is None:
+            import boto3
+
+            _events = boto3.resource("dynamodb").Table(name)
+        now = time.time()
+        _events.put_item(
+            Item={
+                "run_id": run_id,
+                "sk": f"{int(now * 1000):013d}#tools#{kind}",
+                "ts": int(now * 1000),
+                "kind": kind,
+                "node": node,
+                "edge": edge,
+                "status": status,
+                "label": label[:120],
+                "source": "tools",
+                "expires": int(now) + 86400,
+                **extra,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry must never change the tool's outcome
+        print(f"run event {kind} not written: {exc}")
 
 
 def table():
@@ -28,9 +64,13 @@ def table():
     return _table
 
 
-def tool_name(context: Any) -> str:
+def gateway_tool(context: Any) -> str:
     custom = getattr(getattr(context, "client_context", None), "custom", None) or {}
-    return custom.get("bedrockAgentCoreToolName", "").split("___")[-1]
+    return str(custom.get("bedrockAgentCoreToolName", ""))
+
+
+def tool_name(context: Any) -> str:
+    return gateway_tool(context).split("___")[-1]
 
 
 def actor_of(event: dict[str, Any]) -> dict[str, str]:
@@ -56,9 +96,29 @@ def list_tickets(tbl, event: dict[str, Any]) -> dict[str, Any]:
             "status": t.get("status", "OPEN"),
             "submitted_by": t.get("submitted_by", "customer"),
             "notes": list(t.get("notes", [])),
+            "origin": t.get("origin", "seed"),
         }
         for t in sorted(items, key=lambda t: t["ticket_id"])
     ]
+    ids = ", ".join(t["ticket_id"] for t in tickets) or "none"
+    emit(
+        event,
+        "store.read",
+        "ddb",
+        "ok",
+        f"read {ids}",
+        "lambda>ddb",
+        tool="list_tickets",
+        payload=json.dumps(
+            {
+                "operation": "dynamodb:Query",
+                "KeyConditionExpression": "customer_id = :c",
+                ":c": customer_id,
+                "Items": tickets,
+            },
+            default=str,
+        ),
+    )
     return {"customer_id": customer_id, "ticket_count": len(tickets), "tickets": tickets}
 
 
@@ -84,6 +144,27 @@ def close_ticket(tbl, event: dict[str, Any]) -> dict[str, Any]:
             ":at": int(time.time()),
         },
     )
+    emit(
+        event,
+        "store.write",
+        "ddb",
+        "harmful",
+        f"{key['ticket_id']} CLOSED",
+        "lambda>ddb",
+        tool="close_ticket",
+        effect={"ticket_id": key["ticket_id"], "status": "CLOSED"},
+        payload=json.dumps(
+            {
+                "operation": "dynamodb:UpdateItem",
+                "Key": key,
+                "UpdateExpression": "SET status = CLOSED, closed_by, closed_reason, closed_at",
+                "closed_by": actor_of(event),
+                "closed_reason": str(event.get("reason", ""))[:MAX_NOTE],
+                "before": {"status": item.get("status", "OPEN")},
+            },
+            default=str,
+        ),
+    )
     return {**key, "status": "CLOSED"}
 
 
@@ -102,6 +183,25 @@ def add_note(tbl, event: dict[str, Any]) -> dict[str, Any]:
         UpdateExpression="SET notes = list_append(if_not_exists(notes, :none), :note)",
         ExpressionAttributeValues={":none": [], ":note": [{"by": actor_of(event), "text": note}]},
     )
+    emit(
+        event,
+        "store.write",
+        "ddb",
+        "ok",
+        f"note on {key['ticket_id']}",
+        "lambda>ddb",
+        tool="add_note",
+        effect={"ticket_id": key["ticket_id"], "status": "NOTED"},
+        payload=json.dumps(
+            {
+                "operation": "dynamodb:UpdateItem",
+                "Key": key,
+                "UpdateExpression": "SET notes = list_append(notes, :note)",
+                ":note": {"by": actor_of(event), "text": note},
+            },
+            default=str,
+        ),
+    )
     return {**key, "status": "NOTED"}
 
 
@@ -109,7 +209,26 @@ TOOLS = {"list_tickets": list_tickets, "close_ticket": close_ticket, "add_note":
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    handler = TOOLS.get(tool_name(context))
+    name, event = tool_name(context), event or {}
+    handler = TOOLS.get(name)
     if handler is None:
         return {"status": "UNKNOWN_TOOL"}
-    return handler(table(), event or {})
+    ticket = event.get("ticket_id")
+    emit(
+        event,
+        "tool.invoked",
+        "lambda",
+        "active",
+        name + (f" {ticket}" if ticket else ""),
+        "gateway>lambda",
+        tool=name,
+        payload=json.dumps(
+            {
+                "operation": "lambda:Invoke (from AgentCore Gateway)",
+                "clientContext.custom.bedrockAgentCoreToolName": gateway_tool(context),
+                "event": event,
+            },
+            default=str,
+        ),
+    )
+    return handler(table(), event)

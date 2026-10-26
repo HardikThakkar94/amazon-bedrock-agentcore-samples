@@ -1,7 +1,8 @@
 # The presenter UI on CloudFront. Nothing is public:
 #   /*       -> private S3 bucket (origin access control)
 #   /api/*   -> Lambda function URL with AuthType=AWS_IAM (origin access control signs the request)
-# Lambda@Edge checks a Cognito session on every request before either origin is reached.
+# A CloudFront Function checks the session on every request (no Lambda concurrency); Lambda@Edge
+# runs only for sign-in (/auth/*, /signed-out).
 
 locals {
   ssm           = "/${var.project}/${var.environment}"
@@ -10,8 +11,12 @@ locals {
 }
 
 data "aws_ssm_parameter" "identity" {
-  for_each = toset(["user_pool_id", "issuer", "domain"])
+  for_each = toset(["user_pool_id", "user_pool_arn", "issuer", "domain", "personas"])
   name     = "${local.ssm}/identity/${each.key}"
+}
+
+locals {
+  personas = jsondecode(data.aws_ssm_parameter.identity["personas"].value)
 }
 
 data "aws_ssm_parameter" "app" {
@@ -30,12 +35,14 @@ resource "aws_cognito_user_pool_client" "web" {
   supported_identity_providers         = ["COGNITO"]
   callback_urls                        = ["https://${local.host}/auth/callback"]
   logout_urls                          = ["https://${local.host}/auth/login", "https://${local.host}/signed-out"]
-  explicit_auth_flows                  = ["ALLOW_REFRESH_TOKEN_AUTH"]
-  prevent_user_existence_errors        = "ENABLED"
-  enable_token_revocation              = true
-  access_token_validity                = 60
-  id_token_validity                    = 60
-  refresh_token_validity               = 1
+  # ADMIN_USER_PASSWORD_AUTH needs AWS credentials (cognito-idp:AdminInitiateAuth), so browsers
+  # cannot use it; only the sign-in edge function does, to switch a verified presenter's persona.
+  explicit_auth_flows           = ["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_ADMIN_USER_PASSWORD_AUTH"]
+  prevent_user_existence_errors = "ENABLED"
+  enable_token_revocation       = true
+  access_token_validity         = 60
+  id_token_validity             = 60
+  refresh_token_validity        = 1
   token_validity_units {
     access_token  = "minutes"
     id_token      = "minutes"
@@ -48,13 +55,49 @@ resource "aws_ssm_parameter" "edge" {
     client_id = aws_cognito_user_pool_client.web.id
     domain    = data.aws_ssm_parameter.identity["domain"].value
     issuer    = data.aws_ssm_parameter.identity["issuer"].value
+    personas = jsonencode({
+      for k, v in local.personas : k => { role = v.role, customer_id = v.customer_id, secret = v.secret }
+    })
   }
   name  = "${local.edge_ssm_path}${each.key}"
   type  = "String"
   value = each.value
 }
 
-# ── Lambda@Edge auth ───────────────────────────────────────────────────────
+# ── Session key shared by sign-in (Lambda@Edge) and the per-request gate (CloudFront Function) ──
+resource "random_password" "session_key" {
+  length  = 64
+  special = false
+}
+
+resource "aws_ssm_parameter" "session_key" {
+  name  = "${local.edge_ssm_path}session_key"
+  type  = "SecureString"
+  value = random_password.session_key.result
+}
+
+resource "aws_cloudfront_key_value_store" "auth" {
+  name    = "${var.name_prefix}_auth"
+  comment = "session HMAC key for the viewer-request gate"
+}
+
+resource "aws_cloudfrontkeyvaluestore_key" "session_key" {
+  key_value_store_arn = aws_cloudfront_key_value_store.auth.arn
+  key                 = "session_key"
+  value               = random_password.session_key.result
+}
+
+resource "aws_cloudfront_function" "gate" {
+  name                         = "${var.name_prefix}_gate"
+  runtime                      = "cloudfront-js-2.0"
+  comment                      = "session check on every request; see gate.js"
+  publish                      = true
+  code                         = file("${path.module}/gate.js")
+  key_value_store_associations = [aws_cloudfront_key_value_store.auth.arn]
+  depends_on                   = [aws_cloudfrontkeyvaluestore_key.session_key]
+}
+
+# ── Lambda@Edge sign-in ───────────────────────────────────────────────────
 module "build" {
   source      = "../../modules/build_artifacts"
   project     = var.project
@@ -80,7 +123,17 @@ data "aws_iam_policy_document" "edge" {
   statement {
     sid       = "ReadEdgeConfig"
     actions   = ["ssm:GetParameter"]
-    resources = [for k in ["client_id", "domain", "issuer"] : "arn:aws:ssm:us-east-1:${var.account_id}:parameter${local.edge_ssm_path}${k}"]
+    resources = [for k in ["client_id", "domain", "issuer", "session_key", "personas"] : "arn:aws:ssm:us-east-1:${var.account_id}:parameter${local.edge_ssm_path}${k}"]
+  }
+  statement {
+    sid       = "SwitchPersona" # only after the edge has verified a presenter's token
+    actions   = ["cognito-idp:AdminInitiateAuth"]
+    resources = [data.aws_ssm_parameter.identity["user_pool_arn"].value]
+  }
+  statement {
+    sid       = "ReadPersonaSecrets" # alice, bob, carol; not the presenter's own
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [for v in local.personas : v.secret_arn]
   }
   statement {
     sid       = "Logs" # Lambda@Edge logs in the Region nearest the viewer
@@ -145,6 +198,9 @@ resource "aws_s3_object_copy" "web" {
   key          = each.key
   source       = "${module.build.bucket}/${each.value.key}"
   content_type = each.value.content_type
+  # Pages revalidate on every load (deploys show at once); icons and fonts are cached by the browser
+  # for an hour, so a page load is a handful of authenticated requests, not one per file.
+  cache_control = endswith(each.key, ".html") ? "no-cache" : "private, max-age=3600"
   # copy again whenever a new build is deployed
   metadata           = { build = module.build.build_id }
   metadata_directive = "REPLACE"
@@ -275,6 +331,35 @@ resource "aws_cloudfront_distribution" "this" {
     cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
     compress                   = true
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.gate.arn
+    }
+  }
+
+  ordered_cache_behavior {
+    path_pattern               = "/auth/*"
+    target_origin_id           = "web"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    lambda_function_association {
+      event_type   = "viewer-request"
+      lambda_arn   = aws_lambda_function.edge.qualified_arn
+      include_body = false
+    }
+  }
+
+  ordered_cache_behavior {
+    path_pattern               = "/signed-out"
+    target_origin_id           = "web"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
     lambda_function_association {
       event_type   = "viewer-request"
       lambda_arn   = aws_lambda_function.edge.qualified_arn
@@ -291,10 +376,9 @@ resource "aws_cloudfront_distribution" "this" {
     cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
     origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_except_host.id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
-    lambda_function_association {
+    function_association {
       event_type   = "viewer-request"
-      lambda_arn   = aws_lambda_function.edge.qualified_arn
-      include_body = false
+      function_arn = aws_cloudfront_function.gate.arn
     }
   }
 

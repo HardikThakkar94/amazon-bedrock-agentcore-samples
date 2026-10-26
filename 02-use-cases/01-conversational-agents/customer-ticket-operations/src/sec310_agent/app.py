@@ -25,13 +25,17 @@ def invoke(payload: dict[str, Any], context: Any) -> dict[str, Any]:
         token = bearer(getattr(context, "request_headers", None))
     except PermissionError as exc:
         return {"error": str(exc)}
-    result = run(
-        payload or {},
-        token,
-        gateway_url=os.environ["GATEWAY_URL"],
-        model_id=os.environ["MODEL_ID"],
-        session_id=getattr(context, "session_id", None),
-    )
+    try:
+        result = run(
+            payload or {},
+            token,
+            gateway_url=os.environ["GATEWAY_URL"],
+            model_id=os.environ["MODEL_ID"],
+            session_id=getattr(context, "session_id", None),
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed run is an answer, not a Runtime 500
+        log.exception("run failed")
+        return {"error": f"{type(exc).__name__}: {exc}"[:500]}
     log.info("run %s: %d tool calls", result["run_id"], len(result["tool_calls"]))
     return result
 

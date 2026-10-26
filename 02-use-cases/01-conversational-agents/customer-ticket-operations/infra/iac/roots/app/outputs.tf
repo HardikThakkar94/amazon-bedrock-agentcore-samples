@@ -6,6 +6,8 @@ locals {
     tickets_table_arn = aws_dynamodb_table.tickets.arn
     state_table       = aws_dynamodb_table.state.name
     state_table_arn   = aws_dynamodb_table.state.arn
+    events_table      = aws_dynamodb_table.events.name
+    events_table_arn  = aws_dynamodb_table.events.arn
   }
 }
 

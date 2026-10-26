@@ -58,6 +58,33 @@ resource "aws_dynamodb_table" "state" {
   }
 }
 
+# Live run events for the console's architecture panel (API, agent hooks and TicketTools write;
+# the API reads). Short-lived: items expire after a day.
+resource "aws_dynamodb_table" "events" {
+  name         = "${var.name_prefix}_events"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "run_id"
+  range_key    = "sk"
+
+  attribute {
+    name = "run_id"
+    type = "S"
+  }
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires"
+    enabled        = true
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+}
+
 resource "aws_dynamodb_table_item" "seed" {
   for_each   = local.seed
   table_name = aws_dynamodb_table.tickets.name
@@ -116,6 +143,11 @@ data "aws_iam_policy_document" "api" {
     resources = [aws_dynamodb_table.tickets.arn, aws_dynamodb_table.state.arn]
   }
   statement {
+    sid       = "Events"
+    actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query"]
+    resources = [aws_dynamodb_table.events.arn]
+  }
+  statement {
     # written by later roots (web, agent); read at request time to avoid a deploy-order cycle
     sid     = "LaterRootOutputs"
     actions = ["ssm:GetParameter"]
@@ -146,6 +178,7 @@ resource "aws_lambda_function" "api" {
     variables = {
       TICKETS_TABLE        = aws_dynamodb_table.tickets.name
       STATE_TABLE          = aws_dynamodb_table.state.name
+      EVENTS_TABLE         = aws_dynamodb_table.events.name
       INVOCATION_LOG_GROUP = data.aws_ssm_parameter.invocation_log_group.value
       ISSUER               = data.aws_ssm_parameter.issuer.value
       CLIENT_ID_PARAM      = "${local.ssm}/edge/client_id"

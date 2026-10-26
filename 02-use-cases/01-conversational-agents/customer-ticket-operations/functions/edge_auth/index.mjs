@@ -1,26 +1,46 @@
-// CloudFront viewer-request auth (Lambda@Edge, us-east-1). Dependency-free.
+// Sign-in for the CloudFront site (Lambda@Edge, viewer request, /auth/* and /signed-out only).
+// Dependency-free.
 //
-// Every request needs a valid Cognito access token in an HttpOnly cookie. Two realms keep two
-// independent sessions in one browser: the operator console (/, /api/*) and the customer portal
-// (/portal/*, /api/portal/*). Logins go through Cognito's Hosted UI with PKCE; each login first
-// ends the Hosted UI session so a different persona can sign in. Lambda@Edge has no environment
-// variables, so configuration is read once from SSM in us-east-1. Missing config fails closed.
+// Every other request is checked by a CloudFront Function (infra/iac/roots/web/gate.js), so this
+// function runs a few times per sign-in, not once per file. Two realms keep two independent sessions
+// in one browser: the operator console (/, /api/*) and the customer portal (/portal/*, /api/portal/*).
+// Logins go through Cognito's Hosted UI with PKCE; each login first ends the Hosted UI session so a
+// different persona can sign in. On success it sets the access-token cookie plus a session cookie
+// "<realm>.<exp>.<hmac>" that the CloudFront Function verifies with the shared key. Lambda@Edge has no
+// environment variables, so configuration is read once from SSM in us-east-1. Missing config fails closed.
+//
+// Persona switch: the "presenter" persona signs in once through the Hosted UI like anyone else. Its
+// verified access token (cookie scoped to /auth) lets /auth/switch sign in as alice, bob or carol
+// server-side (AdminInitiateAuth, passwords from Secrets Manager), so every downstream check still sees
+// that persona's real Cognito token. Nobody else can switch, and cross-site requests cannot trigger it.
 import crypto from "node:crypto";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
+import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+import { CognitoIdentityProviderClient, AdminInitiateAuthCommand, InitiateAuthCommand } from "@aws-sdk/client-cognito-identity-provider";
 
 const SSM_PATH = "__SSM_PATH__"; // replaced at build time with /<project>/<env>/edge/
 const ssm = new SSMClient({ region: "us-east-1" });
+const secrets = new SecretsManagerClient({ region: "us-east-1" });
+let idp;
 let config;
 let jwks;
 
 async function getConfig() {
   if (config) return config;
-  const keys = ["client_id", "domain", "issuer"];
+  const keys = ["client_id", "domain", "issuer", "session_key", "personas"];
   const values = await Promise.all(
-    keys.map((k) => ssm.send(new GetParameterCommand({ Name: `${SSM_PATH}${k}` })).then((r) => r.Parameter.Value)),
+    keys.map((k) =>
+      ssm.send(new GetParameterCommand({ Name: `${SSM_PATH}${k}`, WithDecryption: k === "session_key" })).then((r) => r.Parameter.Value),
+    ),
   );
   const c = Object.fromEntries(keys.map((k, i) => [k, values[i]]));
-  if (!c.client_id || !c.domain || !c.issuer) throw new Error("edge auth config missing");
+  if (!c.client_id || !c.domain || !c.issuer || !c.session_key || !c.personas) throw new Error("edge auth config missing");
+  c.personas = JSON.parse(c.personas);
+  const [, region, pool] = c.issuer.match(/^https:\/\/cognito-idp\.([a-z0-9-]+)\.amazonaws\.com\/([\w-]+)$/) || [];
+  if (!pool) throw new Error("edge auth issuer malformed");
+  c.region = region;
+  c.pool = pool;
+  idp = new CognitoIdentityProviderClient({ region });
   config = c;
   return config;
 }
@@ -59,12 +79,113 @@ function cookies(headers) {
   return out;
 }
 
-const realmOf = (uri) => (uri.startsWith("/portal") || uri.startsWith("/api/portal") ? "portal" : "op");
 const cookieName = (realm) => `sec310_${realm}`;
-const setCookie = (name, value, maxAge) => ({
+const sessionName = (realm) => `sec310_s_${realm}`;
+// session cookie checked by the CloudFront Function: HMAC over realm, expiry and the token's hash
+function session(cfg, realm, exp, token) {
+  const th = crypto.createHash("sha256").update(token).digest("hex");
+  const sig = crypto.createHmac("sha256", cfg.session_key).update(`${realm}.${exp}.${th}`).digest("hex");
+  return `${realm}.${exp}.${sig}`;
+}
+const setCookie = (name, value, maxAge, path = "/") => ({
   key: "Set-Cookie",
-  value: `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`,
+  value: `${name}=${value}; Path=${path}; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`,
 });
+const realmOf = (role) => (role === "operator" ? "op" : role === "customer" ? "portal" : null);
+// the access-token cookie the API reads plus the session cookie the CloudFront Function checks
+const sessionCookies = (cfg, realm, token, claims, ttl) => [
+  setCookie(cookieName(realm), token, ttl),
+  setCookie(sessionName(realm), session(cfg, realm, claims.exp, token), ttl),
+  setCookie(`sec310_as_${realm}`, encodeURIComponent(claims.username || ""), ttl),
+];
+
+// ── presenter persona switch ──
+const PRESENTER = "sec310_presenter"; // access token, sent only to /auth/*
+const PRESENTER_R = "sec310_presenter_r"; // refresh token, keeps the presenter signed in for the day
+const presenterCookies = (access, refresh, ttl) => [
+  setCookie(PRESENTER, access, ttl, "/auth"),
+  ...(refresh ? [setCookie(PRESENTER_R, refresh, 86400, "/auth")] : []),
+];
+
+// The presenter's verified claims (refreshing an expired access token), or null.
+async function presenter(cfg, jar) {
+  let claims = await verify(jar[PRESENTER], cfg);
+  const cookies = [];
+  if (!claims && jar[PRESENTER_R]) {
+    try {
+      const r = await idp.send(
+        new InitiateAuthCommand({ ClientId: cfg.client_id, AuthFlow: "REFRESH_TOKEN_AUTH", AuthParameters: { REFRESH_TOKEN: jar[PRESENTER_R] } }),
+      );
+      const t = r.AuthenticationResult;
+      claims = t && (await verify(t.AccessToken, cfg));
+      if (claims) cookies.push(...presenterCookies(t.AccessToken, null, t.ExpiresIn || 3600));
+    } catch (err) {
+      console.warn("presenter refresh failed", err?.name);
+      claims = null;
+    }
+  }
+  return claims && claims.role === "presenter" ? { claims, cookies } : null;
+}
+
+// Sign in as one listed persona with its own credentials; returns its realm and cookies, or null.
+async function signInAs(cfg, user) {
+  const p = Object.hasOwn(cfg.personas, user) ? cfg.personas[user] : null;
+  if (!p) return null;
+  const secret = JSON.parse((await secrets.send(new GetSecretValueCommand({ SecretId: p.secret }))).SecretString);
+  const r = await idp.send(
+    new AdminInitiateAuthCommand({
+      UserPoolId: cfg.pool,
+      ClientId: cfg.client_id,
+      AuthFlow: "ADMIN_USER_PASSWORD_AUTH",
+      AuthParameters: { USERNAME: secret.username, PASSWORD: secret.password },
+    }),
+  );
+  const t = r.AuthenticationResult; // a challenge (e.g. new password) means no tokens: refuse
+  const claims = t && (await verify(t.AccessToken, cfg));
+  const realm = claims && realmOf(claims.role);
+  if (!realm || claims.username !== user) return null;
+  return { realm, cookies: sessionCookies(cfg, realm, t.AccessToken, claims, t.ExpiresIn || 3600) };
+}
+
+const firstOf = (cfg, realm) => Object.keys(cfg.personas).find((u) => realmOf(cfg.personas[u].role) === realm);
+// Browsers mark cross-site requests; a switch only follows a same-site click or a typed URL.
+const crossSite = (headers) => ["cross-site", "same-site"].includes(headers["sec-fetch-site"]?.[0]?.value);
+
+async function switchTo(cfg, host, query, headers, jar) {
+  if (crossSite(headers)) return deny(403, "cross-site persona switch refused");
+  const q = new URLSearchParams(query);
+  const user = q.get("u") || "";
+  const who = await presenter(cfg, jar);
+  if (!who) return redirect(`/auth/start?r=op&b=${encodeURIComponent("/")}`);
+  const as = await signInAs(cfg, user);
+  if (!as) return page(400, "Unknown persona", "That persona cannot be switched to.", "Back to the console", "/");
+  console.log(JSON.stringify({ event: "persona_switch", presenter: who.claims.sub, as: user, realm: as.realm }));
+  let back = q.get("b") || "/";
+  if (!back.startsWith("/") || back.startsWith("//") || back.startsWith("/auth")) back = "/";
+  if (as.realm === "portal") back = "/portal/";
+  else if (back.startsWith("/portal")) back = "/";
+  return redirect(back, [...who.cookies, ...as.cookies]);
+}
+
+async function me(cfg, jar) {
+  const who = await presenter(cfg, jar);
+  const body = who
+    ? {
+        presenter: true,
+        acting_as: { op: decodeURIComponent(jar.sec310_as_op || ""), portal: decodeURIComponent(jar.sec310_as_portal || "") },
+        personas: Object.entries(cfg.personas).map(([u, p]) => ({ username: u, role: p.role, customer_id: p.customer_id })),
+      }
+    : { presenter: false };
+  return {
+    status: "200",
+    headers: {
+      "content-type": [{ key: "Content-Type", value: "application/json" }],
+      "cache-control": [{ key: "Cache-Control", value: "no-store" }],
+      ...(who?.cookies.length ? { "set-cookie": who.cookies } : {}),
+    },
+    body: JSON.stringify(body),
+  };
+}
 
 function redirect(location, extraCookies = []) {
   return {
@@ -105,7 +226,16 @@ p{margin:0 0 24px}a{display:inline-block;padding:12px 24px;border-radius:999px;b
 </style></head><body><main><small>AWS RE:INVENT 2026</small><h1>${esc(title)}</h1><p>${esc(message)}</p><a href="${esc(href)}">${esc(action)}</a></main></body></html>`,
 });
 
-function startLogin(cfg, host, uri, realm) {
+async function startLogin(cfg, host, uri, realm, jar) {
+  realm = realm === "portal" ? "portal" : "op";
+  if (!uri.startsWith("/") || uri.startsWith("//")) uri = "/"; // only same-site paths
+  // A signed-in presenter whose persona session expired gets that persona back without a login page.
+  const who = await presenter(cfg, jar);
+  if (who) {
+    const last = decodeURIComponent(jar[`sec310_as_${realm}`] || "");
+    const as = await signInAs(cfg, realmOf(cfg.personas[last]?.role) === realm ? last : firstOf(cfg, realm));
+    if (as) return redirect(realm === "portal" ? "/portal/" : uri.startsWith("/api") ? "/" : uri, [...who.cookies, ...as.cookies]);
+  }
   // End any Hosted UI session first so the next persona can sign in; then /auth/login authorizes.
   const verifier = b64url(crypto.randomBytes(32));
   const nonce = b64url(crypto.randomBytes(16));
@@ -163,17 +293,36 @@ async function callback(cfg, host, query, jar) {
   const tokens = await res.json();
   const claims = await verify(tokens.access_token, cfg);
   if (!claims) return deny(401, "login failed");
+  const ttl = tokens.expires_in || 3600;
+  if (claims.role === "presenter") {
+    // one sign-in: start as the first operator (console) and the first customer (portal)
+    const [op, portal] = await Promise.all([signInAs(cfg, firstOf(cfg, "op")), signInAs(cfg, firstOf(cfg, "portal"))]);
+    if (!op || !portal) return deny(503, "persona sign-in unavailable");
+    console.log(JSON.stringify({ event: "presenter_signed_in", presenter: claims.sub }));
+    return redirect(state.r === "portal" ? "/portal/" : state.b, [
+      ...presenterCookies(tokens.access_token, tokens.refresh_token, ttl),
+      ...op.cookies,
+      ...portal.cookies,
+      setCookie(`sec310_pkce_${nonce}`, "", 0),
+    ]);
+  }
   if (state.r === "op" && claims.role !== "operator")
     return page(403, "Operators only", "The operator console needs an operator persona such as alice or bob.", "Sign in as another user", "/auth/logout");
   if (state.r === "portal" && claims.role !== "customer")
     return page(403, "Customers only", "The support portal needs a customer persona such as carol.", "Sign in as another user", "/auth/logout");
-  return redirect(state.b, [
-    setCookie(cookieName(state.r), tokens.access_token, tokens.expires_in || 3600),
-    setCookie(`sec310_pkce_${nonce}`, "", 0),
-  ]);
+  return redirect(state.b, [...sessionCookies(cfg, state.r, tokens.access_token, claims, ttl), setCookie(`sec310_pkce_${nonce}`, "", 0)]);
 }
 
 export const handler = async (event) => {
+  try {
+    return await route(event);
+  } catch (err) {
+    console.error("sign-in failed", err?.name, err?.message);
+    return deny(503, "sign-in unavailable");
+  }
+};
+
+async function route(event) {
   const request = event.Records[0].cf.request;
   const host = request.headers.host[0].value;
   const uri = request.uri;
@@ -186,32 +335,26 @@ export const handler = async (event) => {
     return deny(503, "authentication unavailable");
   }
   const jar = cookies(request.headers);
+  if (uri === "/auth/start") {
+    const q = new URLSearchParams(request.querystring);
+    return startLogin(cfg, host, q.get("b") || "/", q.get("r"), jar);
+  }
+  if (uri === "/auth/switch") return switchTo(cfg, host, request.querystring, request.headers, jar);
+  if (uri === "/auth/me") return me(cfg, jar);
   if (uri === "/auth/login") return authorize(cfg, host, jar);
   if (uri === "/auth/callback") return callback(cfg, host, request.querystring, jar);
   if (uri === "/auth/logout") {
     return redirect(`https://${cfg.domain}/logout?client_id=${cfg.client_id}&logout_uri=${encodeURIComponent(`https://${host}/signed-out`)}`, [
       setCookie(cookieName("op"), "", 0),
       setCookie(cookieName("portal"), "", 0),
+      setCookie(sessionName("op"), "", 0),
+      setCookie(sessionName("portal"), "", 0),
+      setCookie("sec310_as_op", "", 0),
+      setCookie("sec310_as_portal", "", 0),
+      setCookie(PRESENTER, "", 0, "/auth"),
+      setCookie(PRESENTER_R, "", 0, "/auth"),
     ]);
   }
   if (uri === "/signed-out") return page(200, "Signed out", "Both the operator console and the customer portal sessions have ended.", "Sign in again", "/");
-
-  const realm = realmOf(uri);
-  let claims = null;
-  try {
-    claims = await verify(jar[cookieName(realm)], cfg);
-  } catch (err) {
-    console.error("token verification unavailable", err?.name, err?.message);
-    return deny(503, "authentication unavailable");
-  }
-  if (!claims) return uri.startsWith("/api") ? deny(401, "session expired: reload the page") : startLogin(cfg, host, uri, realm);
-
-  if (uri.startsWith("/api")) {
-    request.headers["x-sec310-access-token"] = [{ key: "x-sec310-access-token", value: jar[cookieName(realm)] }];
-  } else if (uri === "/" || uri === "/index.html") {
-    request.uri = "/index.html";
-  } else if (uri === "/portal" || uri === "/portal/") {
-    request.uri = "/portal/index.html";
-  }
-  return request;
-};
+  return deny(404, "not found");
+}

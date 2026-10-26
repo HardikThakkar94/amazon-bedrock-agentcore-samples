@@ -129,16 +129,16 @@ destroy-all: destroy-agent destroy-web destroy-gateway destroy-app destroy-ident
 
 # Persona passwords live only in Secrets Manager.
 users: check-profile
-	@for u in alice carol bob; do echo "  $$u: aws secretsmanager get-secret-value --secret-id $(PROJECT)/$(ENV)/personas/$$u --query SecretString --output text --profile $(PROFILE) --region $(REGION)"; done
+	@for u in presenter alice carol bob; do echo "  $$u: aws secretsmanager get-secret-value --secret-id $(PROJECT)/$(ENV)/personas/$$u --query SecretString --output text --profile $(PROFILE) --region $(REGION)"; done
 
 # Show the demo URL and every persona's sign-in in a coloured table (prints passwords to your terminal).
 creds: check-profile
 	@URL=$$(aws ssm get-parameter --name /$(PROJECT)/$(ENV)/web/url --query Parameter.Value --output text 2>/dev/null || echo "not deployed"); \
-	for u in alice carol bob; do aws secretsmanager get-secret-value --secret-id $(PROJECT)/$(ENV)/personas/$$u --query SecretString --output text; done \
+	for u in presenter alice carol bob; do aws secretsmanager get-secret-value --secret-id $(PROJECT)/$(ENV)/personas/$$u --query SecretString --output text; done \
 	| URL="$$URL" python3 -c 'import json,os,sys; \
 	rows=[json.loads(l) for l in sys.stdin if l.strip()]; \
 	B,D,R,O,P,G,C="\033[1m","\033[2m","\033[0m","\033[38;2;255;98;0m","\033[38;2;255;77;139m","\033[38;2;110;231;80m","\033[38;2;104;173;255m"; \
-	col={"operator":G,"customer":P}; where={"operator":"/  (console)","customer":"/portal/"}; \
+	col={"operator":G,"customer":P,"presenter":O}; where={"operator":"/  (console)","customer":"/portal/","presenter":"/  (one sign-in, switch in ⚙)"}; \
 	h=("user","password","role","customer","sign in at"); \
 	cells=[(r["username"],r["password"],r.get("role",""),r.get("customer_id",""),where.get(r.get("role"),"")) for r in rows]; \
 	w=[max(len(x) for x in c) for c in zip(h,*cells)]; \

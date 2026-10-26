@@ -6,8 +6,13 @@ locals {
     alice = { customer_id = "customer-a", role = "operator" } # runs the agent
     carol = { customer_id = "customer-a", role = "customer" } # submits tickets (the attacker)
     bob   = { customer_id = "customer-b", role = "operator" } # tenant-isolation check
+    # signs in once, then switches between the personas above (the sign-in edge function mints their
+    # real Cognito tokens server-side); it has no tenant and cannot use the console or portal itself
+    presenter = { customer_id = "none", role = "presenter" }
   }
-  ssm = "/${var.project}/${var.environment}/identity"
+  # the personas a presenter may act as
+  actable = { for k, v in local.personas : k => v if v.role != "presenter" }
+  ssm     = "/${var.project}/${var.environment}/identity"
 }
 
 # ── Pre-token Lambda (V2: customizes access tokens; needs the Essentials tier) ──

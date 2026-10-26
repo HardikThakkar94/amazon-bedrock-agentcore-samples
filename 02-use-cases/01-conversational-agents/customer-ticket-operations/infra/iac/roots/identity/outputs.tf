@@ -9,6 +9,20 @@ locals {
   }
 }
 
+# Persona directory for the sign-in edge function's persona switch (names, tenants, secret ids).
+resource "aws_ssm_parameter" "personas" {
+  name = "${local.ssm}/personas"
+  type = "String"
+  value = jsonencode({
+    for k, v in local.actable : k => {
+      role        = v.role
+      customer_id = v.customer_id
+      secret      = aws_secretsmanager_secret.persona[k].name
+      secret_arn  = aws_secretsmanager_secret.persona[k].arn
+    }
+  })
+}
+
 resource "aws_ssm_parameter" "identity" {
   for_each = local.outputs
   name     = "${local.ssm}/${each.key}"

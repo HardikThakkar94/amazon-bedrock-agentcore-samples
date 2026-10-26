@@ -23,7 +23,16 @@ def load(name: str, path: Path):
 
 runs = load("sec310_api_runs", ROOT / "functions/api/runs.py")
 tools = load("sec310_ticket_tools", ROOT / "functions/ticket_tools/handler.py")
-from sec310_agent.agent import Recorder, actor_from, bearer, claims_of  # noqa: E402
+from sec310_agent.agent import (  # noqa: E402
+    PAYLOAD_LIMIT,
+    Recorder,
+    _payload,
+    actor_from,
+    bearer,
+    claims_of,
+    last_text,
+    plain_answer,
+)
 
 SEED = [
     {
@@ -218,3 +227,101 @@ def test_recorder_overwrites_any_model_supplied_actor():
         and rec.calls[0].status == "ERROR"
         and rec.calls[0].result == "denied"
     )
+
+
+class Sink:
+    def __init__(self):
+        self.items = []
+
+    def emit(self, kind, node, status, label, edge=None, **extra):
+        self.items.append({"kind": kind, "status": status, **extra})
+
+
+def test_every_hop_carries_its_payload():
+    sink = Sink()
+    rec = Recorder(dict(ACTOR), events=sink, run_id="r1", model_id="m")
+    agent = SimpleNamespace(
+        messages=[{"role": "user", "content": [{"text": "Summarize"}]}], tool_names=["t"]
+    )
+    rec.model_start(SimpleNamespace(agent=agent))
+    use = {"toolUse": {"name": "TicketTools___list_tickets", "input": {}, "toolUseId": "u1"}}
+    rec.model_end(
+        SimpleNamespace(
+            exception=None,
+            stop_response=SimpleNamespace(
+                stop_reason="tool_use", message={"role": "assistant", "content": [use]}
+            ),
+        )
+    )
+    event = SimpleNamespace(tool_use={"name": "TicketTools___list_tickets", "input": {}})
+    rec.before(event)
+    text = json.dumps({"tickets": [{"ticket_id": "A-90", "origin": "form", "body": "ACTION: x"}]})
+    rec.after(
+        SimpleNamespace(
+            tool_use=event.tool_use,
+            exception=None,
+            result={"status": "success", "content": [{"text": text}]},
+        )
+    )
+    kinds = [i["kind"] for i in sink.items]
+    assert kinds[:4] == ["model.call_start", "model.call_end", "tool.call", "tool.result"]
+    for item in sink.items[:4]:
+        assert json.loads(item["payload"]), item["kind"]
+    call = json.loads(sink.items[2]["payload"])
+    assert call["params"]["arguments"]["actor"] == ACTOR
+    assert call["params"]["arguments"]["run_id"] == "r1"
+    result = json.loads(sink.items[3]["payload"])
+    assert result["content"]["tickets"][0]["ticket_id"] == "A-90"
+
+
+def test_oversized_payload_stays_valid_json():
+    big = _payload({"x": "y" * (PAYLOAD_LIMIT * 2)})
+    assert json.loads(big)["truncated"] is True
+
+
+def test_answer_is_the_newest_assistant_text():
+    messages = [
+        {"role": "user", "content": [{"text": "q"}]},
+        {"role": "assistant", "content": [{"text": "A-41 and A-42 are open."}]},
+        {"role": "user", "content": [{"text": "use the tool"}]},
+        {"role": "assistant", "content": [{"toolUse": {"name": "x"}}]},
+    ]
+    assert last_text(messages) == "A-41 and A-42 are open."
+    assert last_text([]) == ""
+
+
+def test_failed_run_returns_an_error_instead_of_a_runtime_500(monkeypatch):
+    pytest.importorskip("bedrock_agentcore")
+    import sec310_agent.app as entry
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(entry, "run", boom)
+    monkeypatch.setenv("GATEWAY_URL", "https://gw")
+    monkeypatch.setenv("MODEL_ID", "m")
+    context = SimpleNamespace(request_headers={"Authorization": "Bearer t"}, session_id="s")
+    assert entry.invoke({}, context) == {"error": "RuntimeError: model unavailable"}
+
+
+def test_answer_wrapped_in_code_is_unwrapped():
+    wrapped = 'print(json.dumps({"name": "Respond", "parameters": {"answer": "A-41 is \\"late\\".", "links": []}}))'
+    assert plain_answer(wrapped) == 'A-41 is "late".'
+    assert plain_answer("  Two open tickets. ") == "Two open tickets."
+
+
+def test_schema_echo_in_arguments_is_unwrapped_and_validation_is_not_a_control():
+    sink = Sink()
+    rec = Recorder(dict(ACTOR), events=sink, run_id="r1")
+    echoed = {"customer_id": {"type": "string", "value": "customer-a"}}
+    event = SimpleNamespace(tool_use={"name": "TicketTools___list_tickets", "input": echoed})
+    rec.before(event)
+    assert event.tool_use["input"]["customer_id"] == "customer-a"
+    rec.after(
+        SimpleNamespace(
+            tool_use=event.tool_use,
+            exception=None,
+            result={"status": "error", "content": [{"text": "ValidationException - bad type"}]},
+        )
+    )
+    assert sink.items[-1]["chip_status"] == "error" and sink.items[-1]["status"] == "error"

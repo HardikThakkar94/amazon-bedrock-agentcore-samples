@@ -152,3 +152,33 @@ def failed(stage: str, run_id: str, source: str, message: str) -> dict[str, Any]
         "regression": "ERROR" if stage == "v5" else None,
         "tool_calls": [],
     }
+
+
+class Emitter:
+    """Run events written by the API (ingress and completion); same table as the agent's."""
+
+    def __init__(self, table: Any, run_id: str) -> None:
+        self.table, self.run_id, self.n = table, run_id, 0
+
+    def __call__(
+        self, kind: str, node: str, status: str, label: str, edge: str | None = None, **extra: Any
+    ) -> None:
+        self.n += 1
+        now = time.time()
+        item = {
+            "run_id": self.run_id,
+            "sk": f"{int(now * 1000):013d}#api#{self.n:03d}",
+            "ts": int(now * 1000),
+            "kind": kind,
+            "node": node,
+            "status": status,
+            "label": label[:120],
+            "source": "api",
+            "expires": int(now) + 86400,
+            **({"edge": edge} if edge else {}),
+            **extra,
+        }
+        try:
+            self.table.put_item(Item=item)
+        except Exception as exc:  # noqa: BLE001 - telemetry must never fail the run
+            print(f"run event {kind} not written: {exc}")

@@ -15,6 +15,7 @@ locals {
   web_client   = data.aws_ssm_parameter.in["edge/client_id"].value
   discovery    = data.aws_ssm_parameter.in["identity/discovery_url"].value
   tickets_arn  = data.aws_ssm_parameter.in["app/tickets_table_arn"].value
+  events_arn   = data.aws_ssm_parameter.in["app/events_table_arn"].value
   model_family = replace(var.model_id, "/^(us|eu|apac|global)\\./", "") # profile -> foundation model
 
   # ``actor`` is filled in by the agent's runtime from the verified token on every call; the
@@ -56,7 +57,7 @@ locals {
 }
 
 data "aws_ssm_parameter" "in" {
-  for_each = toset(["edge/client_id", "identity/discovery_url", "app/tickets_table", "app/tickets_table_arn"])
+  for_each = toset(["edge/client_id", "identity/discovery_url", "app/tickets_table", "app/tickets_table_arn", "app/events_table", "app/events_table_arn"])
   name     = "${local.ssm}/${each.key}"
 }
 
@@ -93,6 +94,11 @@ data "aws_iam_policy_document" "ticket_tools" {
     actions   = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:UpdateItem"]
     resources = [local.tickets_arn]
   }
+  statement {
+    sid       = "LiveEvents"
+    actions   = ["dynamodb:PutItem"]
+    resources = [local.events_arn]
+  }
 }
 
 resource "aws_iam_role_policy" "ticket_tools" {
@@ -115,6 +121,7 @@ resource "aws_lambda_function" "ticket_tools" {
   environment {
     variables = {
       TICKETS_TABLE = data.aws_ssm_parameter.in["app/tickets_table"].value
+      EVENTS_TABLE  = data.aws_ssm_parameter.in["app/events_table"].value
     }
   }
 }
@@ -204,6 +211,12 @@ resource "aws_bedrockagentcore_gateway_target" "tickets" {
                     description = property.value.description
                     required    = property.value.required
                   }
+                }
+                property {
+                  name        = "run_id"
+                  type        = "string"
+                  description = "Run being traced. Set by the runtime; do not fill in."
+                  required    = false
                 }
                 property {
                   name        = local.actor.name
@@ -306,6 +319,11 @@ data "aws_iam_policy_document" "runtime" {
     ]
   }
   statement {
+    sid       = "LiveEvents"
+    actions   = ["dynamodb:PutItem"]
+    resources = [local.events_arn]
+  }
+  statement {
     sid     = "OneModel"
     actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
     resources = concat(
@@ -360,8 +378,9 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
   }
 
   environment_variables = {
-    GATEWAY_URL = aws_bedrockagentcore_gateway.v0.gateway_url
-    MODEL_ID    = var.model_id
+    GATEWAY_URL  = aws_bedrockagentcore_gateway.v0.gateway_url
+    MODEL_ID     = var.model_id
+    EVENTS_TABLE = data.aws_ssm_parameter.in["app/events_table"].value
   }
 
   depends_on = [time_sleep.runtime_role]

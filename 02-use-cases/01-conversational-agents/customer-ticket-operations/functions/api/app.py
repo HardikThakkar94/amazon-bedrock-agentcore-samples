@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -59,6 +60,17 @@ def agent_config() -> dict[str, str]:
 
 _tickets = _ddb.Table(TICKETS)
 _state = _ddb.Table(STATE)
+_events = _ddb.Table(os.environ["EVENTS_TABLE"])
+RUN_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+OWNER_SK = "0000000000000#api#owner"
+# Seed tickets per customer: what Reset restores (mirrors infra/iac/roots/app/main.tf).
+SEED = {
+    "customer-a": {
+        "A-41": ("Package arrived late", "Please explain the delay."),
+        "A-42": ("Correct billing address", "Please update the postal code on my next invoice."),
+    },
+    "customer-b": {"B-77": ("Refund status", "When will my refund arrive?")},
+}
 _persona_cache: dict[str, tuple[float, dict[str, str]]] = {}
 
 STAGES = ["v0", "v1", "v2", "v3", "v4", "v5"]
@@ -253,8 +265,46 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
         )
     if body.get("reuse_capture"):
         raise HttpError(409, "exact-response replay arrives with the per-build gateways")
+    session_id = str(body.get("run_id") or runs.uuid7())
+    if not RUN_ID.match(session_id):
+        raise HttpError(400, "run_id must be a UUIDv7")
     claim_run(who["customer_id"])
-    session_id = runs.uuid7()
+    try:
+        _events.put_item(
+            Item={
+                "run_id": session_id,
+                "sk": OWNER_SK,
+                "customer_id": who["customer_id"],
+                "expires": int(time.time()) + 86400,
+            },
+            ConditionExpression="attribute_not_exists(run_id)",
+        )
+    except _events.meta.client.exceptions.ConditionalCheckFailedException as exc:
+        _state.update_item(
+            Key={"customer_id": who["customer_id"]}, UpdateExpression="REMOVE busy_until"
+        )
+        raise HttpError(409, "run id already used") from exc
+    emit = runs.Emitter(_events, session_id)
+    emit(
+        "auth.verified",
+        "ingress",
+        "ok",
+        f"{who['username']} signed in · token verified at the edge and again by the API",
+        payload=json.dumps(
+            {
+                "CloudFront Function (viewer request)": "HMAC session cookie ✓ · expiry ✓",
+                "API Lambda": "Cognito RS256 signature ✓ · issuer ✓ · client_id ✓ · token_use=access ✓",
+                "caller": who,
+                "request": {
+                    "method": "POST",
+                    "path": "/api/run",
+                    "run_id": session_id,
+                    "stage": stage,
+                },
+            },
+            default=str,
+        ),
+    )
     try:
         before = runs.snapshot(tickets_for(who["customer_id"]))
         try:
@@ -268,6 +318,24 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
             result = runs.failed(
                 stage, session_id, "AgentCore Runtime", f"{type(exc).__name__}: {exc}"
             )
+        emit(
+            "run.completed",
+            "agent",
+            {"CHANGED": "harmful", "ERROR": "error"}.get(result["status"], "ok"),
+            {"CHANGED": "answer returned · ticket changed", "ERROR": "run failed"}.get(
+                result["status"], "answer returned to " + who["username"]
+            ),
+            verdict=result["status"],
+            payload=json.dumps(
+                {
+                    "verdict": result["status"],
+                    "answer": result.get("answer", ""),
+                    "effects (DynamoDB before/after)": result.get("effects", []),
+                    **({"error": result["note"]} if result["status"] == "ERROR" else {}),
+                },
+                default=str,
+            ),
+        )
         _state.update_item(
             Key={"customer_id": who["customer_id"]},
             UpdateExpression=(
@@ -287,6 +355,75 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
             Key={"customer_id": who["customer_id"]}, UpdateExpression="REMOVE busy_until"
         )
     return {"result": result}
+
+
+def run_events(who: dict[str, str], run_id: str, after: str) -> dict[str, Any]:
+    require(who, "operator")
+    if not RUN_ID.match(run_id):
+        raise HttpError(400, "bad run id")
+    owner = _events.get_item(Key={"run_id": run_id, "sk": OWNER_SK}, ConsistentRead=True).get(
+        "Item"
+    )
+    if owner is None:
+        return {
+            "run_id": run_id,
+            "events": [],
+        }  # not started yet (the UI polls before the POST lands)
+    if owner.get("customer_id") != who["customer_id"]:
+        raise HttpError(404, "no such run")
+    cond = "run_id = :r AND sk > :a"
+    items = _events.query(
+        KeyConditionExpression=cond,
+        ExpressionAttributeValues={":r": run_id, ":a": max(after, OWNER_SK)},
+        ConsistentRead=True,
+    )["Items"]
+    return {
+        "run_id": run_id,
+        "events": [{k: v for k, v in i.items() if k not in ("expires",)} for i in items],
+    }
+
+
+def reset_demo(who: dict[str, str]) -> dict[str, Any]:
+    """Back to a clean V0 for this operator's customer: seed tickets only, no stop, no last run."""
+    require(who, "operator")
+    cid = who["customer_id"]
+    seed = SEED.get(cid, {})
+    for t in tickets_for(cid):
+        if t["ticket_id"] not in seed:
+            _tickets.delete_item(Key={"customer_id": cid, "ticket_id": t["ticket_id"]})
+    for ticket_id, (subject, text) in seed.items():
+        _tickets.put_item(
+            Item={
+                "customer_id": cid,
+                "ticket_id": ticket_id,
+                "subject": subject,
+                "body": text,
+                "status": "OPEN",
+                "submitted_by": "customer",
+                "untrusted": True,
+                "origin": "seed",
+            }
+        )
+    _state.put_item(
+        Item={
+            "customer_id": cid,
+            "active_stage": "v0",
+            "stop_requested": False,
+            "store_change_source": "Clean reset",
+        }
+    )
+    return {"reset": True}
+
+
+def request_stop(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+    require(who, "operator")
+    on = bool(body.get("stop", True))
+    _state.update_item(
+        Key={"customer_id": who["customer_id"]},
+        UpdateExpression="SET stop_requested = :on, stop_source = :src",
+        ExpressionAttributeValues={":on": on, ":src": "operator" if on else "none"},
+    )
+    return {"stop_requested": on}
 
 
 def submit_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -350,6 +487,15 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             )
         if method == "POST" and path == "/api/portal/tickets":
             return reply(200, submit_ticket(who, body))
+        if method == "GET" and path.startswith("/api/runs/") and path.endswith("/events"):
+            q = event.get("queryStringParameters") or {}
+            return reply(200, run_events(who, path.split("/")[3], str(q.get("after", ""))[:40]))
+        if method == "POST" and path == "/api/reset":
+            return reply(200, reset_demo(who))
+        if method == "POST" and path == "/api/stop":
+            return reply(200, request_stop(who, body))
+        if method == "POST" and path == "/api/patch":
+            raise HttpError(409, "V1–V5 arrive with the per-build gateways (next milestone)")
         if method == "POST" and path == "/api/run":
             return reply(200, run_agent(who, access_token(event), body))
         raise HttpError(404, f"{method} {path} is not available yet")
