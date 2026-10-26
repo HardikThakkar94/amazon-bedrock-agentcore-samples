@@ -1,7 +1,7 @@
 [project]
-name = "sec310-sample"
+name = "sec310-agent"
 version = "0.1.0"
-description = "Code-talk sample: evolving a security evidence agent from unsafe prototype to a bounded, production-shaped control plane."
+description = "re:Invent code talk: a support agent on Amazon Bedrock AgentCore, bounded build by build (V0-V5)."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT-0" }
@@ -10,8 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Only needed for the optional live paths (`--live`, the `live` stage). The default demo is
-# fully offline. 1.43 is the floor for InvokeGuardrailChecks and the AgentCore Policy APIs.
+# Tests and local tooling; the agent's own pins are in src/sec310_agent/requirements.txt.
 aws = ["boto3>=1.43"]
 
 [dependency-groups]
@@ -22,7 +21,7 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/sec310_sample"]
+packages = ["src/sec310_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

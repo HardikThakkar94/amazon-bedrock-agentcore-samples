@@ -224,7 +224,7 @@ wheels = [
 ]
 
 [[package]]
-name = "sec310-sample"
+name = "sec310-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -2,16 +2,10 @@ PY ?= python3
 # Optional: path to a disclosure denylist kept OUTSIDE this repo. When set, a missing file is an error.
 DENYLIST ?=
 
-.PHONY: test demo stages check check-tags tags lint preflight
+.PHONY: test check check-tags tags lint preflight
 
 test:
-	uv run pytest
-
-demo:
-	uv run python -m sec310_sample.demo all
-
-stages:
-	@for s in unsafe identity untrusted tools containment telemetry; do echo "uv run python -m sec310_sample.demo $$s"; done
+	uv run --extra aws pytest
 
 check:
 	$(PY) scripts/scan_identifiers.py $(if $(DENYLIST),--denylist $(DENYLIST)) .
@@ -20,8 +14,9 @@ check-tags:
 	scripts/check_tags.sh
 
 lint:
-	uv run --with 'ruff==0.16.8' ruff check src tests scripts && uv run --with 'ruff==0.16.8' ruff format --check src tests scripts
-	sh -n scripts/live_setup.sh scripts/live_teardown.sh scripts/check_tags.sh
+	uv run --with 'ruff==0.16.8' ruff check src tests scripts functions && uv run --with 'ruff==0.16.8' ruff format --check src tests scripts functions
+	sh -n scripts/check_tags.sh infra/codebuild/build.sh
+	for r in $(ROOTS); do (cd $$r && terraform fmt -check -diff >/dev/null) || { echo "terraform fmt: $$r"; exit 1; }; done
 
 preflight: test lint
 	$(PY) scripts/scan_identifiers.py $(if $(DENYLIST),--denylist $(DENYLIST)) .
@@ -74,7 +69,7 @@ define tf_destroy
 	         && terraform destroy -input=false $(AUTO_APPROVE) -var-file="$(TFVARS)"
 endef
 
-ROOTS := infra/iac/roots/foundation/build infra/iac/roots/foundation/observability infra/iac/roots/guardrails infra/iac/roots/identity infra/iac/roots/app infra/iac/roots/gateway infra/iac/roots/web infra/iac/roots/agent
+ROOTS := infra/iac/roots/foundation/build infra/iac/roots/foundation/observability infra/iac/roots/guardrails infra/iac/roots/identity infra/iac/roots/app infra/iac/roots/web infra/iac/roots/agent
 
 # ── Roots ─────────────────────────────────────────────────────────────────
 plan-build-infra:    ; $(call tf_plan,infra/iac/roots/foundation/build)
@@ -102,9 +97,6 @@ plan-guardrails:    ; $(call tf_plan,infra/iac/roots/guardrails)
 deploy-guardrails:  ; $(call tf_apply,infra/iac/roots/guardrails)
 destroy-guardrails: ; $(call tf_destroy,infra/iac/roots/guardrails)
 
-plan-gateway:    ; $(call tf_plan,infra/iac/roots/gateway)
-deploy-gateway:  ; $(call tf_apply,infra/iac/roots/gateway)
-destroy-gateway: ; $(call tf_destroy,infra/iac/roots/gateway)
 
 plan-identity:    ; $(call tf_plan,infra/iac/roots/identity)
 deploy-identity:  ; $(call tf_apply,infra/iac/roots/identity)
@@ -123,9 +115,9 @@ deploy-agent:  ; $(call tf_apply,infra/iac/roots/agent)
 destroy-agent: ; $(call tf_destroy,infra/iac/roots/agent)
 
 # ── Composite targets ──────────────────────────────────────────────────────
-deploy-all:  whoami ensure-backend deploy-build-infra build deploy-observability deploy-guardrails deploy-identity deploy-app deploy-gateway deploy-web deploy-agent
+deploy-all:  whoami ensure-backend deploy-build-infra build deploy-observability deploy-guardrails deploy-identity deploy-app deploy-web deploy-agent
 	@echo; echo "Demo URL: $$(aws ssm get-parameter --name /$(PROJECT)/$(ENV)/web/url --query Parameter.Value --output text)"; $(MAKE) -s users
-destroy-all: destroy-agent destroy-web destroy-gateway destroy-app destroy-identity destroy-guardrails destroy-observability destroy-build-infra
+destroy-all: destroy-agent destroy-web destroy-app destroy-identity destroy-guardrails destroy-observability destroy-build-infra
 
 # Persona passwords live only in Secrets Manager.
 users: check-profile
@@ -202,4 +194,3 @@ bootstrap-destroy:
         plan-web deploy-web destroy-web \
         plan-observability deploy-observability destroy-observability \
         plan-guardrails deploy-guardrails destroy-guardrails \
-        plan-gateway deploy-gateway destroy-gateway

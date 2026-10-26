@@ -11,7 +11,7 @@ mkdir -p "$OUT/lambda" "$OUT/web"
 # change (and does not redeploy a Lambda) unless its source actually changed.
 zip_dir() { (cd "$1" && find . -exec touch -h -t 202601010000 {} + && find . -type f ! -path '*/__pycache__/*' ! -name '*.pyc' | LC_ALL=C sort | zip -q -X -D "$2" -@); }
 
-# Lambda functions (one directory each under functions/, plus the demo tool Lambda)
+# Lambda functions (one directory each under functions/)
 for fn in functions/*/; do
   name="$(basename "$fn")"
   stage="$(mktemp -d)"; cp -R "$fn". "$stage/"
@@ -21,7 +21,6 @@ for fn in functions/*/; do
   fi
   zip_dir "$stage" "$OUT/lambda/$name.zip"
 done
-stage="$(mktemp -d)"; cp scripts/live/tool_lambda.py "$stage/"; zip_dir "$stage" "$OUT/lambda/evidence_tools.zip"
 
 # Web bundle, plus the agent's per-build controls as served source for the console's code view
 cp -R web/. "$OUT/web/"
