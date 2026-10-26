@@ -392,6 +392,10 @@ locals {
   )
 }
 
+locals {
+  cfn_name = { for k in keys(local.temporal) : k => replace(title(replace(k, "_", " ")), " ", "") }
+}
+
 # Temporal (Dogwood) statements use the API's "policy" definition, which the Terraform AWS provider
 # does not expose yet (it has "cedar" only), so they are created through CloudFormation.
 resource "aws_cloudformation_stack" "temporal" {
@@ -400,7 +404,9 @@ resource "aws_cloudformation_stack" "temporal" {
   template_body = jsonencode({
     AWSTemplateFormatVersion = "2010-09-09"
     Description              = "AgentCore Policy temporal statements for the ${each.key} gateway"
-    Resources = { for k, v in local.temporal : replace(title(replace(k, "_", " ")), " ", "") => {
+    # Validation is engine-wide: a forbid on close_ticket created before the only permit for it
+    # exists is rejected as overly restrictive, so each cap waits for its gateway's permit.
+    Resources = { for k, v in local.temporal : local.cfn_name[k] => merge({
       Type = "AWS::BedrockAgentCore::Policy"
       Properties = {
         PolicyEngineId = aws_bedrockagentcore_policy_engine.build[each.key].policy_engine_id
@@ -408,7 +414,9 @@ resource "aws_cloudformation_stack" "temporal" {
         Description    = v.description
         Definition     = { Policy = { Statement = v.statement } }
       }
-    } if v.gw == each.key }
+      }, { for d in(startswith(k, "${v.gw}_cap_") ? [1] : []) :
+      "DependsOn" => [local.cfn_name["${v.gw}_confirmed_close"]]
+    }) if v.gw == each.key }
   })
   depends_on = [aws_bedrockagentcore_policy.tenant_fence]
 }
