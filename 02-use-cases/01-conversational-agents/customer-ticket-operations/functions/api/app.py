@@ -463,7 +463,9 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 "READ_ONLY": "halted",
             }.get(
                 result["status"],
-                "denied" if result["status"] in ("BLOCKED", "FILTERED") else "ok",
+                "denied"
+                if result["status"] in ("BLOCKED", "FILTERED", "CONFIRMED_BLOCKED")
+                else "ok",
             ),
             {
                 "CHANGED": "answer returned · ticket changed",

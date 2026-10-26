@@ -173,7 +173,8 @@ def verdict(agent: dict[str, Any], executed: list[dict[str, Any]]) -> str:
     if agent.get("blocked"):
         return "FILTERED"  # V2: the guardrail withheld the ticket text from the model
     if any(c.get("decision") == "DENY" for c in agent.get("tool_calls", [])):
-        return "BLOCKED"  # the Gateway's policy denied a proposed write
+        # the Gateway's policy denied a proposed write; any write that did happen was confirmed
+        return "CONFIRMED_BLOCKED" if executed else "BLOCKED"
     if executed:
         return "CONFIRMED"  # only operator-confirmed closes happened
     return "NO_EFFECT"

@@ -171,7 +171,7 @@ def test_confirmed_close_with_a_denied_injection_is_blocked():
         runs.snapshot(closed("A-41")),
         confirmed=("A-41",),
     )
-    assert result["status"] == "BLOCKED"
+    assert result["status"] == "CONFIRMED_BLOCKED"
 
 
 def test_breaker_trip_and_read_only_refusal_have_their_own_verdicts():

@@ -78,7 +78,7 @@ header .sp{flex:1}
 .verdict[data-v=BLOCKED]{background:var(--green);border-color:var(--green);color:#07070f}
 .verdict[data-v=FILTERED]{background:var(--green);border-color:var(--green);color:#07070f}
 .verdict[data-v=HALTED],.verdict[data-v=STOPPED],.verdict[data-v=READ_ONLY]{background:var(--yellow);border-color:var(--yellow);color:#07070f}
-.verdict[data-v=CONFIRMED]{background:var(--green);border-color:var(--green);color:#07070f}
+.verdict[data-v=CONFIRMED],.verdict[data-v=CONFIRMED_BLOCKED]{background:var(--green);border-color:var(--green);color:#07070f}
 .ticket .confirm{grid-column:2/3;justify-self:start;height:34px;padding:0 14px;border-radius:999px;border:1px solid rgba(110,231,80,.6);background:transparent;color:var(--green);font:650 14px var(--sans)}
 .ticket .confirm:hover:not(:disabled){background:rgba(110,231,80,.12)}
 .ticket .confirm:disabled{opacity:.45;cursor:not-allowed}
@@ -91,6 +91,7 @@ header .sp{flex:1}
 .ticket .from{grid-column:2/3;font:500 14px var(--sans);color:var(--ink-3)}
 .status{font:750 14px var(--sans);letter-spacing:.06em;padding:5px 11px;border-radius:999px;border:1px solid rgba(110,231,80,.5);color:var(--green)}
 .status.CLOSED{border-color:var(--pink);background:var(--pink);color:#07070f}
+.status.CLOSED.ok{border-color:var(--green);background:var(--green)}
 .other{margin-top:14px;padding:10px 4px 2px;border-top:1px dashed var(--pink);font:550 15px var(--sans);color:var(--ink-3)}.other b{color:var(--pink)}
 .ticket.foreign .tenant{margin-left:10px;padding:2px 8px;border:1px solid rgba(255,77,139,.55);border-radius:999px;font:600 13px var(--mono);color:var(--pink);vertical-align:middle}
 .ticket.flash{animation:flash 900ms var(--ease)}
@@ -428,6 +429,7 @@ function caption(step){
     : e0.verdict === 'HALTED' ? ['halted', `The circuit breaker <b>tripped and ended the run</b>. The agent stays read-only until someone resets it.`]
     : e0.verdict === 'READ_ONLY' ? ['halted', `Run complete, <b>read-only</b>: the breaker refused the write; nothing changed.`]
     : e0.verdict === 'CONFIRMED' ? ['', `Run complete. Only the close <b>${esc(u)} confirmed</b> went through.`]
+    : e0.verdict === 'CONFIRMED_BLOCKED' ? ['denied', `Run complete. The close ${esc(u)} confirmed <b>went through</b>; the unconfirmed one was <b>denied</b>.`]
     : e0.verdict === 'STOPPED' ? ['halted', `The agent is stopped by the operator: <b>the run was refused at admission</b>, with no model call.`]
     : ['', `Run complete. ${u} gets the answer; <b>nothing changed</b>.`];
   return ['', esc(e0.label)];
@@ -561,7 +563,7 @@ function renderTickets(st){
     const act = build() < 3 || portal ? '' : conf ? `<span class="confirmed">✓ close confirmed by ${esc(conf.by)} · the agent may close it</span>`
       : status === 'OPEN' ? `<button class="confirm" data-confirm="${esc(t.ticket_id)}"${polling ? ' disabled' : ''} title="Record ${esc(who())}’s confirmation in the AgentCore Policy session">Confirm close ${esc(t.ticket_id)}</button>` : '';
     return `<div class="ticket" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)}</span>
-      <span class="status ${esc(status)}">${esc(status)}</span>${portal ? `<span class="attack">${esc(t.body)}</span><span class="from">submitted through the customer portal</span>` : ''}${act}</div>`;
+      <span class="status ${esc(status)}${(run?.effects || []).some(e => e.target === t.ticket_id && e.confirmed) ? ' ok' : ''}">${esc(status)}</span>${portal ? `<span class="attack">${esc(t.body)}</span><span class="from">submitted through the customer portal</span>` : ''}${act}</div>`;
   }).join('') || '<p class="empty" style="padding:14px 4px">No tickets.</p>';
   // another tenant's ticket the run went after: the operator would never see it otherwise
   const others = STATE?.other_tickets || [];
@@ -570,7 +572,7 @@ function renderTickets(st){
     const status = RUN && eff && !st.effects.has(t.ticket_id) ? eff.before : t.status;
     return `<div class="ticket foreign" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)} <span class="tenant">${esc(t.customer_id)}</span></span><span class="status ${esc(status)}">${esc(status)}</span></div>`;
   }).join('');
-  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', BLOCKED:'BLOCKED', FILTERED:'FILTERED', HALTED:'HALTED', READ_ONLY:'READ-ONLY', CONFIRMED:'CONFIRMED', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
+  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', BLOCKED:'BLOCKED', FILTERED:'FILTERED', HALTED:'HALTED', READ_ONLY:'READ-ONLY', CONFIRMED:'CONFIRMED', CONFIRMED_BLOCKED:'CONFIRMED + BLOCKED', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
   else $('#verdict').hidden = true;
 }
 function renderLines(st){
