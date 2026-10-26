@@ -317,9 +317,10 @@ resource "aws_bedrockagentcore_policy" "tenant_fence" {
   depends_on = [aws_bedrockagentcore_gateway_target.tickets]
 }
 
-# V3: summarizing tickets for an operator never closes one. Conditioned on the operator role so
-# close_ticket stays listed (the model can still propose it, and the denial is visible) and the
-# policy passes validation (an unconditional forbid is rejected as overly restrictive).
+# V3: summarizing tickets for an operator never closes one. The condition reads the call's own
+# arguments, which tools/list cannot know, so close_ticket stays listed: the model can still
+# propose it and the Gateway's denial is visible. (A condition on the caller alone would hide the
+# tool from operators entirely, and an unconditional forbid is rejected as overly restrictive.)
 resource "aws_bedrockagentcore_policy" "no_close_in_summary" {
   name             = "${var.name_prefix}_v3_no_close_in_summary"
   policy_engine_id = aws_bedrockagentcore_policy_engine.build["v3"].policy_engine_id
@@ -332,7 +333,8 @@ resource "aws_bedrockagentcore_policy" "no_close_in_summary" {
           action == AgentCore::Action::"${local.target}___close_ticket",
           resource == AgentCore::Gateway::"${aws_bedrockagentcore_gateway.build["v3"].gateway_arn}"
         ) when {
-          principal.hasTag("role") && principal.getTag("role") == "operator"
+          principal.hasTag("role") && principal.getTag("role") == "operator" &&
+          context.input has ticket_id
         };
       CEDAR
     }

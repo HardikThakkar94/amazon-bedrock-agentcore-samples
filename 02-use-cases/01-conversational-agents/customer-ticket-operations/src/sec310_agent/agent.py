@@ -517,7 +517,7 @@ def replay(gateway: Any, recorder: Recorder, calls: list[dict[str, Any]]) -> Non
         tool = str(captured.get("tool", ""))
         use = {
             "toolUseId": f"replay-{i + 1}",
-            "name": names.get(tool, tool),
+            "name": names.get(tool, f"TicketTools___{tool}"),  # a tool policy hides is still called
             "input": dict(captured.get("input") or {}),
         }
         event = ReplayToolEvent(use)
