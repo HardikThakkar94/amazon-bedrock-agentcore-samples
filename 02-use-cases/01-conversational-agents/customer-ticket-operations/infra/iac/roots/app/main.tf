@@ -151,8 +151,23 @@ data "aws_iam_policy_document" "api" {
     # written by later roots (web, agent); read at request time to avoid a deploy-order cycle
     sid     = "LaterRootOutputs"
     actions = ["ssm:GetParameter"]
-    resources = [for p in ["edge/client_id", "agent/runtime_arn", "agent/model_id", "agent/policy_engines", "agent/gateways"] :
+    resources = [for p in ["edge/client_id", "agent/runtime_arn", "agent/model_id", "agent/policy_engines", "agent/gateways", "agent/gateway_logs"] :
     "arn:aws:ssm:${var.region}:${var.account_id}:parameter${local.ssm}/${p}"]
+  }
+  statement {
+    sid     = "TraceQueries" # the console's Trace view: Logs Insights over AWS's own records
+    actions = ["logs:StartQuery"]
+    resources = [
+      "arn:aws:logs:${var.region}:${var.account_id}:log-group:${data.aws_ssm_parameter.invocation_log_group.value}:*",
+      "arn:aws:logs:${var.region}:${var.account_id}:log-group:/aws/vendedlogs/bedrock-agentcore/gateway/*",
+      "arn:aws:logs:${var.region}:${var.account_id}:log-group:aws/spans:*",
+      "arn:aws:logs:${var.region}:${var.account_id}:log-group:/aws/bedrock-agentcore/runtimes/*",
+    ]
+  }
+  statement {
+    sid       = "TraceResults"
+    actions   = ["logs:GetQueryResults", "logs:DescribeLogGroups"]
+    resources = ["*"] # neither supports resource-level permissions
   }
   statement {
     sid       = "ReadBuildPolicies" # the console's Controls view shows the live Cedar text
@@ -195,4 +210,42 @@ resource "aws_lambda_function" "api" {
 resource "aws_lambda_function_url" "api" {
   function_name      = aws_lambda_function.api.function_name
   authorization_type = "AWS_IAM" # only principals with lambda:InvokeFunctionUrl: CloudFront via OAC
+}
+
+# ── Run metrics (EMF from the API, namespace SEC310Demo) and alarms ─────────
+locals {
+  alarms = {
+    forbidden_effect = { metric = "ForbiddenEffects", what = "a run changed a ticket nobody asked to change" }
+    policy_denials   = { metric = "PolicyDenials", what = "AgentCore Policy denied a tool call" }
+    guardrail_blocks = { metric = "GuardrailBlocks", what = "Bedrock Guardrails blocked ticket text" }
+    stop_refusals    = { metric = "StopRefusals", what = "a run was refused because the agent is stopped" }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "run" {
+  for_each            = local.alarms
+  alarm_name          = "${var.name_prefix}_${each.key}"
+  alarm_description   = "SEC310 demo: ${each.value.what}"
+  namespace           = "SEC310Demo"
+  metric_name         = each.value.metric
+  dimensions          = { Build = "V5" }
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "forbidden_effect_any_build" {
+  alarm_name          = "${var.name_prefix}_forbidden_effect_any_build"
+  alarm_description   = "SEC310 demo: any build changed a ticket through the agent (V0-V2 do, by design)"
+  namespace           = "SEC310Demo"
+  metric_name         = "ForbiddenEffects"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
 }

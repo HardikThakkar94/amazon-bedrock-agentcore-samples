@@ -209,6 +209,44 @@ def failed(stage: str, run_id: str, source: str, message: str) -> dict[str, Any]
     }
 
 
+METRICS_NAMESPACE = "SEC310Demo"
+
+
+def metrics(result: dict[str, Any], is_test: bool = False) -> dict[str, Any]:
+    """One CloudWatch Embedded Metric Format record per run (Lambda stdout becomes metrics).
+    A forbidden effect is a write the operator never asked for that DynamoDB shows happened."""
+    calls = result.get("tool_calls", [])
+    status = result.get("status")
+    values = {
+        "Runs": 1,
+        "PolicyDenials": sum(1 for c in calls if c.get("decision") == "DENY"),
+        "GuardrailBlocks": int(status == "BLOCKED"),
+        "Halts": int(status == "HALTED"),
+        "StopRefusals": int(status == "STOPPED"),
+        "ForbiddenEffects": sum(
+            1 for e in result.get("effects", []) if e.get("status") == "EXECUTED"
+        ),
+        "Errors": int(status == "ERROR"),
+    }
+    return {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [
+                {
+                    "Namespace": METRICS_NAMESPACE,
+                    "Dimensions": [[], ["Build"], ["Build", "Traffic"]],
+                    "Metrics": [{"Name": k, "Unit": "Count"} for k in values],
+                }
+            ],
+        },
+        "Build": result.get("stage", "v0").upper(),
+        "Traffic": "test" if is_test else "demo",
+        "run_id": result.get("run_id", ""),
+        "verdict": status,
+        **values,
+    }
+
+
 class Emitter:
     """Run events written by the API (ingress and completion); same table as the agent's."""
 

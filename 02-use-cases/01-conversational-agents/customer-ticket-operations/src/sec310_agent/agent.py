@@ -681,6 +681,8 @@ def live(
         system_prompt=SYSTEM_PROMPT,
         hooks=[recorder],
         callback_handler=None,
+        # on every agent, model and tool span: the console's Trace view finds a run by these
+        trace_attributes={"sec310.run_id": run_id, "sec310.build": recorder.stage},
     )
     prompt = (
         f"Verified operator {payload.get('operator') or 'the operator'} is working in "

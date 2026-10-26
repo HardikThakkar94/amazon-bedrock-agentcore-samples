@@ -103,6 +103,9 @@ CONTROLS = {
 }
 
 
+GATEWAY_OF = {"v0": "v0", "v1": "v1", "v2": "v1", "v3": "v3", "v4": "v3", "v5": "v3"}
+
+
 def build_code(stage: str) -> dict[str, Any]:
     """The active build's controls, with its Cedar policies read back from AgentCore Policy."""
     n = STAGES.index(stage)
@@ -122,7 +125,7 @@ def build_code(stage: str) -> dict[str, Any]:
     return {
         "stage": stage,
         "title": TITLES[stage],
-        "gateway": json.loads(agent_param("gateways", "{}")).get(stage, ""),
+        "gateway": json.loads(agent_param("gateways", "{}")).get(GATEWAY_OF[stage], ""),
         "policy_engine": engine,
         "policies": sorted(policies, key=lambda p: p["name"]),
         "controls": controls,
@@ -428,6 +431,7 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 ":stage": stage,
             },
         )
+        print(json.dumps(runs.metrics(result, is_test=bool(body.get("is_test")))))
         cap = (
             runs.capture(session_id, stage, result["tool_calls"], runs.fingerprint(read))
             if mode == "live" and result["status"] != "ERROR"
@@ -469,6 +473,107 @@ def run_events(who: dict[str, str], run_id: str, after: str) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "events": [{k: v for k, v in i.items() if k not in ("expires",)} for i in items],
+    }
+
+
+# CloudWatch Logs Insights over what AWS itself recorded for one run (not the app's own events).
+TRACE_QUERIES = {
+    "model": (
+        "Amazon Bedrock model invocation logs",
+        "fields @timestamp, modelId, operation, input.inputTokenCount as in_tokens, "
+        "output.outputTokenCount as out_tokens, output.outputBodyJson.stopReason as stop "
+        "| filter requestMetadata.sec310_run = '{run}' | sort @timestamp asc | limit 50",
+    ),
+    "gateway": (
+        "AgentCore Gateway application logs",
+        "fields @timestamp, @message | filter @message like '{run}' | sort @timestamp asc | limit 50",
+    ),
+    "spans": (
+        "AgentCore Runtime OpenTelemetry spans (Transaction Search)",
+        "fields @timestamp, name, durationNano / 1000000 as ms, status.code as status, traceId "
+        "| filter attributes.`sec310.run_id` = '{run}' | sort @timestamp asc | limit 80",
+    ),
+}
+
+
+def run_owner(who: dict[str, str], run_id: str) -> None:
+    if not RUN_ID.match(run_id):
+        raise HttpError(400, "bad run id")
+    owner = _events.get_item(Key={"run_id": run_id, "sk": OWNER_SK}, ConsistentRead=True).get(
+        "Item"
+    )
+    if owner is None or owner.get("customer_id") != who["customer_id"]:
+        raise HttpError(404, "no such run")
+
+
+def run_trace(who: dict[str, str], run_id: str) -> dict[str, Any]:
+    """Runs the three queries in parallel and returns whatever has been ingested so far
+    (model logs take seconds, spans up to a minute or two)."""
+    require(who, "operator")
+    run_id = run_id.lower()
+    run_owner(who, run_id)
+    logs = boto3.client("logs")
+    groups = {
+        "model": [os.environ["INVOCATION_LOG_GROUP"]],
+        "gateway": list(json.loads(agent_param("gateway_logs", "{}")).values()),
+        # newer runtimes write spans to their own log group, older ones to the shared aws/spans
+        "spans": [
+            "aws/spans",
+            f"/aws/bedrock-agentcore/runtimes/{agent_config()['runtime_arn'].rsplit('/', 1)[-1]}-DEFAULT",
+        ],
+    }
+
+    def exists(name: str) -> bool:
+        found = logs.describe_log_groups(logGroupNamePrefix=name, limit=5)["logGroups"]
+        return any(g["logGroupName"] == name for g in found)
+
+    groups = {
+        k: [g for g in v if exists(g)] for k, v in groups.items()
+    }  # one missing group fails a query
+    now = int(time.time())
+    started = {}
+    for key, (_, query) in TRACE_QUERIES.items():
+        if not groups[key]:
+            continue
+        try:
+            started[key] = logs.start_query(
+                logGroupNames=groups[key],
+                startTime=now - 6 * 3600,
+                endTime=now + 60,
+                queryString=query.format(run=run_id),
+            )["queryId"]
+        except logs.exceptions.ResourceNotFoundException:
+            pass  # e.g. aws/spans before the first span arrives
+    out: dict[str, Any] = {}
+    deadline = time.time() + 20
+    pending = dict(started)
+    while pending and time.time() < deadline:
+        for key, qid in list(pending.items()):
+            r = logs.get_query_results(queryId=qid)
+            if r["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
+                out[key] = [
+                    {f["field"]: f["value"] for f in row if not f["field"].startswith("@ptr")}
+                    for row in r["results"]
+                ]
+                del pending[key]
+        if pending:
+            time.sleep(0.7)
+    return {
+        "run_id": run_id,
+        "region": os.environ.get("AWS_REGION"),
+        "sources": [
+            {
+                "key": key,
+                "title": title,
+                "log_groups": groups[key],
+                "query": query.format(run=run_id),
+                "records": out.get(key, []),
+                "status": "done"
+                if key in out
+                else ("running" if key in started else "no log group yet"),
+            }
+            for key, (title, query) in TRACE_QUERIES.items()
+        ],
     }
 
 
@@ -612,6 +717,9 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         if method == "GET" and path.startswith("/api/runs/") and path.endswith("/events"):
             q = event.get("queryStringParameters") or {}
             return reply(200, run_events(who, path.split("/")[3], str(q.get("after", ""))[:40]))
+        if method == "GET" and path == "/api/trace":
+            q = event.get("queryStringParameters") or {}
+            return reply(200, run_trace(who, str(q.get("run", ""))[:40]))
         if method == "POST" and path == "/api/reset":
             return reply(200, reset_demo(who))
         if method == "POST" and path == "/api/stop":

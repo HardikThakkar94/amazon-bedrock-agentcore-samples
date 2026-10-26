@@ -70,3 +70,51 @@ resource "aws_bedrock_model_invocation_logging_configuration" "this" {
     }
   }
 }
+
+# ── CloudWatch Transaction Search: X-Ray spans land in CloudWatch Logs (aws/spans), 100% indexed ──
+# AgentCore Runtime exports the agent's OpenTelemetry spans; GenAI Observability, the console's
+# Trace view and AgentCore Evaluations all read them from here.
+data "aws_iam_policy_document" "xray_to_logs" {
+  statement {
+    sid     = "TransactionSearchXRayAccess"
+    actions = ["logs:PutLogEvents"]
+    resources = [
+      "arn:aws:logs:${var.region}:${var.account_id}:log-group:aws/spans:*",
+      "arn:aws:logs:${var.region}:${var.account_id}:log-group:/aws/application-signals/data:*",
+    ]
+    principals {
+      type        = "Service"
+      identifiers = ["xray.amazonaws.com"]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:xray:${var.region}:${var.account_id}:*"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+  }
+}
+
+resource "aws_cloudwatch_log_resource_policy" "xray" {
+  policy_name     = "${var.name_prefix}_transaction_search"
+  policy_document = data.aws_iam_policy_document.xray_to_logs.json
+}
+
+resource "aws_xray_trace_segment_destination" "this" {
+  destination = "CloudWatchLogs"
+  depends_on  = [aws_cloudwatch_log_resource_policy.xray]
+}
+
+resource "aws_xray_indexing_rule" "default" {
+  name = "Default"
+  rule {
+    probabilistic {
+      desired_sampling_percentage = 100 # every demo span is searchable
+    }
+  }
+  depends_on = [aws_xray_trace_segment_destination.this]
+}

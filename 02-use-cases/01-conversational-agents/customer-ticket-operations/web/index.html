@@ -173,6 +173,9 @@ header .sp{flex:1}
 .drawer .body{overflow:auto;padding:12px var(--pad)}
 .ev{border:1px solid var(--line-dim);border-radius:10px;padding:10px 12px;margin-bottom:10px}
 .ev .k{font:600 15px var(--mono)}
+.tr{border-collapse:collapse;margin-top:8px;font:400 13px/1.4 var(--mono);color:var(--ink-2)}
+.tr th,.tr td{border-top:1px solid var(--line-dim);padding:4px 8px;text-align:left;vertical-align:top;white-space:pre-wrap}
+.tr th{color:var(--ink-3);font-weight:600}
 .ev pre{font:400 14px/1.45 var(--mono);color:var(--ink-2);margin-top:6px;white-space:pre-wrap}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);padding:12px 18px;border-radius:12px;background:var(--ink);color:#07070f;font:600 16px var(--sans);display:none;z-index:40;max-width:70vw}
 .toast.error{background:var(--pink)}
@@ -642,6 +645,22 @@ function openTrace(id){
   $('#drBody').innerHTML = (RUN ? `<p style="font:500 14px var(--mono);color:var(--ink-3);margin-bottom:10px">run ${esc(RUN.run_id)}</p>` : '') +
     (evs.map(e => `<div class="ev"><div class="k">${esc(e.kind)} · ${esc(e.source)}</div><pre>${esc(JSON.stringify({edge:e.edge, status:e.status, label:e.label, tool:e.tool, effect:e.effect, detail:e.detail}, null, 2))}</pre></div>`).join('') || '<p class="empty">No events for this hop yet.</p>');
   const d = $('#drawer'); d.classList.add('open'); d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; $('#drClose').focus();
+  if(id === 'cw' && RUN) cloudTrace(RUN.run_id);
+}
+// What AWS itself recorded for this run: Logs Insights over model, gateway and span logs.
+async function cloudTrace(run){
+  const body = $('#drBody');
+  body.innerHTML = `<p class="empty">Querying CloudWatch Logs Insights for run ${esc(run)}…</p>`;
+  let t; try { t = await api(`/api/trace?run=${encodeURIComponent(run)}`); } catch(e){ body.innerHTML = `<p class="empty">${esc(e.message)}</p>`; return; }
+  if($('#drawer').dataset.from !== 'cw') return;
+  const table = rows => {
+    if(!rows.length) return '<p class="empty">No records yet (logs can take a minute to arrive). Close and reopen to query again.</p>';
+    const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
+    return `<div style="overflow:auto"><table class="tr"><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr>${rows.map(r => `<tr>${cols.map(c => `<td>${esc((r[c] || '').slice(0, 400))}</td>`).join('')}</tr>`).join('')}</table></div>`;
+  };
+  body.innerHTML = `<p style="font:500 14px var(--mono);color:var(--ink-3);margin-bottom:10px">run ${esc(t.run_id)} · ${esc(t.region)}</p>` + t.sources.map(src =>
+    `<div class="ev"><div class="k">${esc(src.title)} · ${src.records.length} record(s)</div>
+     <pre>${esc(src.log_groups.join('\n') || 'no log group yet')}\n\n${esc(src.query)}</pre>${table(src.records)}</div>`).join('');
 }
 function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open')) return; d.classList.remove('open'); d.setAttribute('aria-hidden', 'true'); nodeEl(d.dataset.from)?.focus(); }
 

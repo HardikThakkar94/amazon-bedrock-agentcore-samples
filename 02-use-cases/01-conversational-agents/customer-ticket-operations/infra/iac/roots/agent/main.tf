@@ -4,8 +4,10 @@
 #   Runtime (JWT authorizer, forwards Authorization) ─▶ Strands agent ─(same token, MCP)─▶ Gateway
 #   Gateway (JWT authorizer) ─▶ TicketTools Lambda ─▶ DynamoDB tickets
 #
-# This root holds the V0 build's gateway: no policy engine, so every tool call goes through.
-# Later builds add their own gateways with AgentCore Policy attached (one gateway per build).
+# One gateway per distinct policy set (src/sec310_agent/controls.py maps builds to them):
+#   v0  no policy engine: every tool call goes through                      (V0)
+#   v1  AgentCore Policy: a call must be for the caller and the caller's tenant (V1, V2)
+#   v3  v1's fence + forbid close_ticket for the operator summary task      (V3, V4, V5)
 
 locals {
   ssm          = "/${var.project}/${var.environment}"
@@ -17,6 +19,14 @@ locals {
   tickets_arn  = data.aws_ssm_parameter.in["app/tickets_table_arn"].value
   events_arn   = data.aws_ssm_parameter.in["app/events_table_arn"].value
   model_family = replace(var.model_id, "/^(us|eu|apac|global)\\./", "") # profile -> foundation model
+  state_arn    = data.aws_ssm_parameter.in["app/state_table_arn"].value
+
+  gateways = {
+    v0 = { policy = false, description = "V0 build: the agent's tools with no policy engine" }
+    v1 = { policy = true, description = "V1-V2 builds: AgentCore Policy fences every call to the caller's tenant" }
+    v3 = { policy = true, description = "V3-V5 builds: tenant fence plus forbid close_ticket for the summary task" }
+  }
+  tool_actions = [for t in keys(local.tools) : "AgentCore::Action::\"${local.target}___${t}\""]
 
   # ``actor`` is filled in by the agent's runtime from the verified token on every call; the
   # Gateway's policies (later builds) compare it with the token's own claims.
@@ -57,7 +67,7 @@ locals {
 }
 
 data "aws_ssm_parameter" "in" {
-  for_each = toset(["edge/client_id", "identity/discovery_url", "app/tickets_table", "app/tickets_table_arn", "app/events_table", "app/events_table_arn"])
+  for_each = toset(["edge/client_id", "identity/discovery_url", "app/tickets_table", "app/tickets_table_arn", "app/events_table", "app/events_table_arn", "app/state_table", "app/state_table_arn", "guardrails/prompt_attack_id"])
   name     = "${local.ssm}/${each.key}"
 }
 
@@ -158,6 +168,15 @@ data "aws_iam_policy_document" "gateway" {
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.ticket_tools.arn]
   }
+  statement {
+    sid = "PolicyEngine" # V1+ gateways ask AgentCore Policy before every tools/call
+    actions = [
+      "bedrock-agentcore:GetPolicyEngine",
+      "bedrock-agentcore:AuthorizeAction",
+      "bedrock-agentcore:PartiallyAuthorizeActions",
+    ]
+    resources = ["${local.agentcore}:policy-engine/*", "${local.agentcore}:gateway/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "gateway" {
@@ -166,9 +185,16 @@ resource "aws_iam_role_policy" "gateway" {
   policy = data.aws_iam_policy_document.gateway.json
 }
 
-resource "aws_bedrockagentcore_gateway" "v0" {
-  name            = "${local.hyphen}-v0-gw"
-  description     = "V0 build: the agent's tools with no policy engine"
+resource "aws_bedrockagentcore_policy_engine" "build" {
+  for_each    = { for k, v in local.gateways : k => v if v.policy }
+  name        = "${var.name_prefix}_${each.key}_policy"
+  description = local.gateways[each.key].description
+}
+
+resource "aws_bedrockagentcore_gateway" "build" {
+  for_each        = local.gateways
+  name            = "${local.hyphen}-${each.key}-gw"
+  description     = each.value.description
   protocol_type   = "MCP"
   authorizer_type = "CUSTOM_JWT"
   role_arn        = aws_iam_role.gateway.arn
@@ -180,12 +206,26 @@ resource "aws_bedrockagentcore_gateway" "v0" {
     }
   }
 
+  dynamic "policy_engine_configuration" {
+    for_each = each.value.policy ? [1] : []
+    content {
+      arn  = aws_bedrockagentcore_policy_engine.build[each.key].policy_engine_arn
+      mode = "ENFORCE"
+    }
+  }
+
   depends_on = [aws_iam_role_policy.gateway]
 }
 
+moved {
+  from = aws_bedrockagentcore_gateway.v0
+  to   = aws_bedrockagentcore_gateway.build["v0"]
+}
+
 resource "aws_bedrockagentcore_gateway_target" "tickets" {
+  for_each           = local.gateways
   name               = local.target
-  gateway_identifier = aws_bedrockagentcore_gateway.v0.gateway_id
+  gateway_identifier = aws_bedrockagentcore_gateway.build[each.key].gateway_id
 
   credential_provider_configuration {
     gateway_iam_role {}
@@ -242,30 +282,109 @@ resource "aws_bedrockagentcore_gateway_target" "tickets" {
   }
 }
 
+moved {
+  from = aws_bedrockagentcore_gateway_target.tickets
+  to   = aws_bedrockagentcore_gateway_target.tickets["v0"]
+}
+
+# ── AgentCore Policy (Cedar). Deny by default; a forbid overrides every permit. ──
+# Tool arguments are context.input.*; the caller is AgentCore::OAuthUser with id = the token's
+# sub and every other claim as a tag. ``actor`` is set by the agent runtime from the same token,
+# so the fence checks that the call is for the signed-in user and stays in their tenant.
+resource "aws_bedrockagentcore_policy" "tenant_fence" {
+  for_each         = aws_bedrockagentcore_policy_engine.build
+  name             = "${var.name_prefix}_${each.key}_tenant_fence" # policy names are unique per account
+  policy_engine_id = each.value.policy_engine_id
+  description      = "Calls only for the signed-in user, only on their own tenant's tickets"
+  definition {
+    cedar {
+      statement = <<-CEDAR
+        permit(
+          principal is AgentCore::OAuthUser,
+          action in [${join(", ", local.tool_actions)}],
+          resource == AgentCore::Gateway::"${aws_bedrockagentcore_gateway.build[each.key].gateway_arn}"
+        ) when {
+          principal.hasTag("customer_id") &&
+          context.input has customer_id &&
+          context.input.customer_id == principal.getTag("customer_id") &&
+          context.input has actor &&
+          context.input.actor has user_sub &&
+          context.input.actor.user_sub == principal.id
+        };
+      CEDAR
+    }
+  }
+  depends_on = [aws_bedrockagentcore_gateway_target.tickets]
+}
+
+# V3: summarizing tickets for an operator never closes one. Conditioned on the operator role so
+# close_ticket stays listed (the model can still propose it, and the denial is visible) and the
+# policy passes validation (an unconditional forbid is rejected as overly restrictive).
+resource "aws_bedrockagentcore_policy" "no_close_in_summary" {
+  name             = "${var.name_prefix}_v3_no_close_in_summary"
+  policy_engine_id = aws_bedrockagentcore_policy_engine.build["v3"].policy_engine_id
+  description      = "The operator summary task may read and annotate tickets, never close them"
+  definition {
+    cedar {
+      statement = <<-CEDAR
+        forbid(
+          principal is AgentCore::OAuthUser,
+          action == AgentCore::Action::"${local.target}___close_ticket",
+          resource == AgentCore::Gateway::"${aws_bedrockagentcore_gateway.build["v3"].gateway_arn}"
+        ) when {
+          principal.hasTag("role") && principal.getTag("role") == "operator"
+        };
+      CEDAR
+    }
+  }
+  depends_on = [aws_bedrockagentcore_policy.tenant_fence]
+}
+
 # Gateway application logs (each tools/call and its outcome) to CloudWatch. The runtime's own
 # stdout goes to /aws/bedrock-agentcore/runtimes/<id>-DEFAULT without extra configuration.
 resource "aws_cloudwatch_log_group" "gateway" {
-  name              = "/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/${aws_bedrockagentcore_gateway.v0.gateway_id}"
+  for_each          = aws_bedrockagentcore_gateway.build
+  name              = "/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/${each.value.gateway_id}"
   retention_in_days = 3
 }
 
 resource "aws_cloudwatch_log_delivery_source" "gateway" {
-  name         = "${var.name_prefix}_v0_gateway_logs"
+  for_each     = aws_bedrockagentcore_gateway.build
+  name         = "${var.name_prefix}_${each.key}_gateway_logs"
   log_type     = "APPLICATION_LOGS"
-  resource_arn = aws_bedrockagentcore_gateway.v0.gateway_arn
+  resource_arn = each.value.gateway_arn
 }
 
 resource "aws_cloudwatch_log_delivery_destination" "gateway" {
-  name                      = "${var.name_prefix}_v0_gateway_logs"
+  for_each                  = aws_bedrockagentcore_gateway.build
+  name                      = "${var.name_prefix}_${each.key}_gateway_logs"
   delivery_destination_type = "CWL"
   delivery_destination_configuration {
-    destination_resource_arn = aws_cloudwatch_log_group.gateway.arn
+    destination_resource_arn = aws_cloudwatch_log_group.gateway[each.key].arn
   }
 }
 
 resource "aws_cloudwatch_log_delivery" "gateway" {
-  delivery_source_name     = aws_cloudwatch_log_delivery_source.gateway.name
-  delivery_destination_arn = aws_cloudwatch_log_delivery_destination.gateway.arn
+  for_each                 = aws_bedrockagentcore_gateway.build
+  delivery_source_name     = aws_cloudwatch_log_delivery_source.gateway[each.key].name
+  delivery_destination_arn = aws_cloudwatch_log_delivery_destination.gateway[each.key].arn
+}
+
+moved {
+  from = aws_cloudwatch_log_group.gateway
+  to   = aws_cloudwatch_log_group.gateway["v0"]
+}
+moved {
+  from = aws_cloudwatch_log_delivery_source.gateway
+  to   = aws_cloudwatch_log_delivery_source.gateway["v0"]
+}
+moved {
+  from = aws_cloudwatch_log_delivery_destination.gateway
+  to   = aws_cloudwatch_log_delivery_destination.gateway["v0"]
+}
+moved {
+  from = aws_cloudwatch_log_delivery.gateway
+  to   = aws_cloudwatch_log_delivery.gateway["v0"]
 }
 
 # ── Agent runtime ──────────────────────────────────────────────────────────
@@ -324,6 +443,16 @@ data "aws_iam_policy_document" "runtime" {
     resources = [local.events_arn]
   }
   statement {
+    sid       = "DurableStop" # V4+: read at admission, written on the first denial
+    actions   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
+    resources = [local.state_arn]
+  }
+  statement {
+    sid       = "ScreenTicketText" # V2+: prompt-attack screen on list_tickets results
+    actions   = ["bedrock:ApplyGuardrail"]
+    resources = ["arn:aws:bedrock:${var.region}:${var.account_id}:guardrail/${data.aws_ssm_parameter.in["guardrails/prompt_attack_id"].value}"]
+  }
+  statement {
     sid     = "OneModel"
     actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
     resources = concat(
@@ -347,7 +476,7 @@ resource "time_sleep" "runtime_role" {
 
 resource "aws_bedrockagentcore_agent_runtime" "agent" {
   agent_runtime_name = "${var.name_prefix}_agent"
-  description        = "Support agent (Strands); tools via the V0 gateway"
+  description        = "Support agent (Strands); tools via the build's gateway"
   role_arn           = aws_iam_role.runtime.arn
 
   agent_runtime_artifact {
@@ -378,9 +507,15 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
   }
 
   environment_variables = {
-    GATEWAY_URL  = aws_bedrockagentcore_gateway.v0.gateway_url
-    MODEL_ID     = var.model_id
-    EVENTS_TABLE = data.aws_ssm_parameter.in["app/events_table"].value
+    GATEWAY_URLS      = jsonencode({ for k, g in aws_bedrockagentcore_gateway.build : k => g.gateway_url })
+    MODEL_ID          = var.model_id
+    EVENTS_TABLE      = data.aws_ssm_parameter.in["app/events_table"].value
+    STATE_TABLE       = data.aws_ssm_parameter.in["app/state_table"].value
+    GUARDRAIL_ID      = data.aws_ssm_parameter.in["guardrails/prompt_attack_id"].value
+    GUARDRAIL_VERSION = "DRAFT"
+    # OpenTelemetry (ADOT, opentelemetry-instrument in the image) -> CloudWatch Transaction Search
+    AGENT_OBSERVABILITY_ENABLED = "true"
+    OTEL_RESOURCE_ATTRIBUTES    = "service.name=${var.name_prefix}_agent,deployment.environment=${var.environment}"
   }
 
   depends_on = [time_sleep.runtime_role]
