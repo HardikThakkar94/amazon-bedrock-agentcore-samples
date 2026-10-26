@@ -155,6 +155,11 @@ data "aws_iam_policy_document" "api" {
     "arn:aws:ssm:${var.region}:${var.account_id}:parameter${local.ssm}/${p}"]
   }
   statement {
+    sid       = "StartEvalSuite" # async invoke of the eval suite runner, deployed by the evals root
+    actions   = ["lambda:InvokeFunction"]
+    resources = ["arn:aws:lambda:${var.region}:${var.account_id}:function:${var.name_prefix}_evals"]
+  }
+  statement {
     sid     = "TraceQueries" # the console's Trace view: Logs Insights over AWS's own records
     actions = ["logs:StartQuery"]
     resources = [
@@ -203,6 +208,7 @@ resource "aws_lambda_function" "api" {
       ISSUER               = data.aws_ssm_parameter.issuer.value
       CLIENT_ID_PARAM      = "${local.ssm}/edge/client_id"
       AGENT_PARAM_PREFIX   = "${local.ssm}/agent"
+      EVALS_FUNCTION       = "${var.name_prefix}_evals" # the eval suite runner (evals root)
     }
   }
 }

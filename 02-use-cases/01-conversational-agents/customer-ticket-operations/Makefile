@@ -69,7 +69,7 @@ define tf_destroy
 	         && terraform destroy -input=false $(AUTO_APPROVE) -var-file="$(TFVARS)"
 endef
 
-ROOTS := infra/iac/roots/foundation/build infra/iac/roots/foundation/observability infra/iac/roots/guardrails infra/iac/roots/identity infra/iac/roots/app infra/iac/roots/web infra/iac/roots/agent
+ROOTS := infra/iac/roots/foundation/build infra/iac/roots/foundation/observability infra/iac/roots/guardrails infra/iac/roots/identity infra/iac/roots/app infra/iac/roots/web infra/iac/roots/agent infra/iac/roots/evals
 
 # ── Roots ─────────────────────────────────────────────────────────────────
 plan-build-infra:    ; $(call tf_plan,infra/iac/roots/foundation/build)
@@ -114,10 +114,24 @@ plan-agent:    ; $(call tf_plan,infra/iac/roots/agent)
 deploy-agent:  ; $(call tf_apply,infra/iac/roots/agent)
 destroy-agent: ; $(call tf_destroy,infra/iac/roots/agent)
 
+plan-evals:    ; $(call tf_plan,infra/iac/roots/evals)
+deploy-evals:  ; $(call tf_apply,infra/iac/roots/evals)
+destroy-evals: ; $(call tf_destroy,infra/iac/roots/evals)
+
+# V5 release gate: run evals/dataset.json through one build on AWS and score it with AgentCore
+# Evaluations (about 10 minutes; resets the demo). Exit code 0 only if the gate passes.
+BUILD ?= v5
+eval: check-profile
+	uv run --extra aws python scripts/eval_gate.py --build $(BUILD) --project $(PROJECT) --env $(ENV) --region $(REGION)
+# Every build in turn, for the console's V0-V5 matrix (about an hour). Gate failures are expected
+# for the early builds, so this target reports them without stopping.
+eval-all: check-profile
+	@for b in v0 v1 v2 v3 v4 v5; do uv run --extra aws python scripts/eval_gate.py --build $$b --project $(PROJECT) --env $(ENV) --region $(REGION) || true; done
+
 # ── Composite targets ──────────────────────────────────────────────────────
-deploy-all:  whoami ensure-backend deploy-build-infra build deploy-observability deploy-guardrails deploy-identity deploy-app deploy-web deploy-agent
+deploy-all:  whoami ensure-backend deploy-build-infra build deploy-observability deploy-guardrails deploy-identity deploy-app deploy-web deploy-agent deploy-evals
 	@echo; echo "Demo URL: $$(aws ssm get-parameter --name /$(PROJECT)/$(ENV)/web/url --query Parameter.Value --output text)"; $(MAKE) -s users
-destroy-all: destroy-agent destroy-web destroy-app destroy-identity destroy-guardrails destroy-observability destroy-build-infra
+destroy-all: destroy-evals destroy-agent destroy-web destroy-app destroy-identity destroy-guardrails destroy-observability destroy-build-infra
 
 # Persona passwords live only in Secrets Manager.
 users: check-profile
@@ -190,7 +204,7 @@ bootstrap-destroy:
 
 .PHONY: whoami check-profile ensure-backend build plan-build-infra deploy-build-infra destroy-build-infra bootstrap bootstrap-destroy validate-infra deploy-all destroy-all users creds \
         plan-identity deploy-identity destroy-identity plan-app deploy-app destroy-app \
-        plan-agent deploy-agent destroy-agent \
+        plan-agent deploy-agent destroy-agent plan-evals deploy-evals destroy-evals eval eval-all \
         plan-web deploy-web destroy-web \
         plan-observability deploy-observability destroy-observability \
         plan-guardrails deploy-guardrails destroy-guardrails \

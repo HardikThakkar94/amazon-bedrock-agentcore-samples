@@ -185,6 +185,17 @@ header .sp{flex:1}
 .tr{border-collapse:collapse;margin-top:8px;font:400 13px/1.4 var(--mono);color:var(--ink-2)}
 .tr th,.tr td{border-top:1px solid var(--line-dim);padding:4px 8px;text-align:left;vertical-align:top;white-space:pre-wrap}
 .tr th{color:var(--ink-3);font-weight:600}
+/* eval matrix: one row per dataset case, one column per build */
+.em{border-collapse:collapse;width:100%;font:500 14px/1.35 var(--sans)}
+.em th,.em td{border-top:1px solid var(--line-dim);padding:7px 6px;text-align:center;vertical-align:middle}
+.em th:first-child,.em td:first-child{text-align:left}
+.em th{color:var(--ink-3);font-weight:650}.em th.on{color:var(--ink)}
+.em .c{display:inline-block;min-width:54px;padding:3px 8px;border-radius:999px;border:1px solid var(--line-dim);font:700 13px var(--sans);letter-spacing:.04em;cursor:help}
+.em .c.PASS{border-color:rgba(110,231,80,.6);color:var(--green)}.em .c.FAIL{background:var(--pink);border-color:var(--pink);color:#07070f}
+.em .c.RUN{border-color:var(--blue);color:var(--blue)}.em .j{display:block;font:500 12px var(--mono);color:var(--ink-3);margin-top:2px}
+.em tr.gate td{border-top:1px solid var(--line)}.em tr.gate .c.PASS{background:var(--green);color:#07070f}
+.evhead{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}.evhead p{font:450 14px/1.45 var(--sans);color:var(--ink-3);flex:1 1 320px}
+.pill.gate{border-color:var(--green);color:var(--green)}.pill.gate i{background:var(--green)}.pill.gate.fail{border-color:var(--pink);color:var(--pink)}.pill.gate.fail i{background:var(--pink)}
 .ev pre{font:400 14px/1.45 var(--mono);color:var(--ink-2);margin-top:6px;white-space:pre-wrap}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);padding:12px 18px;border-radius:12px;background:var(--ink);color:#07070f;font:600 16px var(--sans);display:none;z-index:40;max-width:70vw}
 .toast.error{background:var(--pink)}
@@ -250,6 +261,7 @@ header .sp{flex:1}
   <span class="tile"><img src="/assets/aws-logo.svg" alt="AWS"></span>
   <div><div class="event"><img src="/assets/reinvent-wordmark.png" alt="AWS re:Invent"><span>2026</span></div><h1>Build a bounded agent, live</h1></div>
   <span class="sp"></span>
+  <span class="pill gate" id="gatePill" hidden><i></i>Release gate</span>
   <span class="pill breaker" id="breakerPill" hidden title=""><i></i>Circuit breaker: OPEN · read-only</span>
   <span class="pill stop" id="stopPill" hidden><i></i>Stopped by operator</span>
   <div class="gear"><button id="gearBtn" aria-haspopup="menu" aria-expanded="false" title="Operator menu">⚙</button>
@@ -270,6 +282,7 @@ header .sp{flex:1}
     <button class="btn" id="replayBtn" disabled title="Re-send the last captured response through this build, with no model call">Replay last</button>
     <button class="btn" id="nextFix">Apply next fix →</button>
     <button class="btn" id="codeBtn" title="This build's controls: Cedar policies, guardrail and hooks">&lt;/&gt; Controls</button>
+    <button class="btn" id="evalBtn" title="AgentCore Evaluations: the eval suite per build, and the release gate">Evals</button>
   </div>
 </div>
 
@@ -670,6 +683,7 @@ async function refresh(loadRun = true){
     STEPS = toSteps(RUN.events); N = STEPS.length;
   }
   renderChrome(); renderPanel();
+  if(build() === 5 && (!EVALS || !loadEvals.at || Date.now() - loadEvals.at > 15000)){ loadEvals.at = Date.now(); loadEvals(); } else renderGate();
 }
 
 /* ── trace drawer: node click → that hop's events ── */
@@ -699,7 +713,7 @@ async function cloudTrace(run){
     `<div class="ev"><div class="k">${esc(src.title)} · ${src.records.length} record(s)</div>
      <pre>${esc(src.log_groups.join('\n') || 'no log group yet')}\n\n${esc(src.query)}</pre>${table(src.records)}</div>`).join('');
 }
-function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open')) return; d.classList.remove('open'); d.setAttribute('aria-hidden', 'true'); nodeEl(d.dataset.from)?.focus(); }
+function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open')) return; d.classList.remove('open'); d.setAttribute('aria-hidden', 'true'); (d.dataset.from === 'evals' ? $('#evalBtn') : nodeEl(d.dataset.from))?.focus(); d.dataset.from = ''; }
 
 /* ── operator actions ── */
 async function resetDemo(){ if(polling) return; if(!confirm('Reset to a clean V0? Portal tickets are removed and seed tickets reopened.')) return;
@@ -727,12 +741,74 @@ async function confirmClose(ticket){
 }
 $('#tickets').addEventListener('click', e => { const b = e.target.closest('[data-confirm]'); if(b) confirmClose(b.dataset.confirm); });
 async function resetBreaker(){ try { await api('/api/breaker/reset', {}); await refresh(false); toast('Circuit breaker reset: the agent may write again.'); } catch(e){ toast(e.message, true); } }
+/* ── V5: eval suites per build (AgentCore Evaluations) and the release gate ── */
+let EVALS = null, evalTimer = 0;
+const ACTIVE = ['QUEUED','RUNNING','SCORING'];
+async function loadEvals(){ try { EVALS = (await api('/api/evals')).builds; } catch(_) { EVALS = EVALS || null; } renderGate(); return EVALS; }
+function renderGate(){
+  const v5 = EVALS?.v5, pill = $('#gatePill');
+  pill.hidden = build() < 5 || !v5;
+  if(pill.hidden) return;
+  const live = ACTIVE.includes(v5.status), ok = v5.gate?.passed;
+  pill.classList.toggle('fail', !live && !ok);
+  pill.lastChild.textContent = live ? `Release gate: evaluating · ${v5.progress || v5.status}` : v5.status === 'DONE' ? `Release gate: ${ok ? 'PASS' : 'FAIL'}` : 'Release gate: error';
+}
+function sampleTip(s){
+  const sc = s.scores || {}, part = k => sc[k] ? `${k}: ${sc[k].label}${sc[k].value != null ? ' (' + sc[k].value + ')' : ''}` : null;
+  return [`run ${s.run_id || '—'} · verdict ${s.verdict}`, s.effects?.length ? `writes: ${s.effects.join(', ')}` : 'writes: none',
+    part('no_forbidden_effect'), sc.no_forbidden_effect?.explanation, part('ticket_text_as_data'), sc.ticket_text_as_data?.explanation,
+    part('Builtin.Helpfulness'), part('Builtin.GoalSuccessRate'), part('Builtin.Refusal'), s.error, s.spans === 0 ? 'no spans yet: scored from the DynamoDB diff' : null]
+    .filter(Boolean).join('\n');
+}
+function renderEvals(){
+  if($('#drawer').dataset.from !== 'evals') return;
+  const builds = ['v0','v1','v2','v3','v4','v5'], B = build();
+  const ref = builds.map(b => EVALS?.[b]).find(x => x?.cases?.length);
+  const cases = ref ? ref.cases.map(c => ({id: c.id, title: c.title, kind: c.kind})) : [];
+  const cell = (b, c) => {
+    const st = EVALS?.[b];
+    if(!st) return '<span class="j">—</span>';
+    if(ACTIVE.includes(st.status)) return '<span class="c RUN">…</span>';
+    const row = st.gate?.cases?.find(x => x.id === c.id), data = st.cases?.find(x => x.id === c.id);
+    if(!row) return '<span class="j">—</span>';
+    const judge = (data?.samples || []).map(s => ({PASS:'✓', FAIL:'✕'})[s.scores?.ticket_text_as_data?.label] || '·').join('');
+    return `<span class="c ${row.safety}" title="${esc((data?.samples || []).map(sampleTip).join('\n\n'))}">${row.passed}/${row.k}</span><span class="j">judge ${judge}</span>`;
+  };
+  const gate = b => { const st = EVALS?.[b]; if(!st) return '<span class="j">not run</span>';
+    if(ACTIVE.includes(st.status)) return `<span class="c RUN" title="${esc(st.progress || '')}">${esc(st.status)}</span>`;
+    if(st.status === 'ERROR') return `<span class="c FAIL" title="${esc(st.error || '')}">ERROR</span>`;
+    const q = st.gate?.quality; return `<span class="c ${st.gate?.passed ? 'PASS' : 'FAIL'}" title="${esc(`safety ${st.gate?.safety} · mean Helpfulness ${q?.helpfulness_mean ?? '—'} (floor ${q?.floor})\nsuite ${st.suite_id} · dataset ${st.dataset || ''}`)}">${st.gate?.passed ? 'PASS' : 'FAIL'}</span>`; };
+  const busyNow = builds.some(b => ACTIVE.includes(EVALS?.[b]?.status));
+  $('#drBody').innerHTML = `<div class="evhead"><button class="btn primary" id="evalRun"${busyNow || polling ? ' disabled' : ''}>Run eval suite on ${BUILDS[B][0]}</button>
+    <p>Each case runs live through the build (attacks twice: pass^k). <b>Safety</b> = AgentCore Evaluations code-based evaluator “no forbidden effect executed”, checked against what TicketTools actually wrote. <b>judge</b> = LLM judge “ticket text treated as data” (advisory). Hover a cell for each run’s scores. A suite takes about 10 minutes and resets the demo.</p></div>`
+    + (cases.length ? `<table class="em"><tr><th>Case</th>${builds.map((b, i) => `<th class="${i === B ? 'on' : ''}">${b.toUpperCase()}</th>`).join('')}</tr>
+      <tr class="gate"><td><b>Release gate</b></td>${builds.map(b => `<td>${gate(b)}</td>`).join('')}</tr>
+      ${cases.map(c => `<tr><td>${esc(c.title)} <span class="j">${esc(c.kind)}</span></td>${builds.map(b => `<td>${cell(b, c)}</td>`).join('')}</tr>`).join('')}</table>`
+      : `<p class="empty">No suite has finished yet${busyNow ? ' (one is running)' : ''}. Run one here or with <code>make eval BUILD=v5</code>.</p>`);
+  $('#evalRun').onclick = runEvals;
+}
+async function openEvals(){
+  $('#drTitle').textContent = 'Evaluations · release gate per build';
+  const d = $('#drawer'); d.classList.add('open'); d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evals'; $('#drClose').focus();
+  $('#drBody').innerHTML = '<p class="empty">Loading eval suites…</p>';
+  await loadEvals(); renderEvals(); pollEvals();
+}
+function pollEvals(){
+  clearTimeout(evalTimer);
+  const live = Object.values(EVALS || {}).some(x => ACTIVE.includes(x?.status));
+  if(live || $('#drawer').dataset.from === 'evals') evalTimer = setTimeout(async () => { await loadEvals(); renderEvals(); pollEvals(); }, live ? 5000 : 15000);
+}
+async function runEvals(){
+  if(!confirm(`Run the eval suite on ${BUILDS[build()][0]}? It takes about 10 minutes and resets the demo.`)) return;
+  try { await api('/api/evals/run', {}); toast('Eval suite started. Live runs first, then AgentCore Evaluations scores them.'); await loadEvals(); renderEvals(); pollEvals(); }
+  catch(e){ toast(e.message, true); }
+}
 async function toggleStop(){ try { await api('/api/stop', {stop: !STATE?.stop_requested}); await refresh(false); } catch(e){ toast(e.message, true); } }
 
 $('#runBtn').onclick = () => runAgent('live'); $('#replayBtn').onclick = () => runAgent('replay');
 $('#nextFix').onclick = () => patch(null);
 $('#steps').onclick = e => { const b = e.target.closest('.step'); if(b && !b.classList.contains('on')) patch(b.dataset.stage); };
-$('#codeBtn').onclick = openCode; $('#next').onclick = next; $('#back').onclick = back;
+$('#codeBtn').onclick = openCode; $('#evalBtn').onclick = openEvals; $('#next').onclick = next; $('#back').onclick = back;
 $('#mStep').onclick = () => setMode('step'); $('#mAuto').onclick = () => setMode('auto');
 $('#drClose').onclick = closeTrace;
 $('#mReset').onclick = () => { closeMenu(); resetDemo(); }; $('#mStop').onclick = () => { closeMenu(); toggleStop(); };

@@ -19,6 +19,14 @@ for fn in functions/*/; do
     # Lambda@Edge has no environment variables: bake the SSM path in at build time
     sed -i "s|__SSM_PATH__|/${PROJECT}/${ENVIRONMENT}/edge/|" "$stage/index.mjs"
   fi
+  if [ "$name" = "evals" ]; then
+    # the suite runner reuses the API's modules and reads the versioned dataset
+    cp functions/api/app.py functions/api/runs.py functions/api/jwt_verify.py evals/dataset.json "$stage/"
+  fi
+  if [ -f "$stage/requirements.txt" ]; then
+    python3 -m pip install --quiet --no-compile --disable-pip-version-check -r "$stage/requirements.txt" -t "$stage"
+    rm -rf "$stage"/bin "$stage"/*.dist-info/RECORD
+  fi
   zip_dir "$stage" "$OUT/lambda/$name.zip"
 done
 

@@ -409,6 +409,7 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 "run_id": session_id,
                 "sk": OWNER_SK,
                 "customer_id": who["customer_id"],
+                "confirmed": list(confirmed),  # read by the online no-forbidden-effect evaluator
                 "expires": int(time.time()) + 86400,
             },
             ConditionExpression="attribute_not_exists(run_id)",
@@ -831,6 +832,50 @@ def confirm_close(who: dict[str, str], token: str, body: dict[str, Any]) -> dict
     return {"confirmed": done, "gateway_reply": text}
 
 
+def eval_suites(who: dict[str, str]) -> dict[str, Any]:
+    """The latest eval suite per build (V0-V5): status, the gate and every case's samples."""
+    require(who, "operator")
+    out = {}
+    for stage in STAGES:
+        item = _state.get_item(Key={"customer_id": f"evals#{stage}"}).get("Item")
+        out[stage] = json.loads(item["suite"]) if item else None
+    return {"builds": out}
+
+
+def run_eval_suite(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+    """Start the eval suite on a build (default: the active one). It runs for several minutes in
+    its own Lambda, holds the demo while it runs, and leaves it reset."""
+    require(who, "operator")
+    st = demo_state(who["customer_id"])
+    if who["customer_id"] != "customer-a":
+        raise HttpError(403, "the eval suite runs as Customer A's operator")
+    if int(st.get("busy_until", 0)) > time.time():
+        raise HttpError(409, "the demo is busy (an agent run or an eval suite)")
+    stage = str(body.get("stage") or st.get("active_stage", "v0"))
+    if stage not in STAGES:
+        raise HttpError(400, "unknown build")
+    suite_id = runs.uuid7()
+    _state.put_item(
+        Item={
+            "customer_id": f"evals#{stage}",
+            "suite": json.dumps(
+                {
+                    "suite_id": suite_id,
+                    "build": stage,
+                    "status": "QUEUED",
+                    "started": int(time.time()),
+                }
+            ),
+        }
+    )
+    boto3.client("lambda").invoke(
+        FunctionName=os.environ["EVALS_FUNCTION"],
+        InvocationType="Event",
+        Payload=json.dumps({"build": stage, "suite_id": suite_id}).encode(),
+    )
+    return {"suite_id": suite_id, "build": stage}
+
+
 def submit_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     require(who, "customer")
     subject = str(body.get("subject", "")).strip()
@@ -896,6 +941,10 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             return reply(200, confirm_close(who, access_token(event), body))
         if method == "POST" and path == "/api/breaker/reset":
             return reply(200, reset_breaker(who))
+        if method == "GET" and path == "/api/evals":
+            return reply(200, eval_suites(who))
+        if method == "POST" and path == "/api/evals/run":
+            return reply(200, run_eval_suite(who, body))
         if method == "POST" and path == "/api/patch":
             return reply(200, apply_patch(who, body))
         if method == "POST" and path == "/api/run":

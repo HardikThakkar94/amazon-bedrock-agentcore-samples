@@ -610,9 +610,10 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     STATE_TABLE       = data.aws_ssm_parameter.in["app/state_table"].value
     GUARDRAIL_ID      = data.aws_ssm_parameter.in["guardrails/prompt_attack_id"].value
     GUARDRAIL_VERSION = "DRAFT"
-    # OpenTelemetry (ADOT, opentelemetry-instrument in the image) -> CloudWatch Transaction Search
+    # OpenTelemetry (ADOT, opentelemetry-instrument in the image) -> CloudWatch Transaction Search.
+    # The Runtime sets the resource attributes (service.name <agent>.DEFAULT, aws.log.group.names,
+    # the runtime ARN); online evaluation finds sessions by them, so they are not overridden here.
     AGENT_OBSERVABILITY_ENABLED = "true"
-    OTEL_RESOURCE_ATTRIBUTES    = "service.name=${var.name_prefix}_agent,deployment.environment=${var.environment}"
   }
 
   depends_on = [time_sleep.runtime_role]
