@@ -373,7 +373,11 @@ class Recorder:
                         "action": f'AgentCore::Action::"{event.tool_use["name"]}"',
                         "context.input": {k: v for k, v in call.input.items() if k != "run_id"},
                         "decision": call.decision,
-                        **({"gateway said": text[:600]} if call.decision == "DENY" else {}),
+                        **(
+                            {"Gateway reply to the agent (MCP tools/call result)": text[:600]}
+                            if call.decision == "DENY"
+                            else {}
+                        ),
                     }
                 ),
             )
