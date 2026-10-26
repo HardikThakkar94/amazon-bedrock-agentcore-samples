@@ -92,6 +92,53 @@ LESSONS = {
 }
 
 
+# Which controls each build turns on (mirrors src/sec310_agent/controls.py and the agent root).
+CONTROLS = {
+    "Inbound JWT authorizer (AgentCore Identity on Runtime and Gateway)": "v0",
+    "AgentCore Policy: caller and tenant fence (Cedar)": "v1",
+    "Amazon Bedrock Guardrails: prompt-attack screen on ticket text": "v2",
+    "AgentCore Policy: forbid close_ticket for the summary task (Cedar)": "v3",
+    "Stop on the first denial; durable stop checked at admission (agent hook)": "v4",
+    "Release gate: AgentCore Evaluations must pass": "v5",
+}
+
+
+def build_code(stage: str) -> dict[str, Any]:
+    """The active build's controls, with its Cedar policies read back from AgentCore Policy."""
+    n = STAGES.index(stage)
+    controls = [{"name": k, "on": STAGES.index(v) <= n, "detail": ""} for k, v in CONTROLS.items()]
+    engines = json.loads(agent_param("policy_engines", "{}"))
+    engine = engines.get(stage)
+    policies = []
+    if engine:
+        ctl = boto3.client("bedrock-agentcore-control")
+        for item in ctl.list_policies(policyEngineId=engine).get("policies", []):
+            p = ctl.get_policy(policyEngineId=engine, policyId=item["policyId"])
+            d = p.get("definition", {})
+            text = (d.get("cedar") or d.get("policy") or {}).get("statement", "")
+            policies.append(
+                {"name": p.get("name", ""), "status": p.get("status", ""), "statement": text}
+            )
+    return {
+        "stage": stage,
+        "title": TITLES[stage],
+        "gateway": json.loads(agent_param("gateways", "{}")).get(stage, ""),
+        "policy_engine": engine,
+        "policies": sorted(policies, key=lambda p: p["name"]),
+        "controls": controls,
+    }
+
+
+def agent_param(key: str, default: str) -> str:
+    ssm = boto3.client("ssm")
+    try:
+        return ssm.get_parameter(Name=f"{os.environ['AGENT_PARAM_PREFIX']}/{key}")["Parameter"][
+            "Value"
+        ]
+    except ssm.exceptions.ParameterNotFound:
+        return default
+
+
 class HttpError(Exception):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
@@ -132,6 +179,18 @@ def require(who: dict[str, str], role: str) -> None:
         raise HttpError(403, f"{role} only")
 
 
+def all_tickets() -> list[dict[str, Any]]:
+    """Every tenant's tickets (a demo-sized table): effects are diffed across tenants, so a
+    cross-customer write is caught even though the operator's console shows only their own."""
+    items, kwargs = [], {}
+    while True:
+        page = _tickets.scan(**kwargs)
+        items += page["Items"]
+        if "LastEvaluatedKey" not in page:
+            return items
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 def tickets_for(customer_id: str) -> list[dict[str, Any]]:
     items = _tickets.query(
         KeyConditionExpression="customer_id = :c",
@@ -143,6 +202,17 @@ def tickets_for(customer_id: str) -> list[dict[str, Any]]:
 def demo_state(customer_id: str) -> dict[str, Any]:
     item = _state.get_item(Key={"customer_id": customer_id}).get("Item")
     return item or {"customer_id": customer_id, "active_stage": "v0", "stop_requested": False}
+
+
+def capture_state(st: dict[str, Any], tickets: list[dict[str, Any]]) -> dict[str, Any]:
+    cap = json.loads(st["capture"]) if st.get("capture") else None
+    return {
+        "capture_available": cap is not None,
+        "capture_stale": bool(cap) and cap["fingerprint"] != runs.fingerprint(tickets),
+        "capture_source": cap and cap["stage"],
+        "capture_calls": cap["calls"] if cap else [],
+        "capture_run_id": cap and cap["run_id"],
+    }
 
 
 def public_state(who: dict[str, str]) -> dict[str, Any]:
@@ -172,11 +242,7 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
         "active_stage": stage,
         "active_title": TITLES[stage],
         "active_lesson": LESSONS[stage],
-        "capture_available": False,
-        "capture_stale": False,
-        "capture_source": None,
-        "capture_ticket_count": 0,
-        "capture_run_id": None,
+        **capture_state(st, tickets),
         "tickets": [
             {
                 "ticket_id": t["ticket_id"],
@@ -258,13 +324,18 @@ def claim_run(customer_id: str) -> None:
 def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str, Any]:
     require(who, "operator")
     st = demo_state(who["customer_id"])
-    stage = str(body.get("stage") or st.get("active_stage", "v0"))
-    if stage != "v0":
-        raise HttpError(
-            409, "builds V1–V5 arrive with the per-build gateways; this deployment runs V0"
-        )
-    if body.get("reuse_capture"):
-        raise HttpError(409, "exact-response replay arrives with the per-build gateways")
+    stage = st.get("active_stage", "v0")  # the build is server state, never taken from the body
+    mode = "replay" if body.get("mode") == "replay" else "live"
+    agent_payload: dict[str, Any] = {"operator": who["username"], "stage": stage, "mode": mode}
+    if mode == "replay":
+        cap = capture_state(st, tickets_for(who["customer_id"]))
+        if not cap["capture_available"]:
+            raise HttpError(409, "nothing to replay yet: run the agent live first")
+        if cap["capture_stale"]:
+            raise HttpError(
+                409, "the tickets changed since that response was captured: run live again"
+            )
+        agent_payload["calls"] = cap["capture_calls"]
     session_id = str(body.get("run_id") or runs.uuid7())
     if not RUN_ID.match(session_id):
         raise HttpError(400, "run_id must be a UUIDv7")
@@ -299,21 +370,19 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                     "method": "POST",
                     "path": "/api/run",
                     "run_id": session_id,
-                    "stage": stage,
+                    "build (server state)": stage,
+                    "mode": mode,
                 },
             },
             default=str,
         ),
     )
     try:
-        before = runs.snapshot(tickets_for(who["customer_id"]))
+        read = tickets_for(who["customer_id"])
+        before = runs.snapshot(all_tickets())
         try:
-            agent = invoke_agent(
-                token, session_id, {"run_id": session_id, "operator": who["username"]}
-            )
-            result = runs.run_result(
-                stage, agent, before, runs.snapshot(tickets_for(who["customer_id"]))
-            )
+            agent = invoke_agent(token, session_id, {"run_id": session_id, **agent_payload})
+            result = runs.run_result(stage, agent, before, runs.snapshot(all_tickets()), mode)
         except Exception as exc:  # noqa: BLE001 - every failure is a visible, recorded run outcome
             result = runs.failed(
                 stage, session_id, "AgentCore Runtime", f"{type(exc).__name__}: {exc}"
@@ -321,15 +390,24 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
         emit(
             "run.completed",
             "agent",
-            {"CHANGED": "harmful", "ERROR": "error"}.get(result["status"], "ok"),
-            {"CHANGED": "answer returned · ticket changed", "ERROR": "run failed"}.get(
-                result["status"], "answer returned to " + who["username"]
+            {"CHANGED": "harmful", "ERROR": "error", "STOPPED": "halted", "HALTED": "halted"}.get(
+                result["status"],
+                "denied" if result["status"] in ("HELD", "BLOCKED") else "ok",
             ),
+            {
+                "CHANGED": "answer returned · ticket changed",
+                "ERROR": "run failed",
+                "STOPPED": "refused: agent is stopped",
+                "HALTED": "run ended on the first denial",
+                "HELD": "answer returned · write denied",
+                "BLOCKED": "guardrail blocked the model input",
+            }.get(result["status"], "answer returned to " + who["username"]),
             verdict=result["status"],
             payload=json.dumps(
                 {
                     "verdict": result["status"],
                     "answer": result.get("answer", ""),
+                    "controls": result.get("controls", []),
                     "effects (DynamoDB before/after)": result.get("effects", []),
                     **({"error": result["note"]} if result["status"] == "ERROR" else {}),
                 },
@@ -344,12 +422,23 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
             ),
             ExpressionAttributeValues={
                 ":run": json.dumps(result, default=str),
-                ":before": json.dumps(before),
-                ":src": f"{stage.upper()} agent run",
+                ":before": json.dumps(runs.snapshot(read)),
+                ":src": f"{stage.upper()} agent {'replay' if mode == 'replay' else 'run'}",
                 ":id": session_id,
                 ":stage": stage,
             },
         )
+        cap = (
+            runs.capture(session_id, stage, result["tool_calls"], runs.fingerprint(read))
+            if mode == "live" and result["status"] != "ERROR"
+            else None
+        )
+        if cap:  # the newest live response with a write is what Replay re-sends
+            _state.update_item(
+                Key={"customer_id": who["customer_id"]},
+                UpdateExpression="SET capture = :c",
+                ExpressionAttributeValues={":c": json.dumps(cap)},
+            )
     finally:
         _state.update_item(
             Key={"customer_id": who["customer_id"]}, UpdateExpression="REMOVE busy_until"
@@ -387,23 +476,10 @@ def reset_demo(who: dict[str, str]) -> dict[str, Any]:
     """Back to a clean V0 for this operator's customer: seed tickets only, no stop, no last run."""
     require(who, "operator")
     cid = who["customer_id"]
-    seed = SEED.get(cid, {})
     for t in tickets_for(cid):
-        if t["ticket_id"] not in seed:
+        if t["ticket_id"] not in SEED.get(cid, {}):
             _tickets.delete_item(Key={"customer_id": cid, "ticket_id": t["ticket_id"]})
-    for ticket_id, (subject, text) in seed.items():
-        _tickets.put_item(
-            Item={
-                "customer_id": cid,
-                "ticket_id": ticket_id,
-                "subject": subject,
-                "body": text,
-                "status": "OPEN",
-                "submitted_by": "customer",
-                "untrusted": True,
-                "origin": "seed",
-            }
-        )
+    reseed()
     _state.put_item(
         Item={
             "customer_id": cid,
@@ -413,6 +489,62 @@ def reset_demo(who: dict[str, str]) -> dict[str, Any]:
         }
     )
     return {"reset": True}
+
+
+def reseed() -> None:
+    """Every tenant's seed tickets back to their original text, OPEN and without notes (a run
+    can reach another tenant's ticket, so restoring only the operator's own is not enough)."""
+    for cid, seed in SEED.items():
+        for ticket_id, (subject, text) in seed.items():
+            _tickets.put_item(
+                Item={
+                    "customer_id": cid,
+                    "ticket_id": ticket_id,
+                    "subject": subject,
+                    "body": text,
+                    "status": "OPEN",
+                    "submitted_by": "customer",
+                    "untrusted": True,
+                    "origin": "seed",
+                }
+            )
+
+
+def reopen(cid: str) -> None:
+    """Undo a run's effects but keep the attack: seed tickets restored, portal tickets reopened."""
+    reseed()
+    for t in tickets_for(cid):
+        if t.get("origin") != "seed" and (t.get("status") != "OPEN" or t.get("notes")):
+            _tickets.update_item(
+                Key={"customer_id": cid, "ticket_id": t["ticket_id"]},
+                UpdateExpression="SET #s = :open, notes = :none REMOVE closed_by, closed_reason, closed_at",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":open": "OPEN", ":none": []},
+            )
+
+
+def apply_patch(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+    """Switch the build (next one, or the one named) and reopen the previous run's effects. The
+    captured response and any stop stay: the next build is judged on the same response, and a
+    stop is cleared only on purpose."""
+    require(who, "operator")
+    cid = who["customer_id"]
+    current = demo_state(cid).get("active_stage", "v0")
+    target = str(body.get("stage") or STAGES[min(STAGES.index(current) + 1, len(STAGES) - 1)])
+    if target not in STAGES:
+        raise HttpError(400, "unknown build")
+    if int(demo_state(cid).get("busy_until", 0)) > time.time():
+        raise HttpError(409, "an agent run is in progress")
+    reopen(cid)
+    _state.update_item(
+        Key={"customer_id": cid},
+        UpdateExpression="SET active_stage = :t, store_change_source = :src REMOVE last_run, run_id, before_tickets",
+        ExpressionAttributeValues={
+            ":t": target,
+            ":src": f"Applied {target.upper()}; effects reopened",
+        },
+    )
+    return {"active_stage": target, "title": TITLES[target]}
 
 
 def request_stop(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -473,18 +605,8 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         if method == "GET" and path == "/api/state":
             return reply(200, public_state(who))
         if method == "GET" and path == "/api/code":
-            stage = demo_state(who["customer_id"]).get("active_stage", "v0")
-            return reply(
-                200,
-                {
-                    "stage": stage,
-                    "title": TITLES[stage],
-                    "path": "AgentCore Gateway policies for this build",
-                    "source": "Per-build Gateway policies and agent hooks are shown here once builds are live.",
-                    "diff": "",
-                    "shared_pipeline": "agent on AgentCore Runtime",
-                },
-            )
+            require(who, "operator")
+            return reply(200, build_code(demo_state(who["customer_id"]).get("active_stage", "v0")))
         if method == "POST" and path == "/api/portal/tickets":
             return reply(200, submit_ticket(who, body))
         if method == "GET" and path.startswith("/api/runs/") and path.endswith("/events"):
@@ -495,7 +617,7 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         if method == "POST" and path == "/api/stop":
             return reply(200, request_stop(who, body))
         if method == "POST" and path == "/api/patch":
-            raise HttpError(409, "V1–V5 arrive with the per-build gateways (next milestone)")
+            return reply(200, apply_patch(who, body))
         if method == "POST" and path == "/api/run":
             return reply(200, run_agent(who, access_token(event), body))
         raise HttpError(404, f"{method} {path} is not available yet")

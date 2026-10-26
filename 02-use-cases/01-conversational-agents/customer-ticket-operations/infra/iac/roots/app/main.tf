@@ -138,7 +138,7 @@ data "aws_iam_policy_document" "api" {
     sid = "Tables"
     actions = [
       "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
-      "dynamodb:DeleteItem", "dynamodb:Query",
+      "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan",
     ]
     resources = [aws_dynamodb_table.tickets.arn, aws_dynamodb_table.state.arn]
   }
@@ -151,8 +151,13 @@ data "aws_iam_policy_document" "api" {
     # written by later roots (web, agent); read at request time to avoid a deploy-order cycle
     sid     = "LaterRootOutputs"
     actions = ["ssm:GetParameter"]
-    resources = [for p in ["edge/client_id", "agent/runtime_arn", "agent/model_id"] :
+    resources = [for p in ["edge/client_id", "agent/runtime_arn", "agent/model_id", "agent/policy_engines", "agent/gateways"] :
     "arn:aws:ssm:${var.region}:${var.account_id}:parameter${local.ssm}/${p}"]
+  }
+  statement {
+    sid       = "ReadBuildPolicies" # the console's Controls view shows the live Cedar text
+    actions   = ["bedrock-agentcore:ListPolicies", "bedrock-agentcore:GetPolicy"]
+    resources = ["arn:aws:bedrock-agentcore:${var.region}:${var.account_id}:policy-engine/*"]
   }
 }
 

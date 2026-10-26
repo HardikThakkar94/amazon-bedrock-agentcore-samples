@@ -71,9 +71,11 @@ def short_name(tool: str) -> str:
 class ToolCall:
     tool: str
     input: dict[str, Any]
-    status: str = "PENDING"  # OK | ERROR (the Gateway or the tool refused)
+    status: str = "PENDING"  # OK | ERROR (the Gateway or the tool refused) | NOT_EVALUATED
     result: str = ""
     seconds: float = 0.0
+    decision: str = ""  # ALLOW | DENY from AgentCore Policy, on builds whose gateway has one
+    started: float = 0.0
 
 
 MODEL_LABEL = "Llama 4 Maverick"
@@ -175,6 +177,20 @@ class Recorder:
     model_id: str = ""
     calls: list[ToolCall] = field(default_factory=list)
     turn: int = 0
+    stage: str = "v0"
+    screen: Any = None  # controls.Screen from V2
+    contain: Any = None  # controls.Containment from V4
+    blocked: bool = False
+    controls: list[dict[str, str]] = field(default_factory=list)
+
+    def control(self, name: str, status: str) -> None:
+        self.controls.append({"control": name, "status": status})
+
+    @property
+    def policy(self) -> bool:
+        from sec310_agent.controls import at_least
+
+        return at_least(self.stage, "v1")
 
     def register_hooks(self, registry: Any) -> None:
         from strands.hooks import (
@@ -194,7 +210,13 @@ class Recorder:
             self.events.emit(*args, **kw)
 
     def model_start(self, event: Any) -> None:
+        from sec310_agent.controls import MAX_TURNS
+
         self.turn += 1
+        if self.turn > MAX_TURNS:  # a bounded loop: the run cannot spin forever
+            event.cancel = f"turn limit ({MAX_TURNS}) reached"
+            self.control("Turn limit", f"STOPPED at {MAX_TURNS} turns")
+            return
         agent = getattr(event, "agent", None)
         messages = list(getattr(agent, "messages", None) or [])
         self.emit(
@@ -263,9 +285,28 @@ class Recorder:
             "run_id": self.run_id,
         }
         call = ToolCall(short_name(event.tool_use["name"]), dict(event.tool_use["input"]))
-        call.seconds = time.monotonic()
+        call.seconds, call.started = time.monotonic(), time.time()
         self.calls.append(call)
         ticket = call.input.get("ticket_id")
+        refuse = ""
+        if self.contain is not None and self.contain.halted:
+            refuse = "not evaluated: an earlier denial ended this run"
+        elif call.tool in WRITE_TOOLS and self.screen is not None and self.screen.unavailable:
+            refuse = "refused: the guardrail could not screen the ticket text (fails closed)"
+        if refuse:
+            event.cancel_tool = refuse
+            call.status, call.result, call.decision = "NOT_EVALUATED", refuse, "NOT_EVALUATED"
+            self.emit(
+                "tool.skipped",
+                "agent",
+                "halted",
+                f"{call.tool}{f' {ticket}' if ticket else ''} not evaluated",
+                tool=call.tool,
+                chip=event.tool_use.get("toolUseId", call.tool),
+                chip_status="halted",
+                detail={"ticket_id": ticket, "reason": refuse},
+            )
+            return
         self.emit(
             "tool.call",
             "gateway",
@@ -295,7 +336,7 @@ class Recorder:
             ),
             None,
         )
-        if call is None:
+        if call is None or call.status == "NOT_EVALUATED":
             return
         result = event.result or {}
         call.status = (
@@ -305,9 +346,44 @@ class Recorder:
         call.result = text[:2000]
         call.seconds = round(time.monotonic() - call.seconds, 3)
         ticket = call.input.get("ticket_id")
+        from sec310_agent.controls import denied_by_policy
+
+        if self.policy:
+            call.decision = (
+                "DENY"
+                if call.status == "ERROR" and denied_by_policy(text)
+                else ("ALLOW" if call.status == "OK" else "")
+            )
+        if call.decision:
+            # the Gateway asked AgentCore Policy before invoking the tool: show that hop in order
+            self.emit(
+                "policy.decision",
+                "policy",
+                "denied" if call.decision == "DENY" else "ok",
+                f"{call.decision} {call.tool}{f' {ticket}' if ticket else ''}",
+                edge="gateway>policy",
+                at=call.started + 0.001,
+                decision=call.decision,
+                tool=call.tool,
+                detail={"ticket_id": ticket} if ticket else None,
+                payload=_payload(
+                    {
+                        "engine": "AgentCore Policy (Cedar), ENFORCE",
+                        "principal": f'AgentCore::OAuthUser::"{self.actor["user_sub"]}"',
+                        "action": f'AgentCore::Action::"{event.tool_use["name"]}"',
+                        "context.input": {k: v for k, v in call.input.items() if k != "run_id"},
+                        "decision": call.decision,
+                        **({"gateway said": text[:600]} if call.decision == "DENY" else {}),
+                    }
+                ),
+            )
+        if call.decision == "DENY":
+            self.control("AgentCore Policy", f"DENY {call.tool}{f' {ticket}' if ticket else ''}")
         if call.status == "ERROR" and "ValidationException" in text:
             # the Gateway's input schema caught malformed arguments: the model's slip, not a control
             chip, label = "error", f"{call.tool} · invalid arguments"
+        elif call.decision == "DENY":
+            chip, label = "denied", f"{call.tool}{f' {ticket}' if ticket else ''} denied by policy"
         elif call.status == "ERROR":
             chip, label = "denied", f"{call.tool} refused"
         elif call.tool == "close_ticket" and CLOSED.search(call.result):
@@ -333,7 +409,9 @@ class Recorder:
                 }
             ),
         )
-        if call.tool == "list_tickets" and FROM_PORTAL.search(call.result):
+        if call.tool == "list_tickets" and call.status == "OK" and self.screen is not None:
+            self.screen_result(event, text)
+        if call.tool == "list_tickets" and FROM_PORTAL.search(call.result) and not self.blocked:
             self.emit(
                 "context.attacker_text",
                 "agent",
@@ -343,6 +421,75 @@ class Recorder:
                     "note": "a ticket submitted through the customer portal is now in the prompt"
                 },
             )
+        if call.decision == "DENY" and self.contain is not None and not self.contain.halted:
+            self.contain.halt(f"AgentCore Policy denied {call.tool} {ticket or ''}".strip())
+            self.control("Containment", "HALTED on the first denial · agent stopped")
+            agent = getattr(event, "agent", None)
+            if agent is not None:  # tools already requested finish (as NOT_EVALUATED), then stop
+                agent.cancel(
+                    message=f"Run ended: the Gateway denied {call.tool} {ticket or ''}. "
+                    "The agent is stopped until an operator resets it.",
+                    after_current_tools=True,
+                )
+            self.emit(
+                "run.halted",
+                "agent",
+                "halted",
+                "first denial · run ended, agent stopped",
+                detail={"reason": self.contain.reason},
+                payload=_payload(
+                    {
+                        "hook": "AfterToolCallEvent → agent.cancel(after_current_tools=True)",
+                        "durable stop": {"stop_requested": True, "stop_source": "automatic"},
+                        "reason": self.contain.reason,
+                    }
+                ),
+            )
+
+    def screen_result(self, event: Any, text: str) -> None:
+        """V2: Amazon Bedrock Guardrails screens the ticket text before the model reads it."""
+        action, trace = self.screen.check(text)
+        hit = action != "NONE"
+        if hit:
+            self.blocked = True
+            withheld = (
+                "[ticket text withheld: Amazon Bedrock Guardrails flagged a prompt attack]"
+                if action == "GUARDRAIL_INTERVENED"
+                else "[ticket text withheld: the guardrail could not be reached]"
+            )
+            event.result = {**event.result, "content": [{"text": withheld}]}
+            agent = getattr(event, "agent", None)
+            if agent is not None:
+                agent.cancel(
+                    message="Blocked: the ticket text was flagged as a prompt attack, so the "
+                    "agent did not act on it.",
+                    after_current_tools=True,
+                )
+        else:
+            event.result = {**event.result, "content": [{"text": self.screen.wrap(text)}]}
+        self.control(
+            "Bedrock Guardrails",
+            {
+                "GUARDRAIL_INTERVENED": "BLOCKED prompt attack",
+                "UNAVAILABLE": "UNAVAILABLE · fails closed",
+            }.get(action, "NONE · text passed, wrapped in nonce tags"),
+        )
+        self.emit(
+            "guardrail.intervened" if hit else "guardrail.checked",
+            "agent",
+            "denied" if hit else "ok",
+            "guardrail: prompt attack blocked" if hit else "guardrail: no attack detected",
+            payload=_payload(
+                {
+                    "operation": "bedrock-runtime:ApplyGuardrail",
+                    "guardrailIdentifier": self.screen.guardrail_id,
+                    "source": "INPUT",
+                    "action": action,
+                    **trace,
+                    "model sees": event.result["content"][0]["text"][:3000],
+                }
+            ),
+        )
 
 
 def run(

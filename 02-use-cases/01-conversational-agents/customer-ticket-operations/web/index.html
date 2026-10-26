@@ -58,7 +58,8 @@ header .sp{flex:1}
 .step small{display:block;font:500 14px var(--sans);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .step.on{background:rgba(255,98,0,.12);box-shadow:inset 0 3px 0 var(--orange)}
 .step.on small{color:var(--ink-2)}
-.step.locked{opacity:.55}
+.step{font:inherit;color:inherit;text-align:left;background:transparent;border:0;border-left:1px solid var(--line-dim);cursor:pointer}
+.step:hover:not(.on){background:rgba(245,243,239,.05)}
 .actions{display:flex;gap:10px;flex:none}
 .btn{height:46px;padding:0 20px;border-radius:999px;border:1px solid var(--line);background:transparent;font:650 17px var(--sans);white-space:nowrap}
 .btn:hover:not(:disabled){border-color:var(--ink)}
@@ -75,7 +76,8 @@ header .sp{flex:1}
 .verdict[data-v=NO_EFFECT]{border-color:var(--ink-2);color:var(--ink)}
 .verdict[data-v=CHANGED],.verdict[data-v=ERROR]{background:var(--pink);border-color:var(--pink);color:#07070f}
 .verdict[data-v=HELD]{background:var(--green);border-color:var(--green);color:#07070f}
-.verdict[data-v=STOPPED]{background:var(--yellow);border-color:var(--yellow);color:#07070f}
+.verdict[data-v=BLOCKED]{background:var(--green);border-color:var(--green);color:#07070f}
+.verdict[data-v=HALTED],.verdict[data-v=STOPPED]{background:var(--yellow);border-color:var(--yellow);color:#07070f}
 .ticket{display:grid;grid-template-columns:76px minmax(0,1fr) auto;gap:4px 16px;align-items:center;padding:14px 4px;border-top:1px solid var(--line-dim)}
 .ticket .id{font:650 20px var(--mono)}
 .ticket .subj{font:600 20px var(--sans)}
@@ -90,6 +92,10 @@ header .sp{flex:1}
 .lines dd{font:500 19px/1.4 var(--sans)}
 .lines dd code{font:500 17px var(--mono);color:var(--pink)}
 .lines dd.ok code{color:var(--ink)}
+.lines dd .held{color:var(--green)} .lines dd .hit{color:var(--pink)} .lines dd .halt{color:var(--yellow)}
+.code pre{font:400 14px/1.5 var(--mono);color:var(--ink-2);white-space:pre-wrap;margin:6px 0 14px;padding:10px 12px;border:1px solid var(--line-dim);border-radius:10px;background:#05050b}
+.code h4{font:650 15px var(--sans);letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3);margin-top:8px}
+.code .on{color:var(--green)} .code .off{color:var(--ink-3)}
 .empty{color:var(--ink-3)}
 
 /* ── live architecture panel (top-to-bottom flow) ── */
@@ -248,8 +254,9 @@ header .sp{flex:1}
   <div class="steps" id="steps"></div>
   <div class="actions">
     <button class="btn primary" id="runBtn">Run agent</button>
-    <button class="btn" id="replayBtn" disabled title="Replay arrives with the V1–V5 builds">Replay last</button>
-    <button class="btn" id="nextFix" disabled title="V1–V5 builds are the next milestone">Apply next fix →</button>
+    <button class="btn" id="replayBtn" disabled title="Re-send the last captured response through this build, with no model call">Replay last</button>
+    <button class="btn" id="nextFix">Apply next fix →</button>
+    <button class="btn" id="codeBtn" title="This build's controls: Cedar policies, guardrail and hooks">&lt;/&gt; Controls</button>
   </div>
 </div>
 
@@ -262,6 +269,7 @@ header .sp{flex:1}
       <dt>Agent said</dt><dd id="said" class="empty">Run the agent to see its answer.</dd>
       <dt>Agent tried</dt><dd id="tried" class="empty">—</dd>
       <dt>Boundary</dt><dd id="boundary" class="empty">—</dd>
+      <dt>Effect</dt><dd id="effect" class="empty">—</dd>
     </dl>
   </section>
   <section class="card walk" aria-label="Step through the run">
@@ -394,7 +402,12 @@ function caption(step){
     return ['', 'The tool result comes back to the agent.'];
   }
   if(e0.kind === 'run.completed') return e0.verdict === 'CHANGED' ? ['harmful', `Run complete. ${u} gets an answer, and <b>a ticket changed</b> that nobody approved.`]
-    : e0.verdict === 'ERROR' ? ['error', `The run failed before it finished: <b>${esc(STATE?.last_run?.note || 'see the trace')}</b>`] : ['', `Run complete. ${u} gets the answer; <b>nothing changed</b>.`];
+    : e0.verdict === 'ERROR' ? ['error', `The run failed before it finished: <b>${esc(STATE?.last_run?.note || 'see the trace')}</b>`]
+    : e0.verdict === 'HELD' ? ['denied', `Run complete. The Gateway <b>denied the write</b>; nothing changed.`]
+    : e0.verdict === 'BLOCKED' ? ['denied', `The guardrail <b>blocked the injected text</b> before the model could act on it.`]
+    : e0.verdict === 'HALTED' ? ['halted', `The first denial <b>ended the run</b>. The agent is now stopped until someone resets it.`]
+    : e0.verdict === 'STOPPED' ? ['halted', `The agent is stopped: <b>the run was refused at admission</b>, with no model call.`]
+    : ['', `Run complete. ${u} gets the answer; <b>nothing changed</b>.`];
   return ['', esc(e0.label)];
 }
 
@@ -415,7 +428,7 @@ function fold(n){
     if(ev.kind === 'policy.decision' && ev.decision === 'DENY') st.stamp = true;
     if(ev.chip) st.chips[ev.chip] = {s: ev.chip_status, label: ev.tool + (ev.detail?.ticket_id ? ' ' + ev.detail.ticket_id : (ev.label.match(/ (A|B)-\d+/)?.[0] || ''))};
     if(ev.kind === 'store.write') st.effects.add(ev.effect?.ticket_id);
-    if(ev.kind === 'run.completed' && st.n.agent.s === 'active') st.n.agent.s = ev.status === 'harmful' ? 'harmful' : 'ok';
+    if(ev.kind === 'run.completed' && st.n.agent.s === 'active') st.n.agent.s = ['harmful','halted','denied'].includes(ev.status) ? ev.status : 'ok';
   }
   // the node the current step lands on is the one the audience should look at
   const last = STEPS[n - 1]?.events.at(-1);
@@ -520,7 +533,7 @@ function renderTickets(st){
     return `<div class="ticket" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)}</span>
       <span class="status ${esc(status)}">${esc(status)}</span>${portal ? `<span class="attack">${esc(t.body)}</span><span class="from">submitted through the customer portal</span>` : ''}</div>`;
   }).join('') || '<p class="empty" style="padding:14px 4px">No tickets.</p>';
-  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', HELD:'HELD', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
+  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', HELD:'HELD', BLOCKED:'BLOCKED', HALTED:'HALTED', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
   else $('#verdict').hidden = true;
 }
 function renderLines(st){
@@ -529,16 +542,31 @@ function renderLines(st){
   if(!done){ $('#said').textContent = '…'; $('#said').className = 'empty'; }
   else { $('#said').textContent = run.answer || run.note || '—'; $('#said').className = ''; }
   const writes = run.proposals || [];
-  if(done && run.status === 'ERROR'){ for(const id of ['#tried', '#boundary']){ $(id).textContent = '—'; $(id).className = 'empty'; } return; }
+  if(done && run.status === 'ERROR'){ for(const id of ['#tried', '#boundary', '#effect']){ $(id).textContent = '—'; $(id).className = 'empty'; } return; }
+  if(!done){ $('#effect').textContent = '…'; $('#effect').className = 'empty'; }
   if(!done){ $('#tried').textContent = '…'; $('#tried').className = 'empty'; $('#boundary').textContent = '…'; return; }
   $('#tried').innerHTML = writes.length ? writes.map(p => `<code>${esc(p.operation)} ${esc(p.ticket_id)}</code>`).join(', ') : 'only read the tickets';
   $('#tried').className = writes.length ? '' : 'ok';
   const executed = (run.effects || []).filter(e => e.status === 'EXECUTED');
-  $('#boundary').textContent = !done ? '…' : build() === 0 ? (executed.length ? 'none in this build · the call went through' : 'none in this build') : (run.controls || []).map(c => `${c.control}: ${c.status}`).join(' · ') || '—';
+  const B = build(), ctl = run.controls || [];
+  const tone = c => /DENY|BLOCK|INTERVEN|HALT|REFUS|STOP/.test(c.status) ? (/HALT|REFUS|STOP/.test(c.status) ? 'halt' : 'held') : /ALLOW|PASS|NONE/.test(c.status) ? '' : 'hit';
+  $('#boundary').innerHTML = ctl.length ? ctl.map(c => `${esc(c.control)}: <span class="${tone(c)}">${esc(c.status)}</span>`).join(' · ')
+    : B === 0 ? (executed.length ? 'none in this build · the call went through' : 'none in this build') : 'no write was proposed';
+  $('#boundary').className = '';
+  const mine = STATE?.persona?.customer_id;
+  $('#effect').innerHTML = executed.length ? executed.map(e => `<code>${esc(e.target)} ${esc(e.before)} → ${esc(e.after)}</code>${e.customer_id && e.customer_id !== mine ? ` <span class="hit">in ${esc(e.customer_id)}</span>` : ''}`).join(', ')
+    : '<span class="held">nothing changed in DynamoDB</span>';
+  $('#effect').className = executed.length ? '' : 'ok';
 }
 function renderChrome(){
   const B = build();
-  $('#steps').innerHTML = BUILDS.map(([id, name, sub], i) => `<div class="step ${i === B ? 'on' : i > 0 ? 'locked' : ''}"><b>${id} · ${name}</b><small>${sub}</small></div>`).join('');
+  $('#steps').innerHTML = BUILDS.map(([id, name, sub], i) => `<button class="step${i === B ? ' on' : ''}" data-stage="v${i}" aria-current="${i === B}" title="Switch to ${id}"><b>${id} · ${name}</b><small>${sub}</small></button>`).join('');
+  const cap = STATE?.capture_available, stale = STATE?.capture_stale, idle = !polling;
+  $('#replayBtn').disabled = !cap || stale || !idle;
+  $('#replayBtn').title = !cap ? 'Run the agent live first: a response with a write is captured for replay'
+    : stale ? 'The tickets changed since the capture: run live again' : `Re-send the ${STATE.capture_source.toUpperCase()} response through ${BUILDS[B][0]}, with no model call`;
+  $('#nextFix').disabled = B >= 5 || !idle;
+  $('#nextFix').textContent = B >= 5 ? 'All fixes applied' : `Apply ${BUILDS[B + 1][0]} · ${BUILDS[B + 1][1]} →`;
   $('#liveTxt').textContent = STATE?.live_model === false ? 'REHEARSAL' : 'LIVE';
   $('#stopPill').hidden = !STATE?.stop_requested;
   $('#mStop').firstChild.textContent = STATE?.stop_requested ? 'Clear stop' : 'Stop agent';
@@ -578,13 +606,13 @@ async function pollOnce(){
   if(fresh.length){ RUN.events.push(...fresh); RUN.events.sort((a, b) => a.sk < b.sk ? -1 : 1); STEPS = toSteps(RUN.events); renderPanel(); if(mode === 'auto' && !busy) schedule(); }
   return RUN.events.some(e => e.kind === 'run.completed');
 }
-async function runAgent(){
+async function runAgent(mode = 'live'){
   if(polling) return;
   closeTrace();
   RUN = {run_id: uuid7(), events: []}; STEPS = []; N = 0; clearTimeout(timer);
   $('#runBtn').disabled = true; $('#runBtn').textContent = 'Running…';
   polling = setInterval(() => pollOnce().catch(() => {}), 500); renderPanel();
-  try { await api('/api/run', {run_id: RUN.run_id, stage: STATE?.active_stage || 'v0'}); }
+  try { await api('/api/run', {run_id: RUN.run_id, mode}); }
   catch(e){ toast(e.message, true); }
   finally {
     for(let i = 0; i < 6; i++){ if(await pollOnce().catch(() => false)) break; await new Promise(r => setTimeout(r, 400)); }
@@ -620,9 +648,28 @@ function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open'))
 /* ── operator actions ── */
 async function resetDemo(){ if(polling) return; if(!confirm('Reset to a clean V0? Portal tickets are removed and seed tickets reopened.')) return;
   try { await api('/api/reset', {}); RUN = null; STEPS = []; N = 0; await refresh(false); toast('Demo reset to a clean V0.'); } catch(e){ toast(e.message, true); } }
+async function patch(stage){
+  if(polling) return;
+  try { const r = await api('/api/patch', stage ? {stage} : {}); RUN = null; STEPS = []; N = 0; await refresh(false); toast(`${r.active_stage.toUpperCase()} · ${r.title}. Effects reopened; run or replay.`); }
+  catch(e){ toast(e.message, true); }
+}
+async function openCode(){
+  let c; try { c = await api('/api/code'); } catch(e){ toast(e.message, true); return; }
+  let hooks = ''; try { const r = await fetch('/code/controls.py.txt', {credentials: 'same-origin'}); if(r.ok) hooks = await r.text(); } catch(_) {}
+  const row = (name, on, detail) => `<div class="ev"><div class="k"><span class="${on ? 'on' : 'off'}">${on ? '●' : '○'}</span> ${esc(name)}</div>${detail ? `<pre>${esc(detail)}</pre>` : ''}</div>`;
+  $('#drTitle').textContent = `Controls · ${c.stage.toUpperCase()} · ${c.title}`;
+  $('#drBody').innerHTML = `<div class="code">` + c.controls.map(x => row(x.name, x.on, x.detail)).join('')
+    + (c.policies.length ? `<h4>AgentCore Policy · ${esc(c.policy_engine || '')}</h4>` + c.policies.map(p => `<pre>// ${esc(p.name)} (${esc(p.status)})
+${esc(p.statement)}</pre>`).join('') : `<h4>AgentCore Policy</h4><pre>no policy engine on this build's gateway</pre>`)
+    + (hooks ? `<h4>Agent hooks · sec310_agent/controls.py</h4><pre>${esc(hooks)}</pre>` : '') + `</div>`;
+  const d = $('#drawer'); d.classList.add('open'); d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'agent'; $('#drClose').focus();
+}
 async function toggleStop(){ try { await api('/api/stop', {stop: !STATE?.stop_requested}); await refresh(false); } catch(e){ toast(e.message, true); } }
 
-$('#runBtn').onclick = runAgent; $('#next').onclick = next; $('#back').onclick = back;
+$('#runBtn').onclick = () => runAgent('live'); $('#replayBtn').onclick = () => runAgent('replay');
+$('#nextFix').onclick = () => patch(null);
+$('#steps').onclick = e => { const b = e.target.closest('.step'); if(b && !b.classList.contains('on')) patch(b.dataset.stage); };
+$('#codeBtn').onclick = openCode; $('#next').onclick = next; $('#back').onclick = back;
 $('#mStep').onclick = () => setMode('step'); $('#mAuto').onclick = () => setMode('auto');
 $('#drClose').onclick = closeTrace;
 $('#mReset').onclick = () => { closeMenu(); resetDemo(); }; $('#mStop').onclick = () => { closeMenu(); toggleStop(); };

@@ -34,12 +34,21 @@ class Events:
         return self._table
 
     def emit(
-        self, kind: str, node: str, status: str, label: str, edge: str | None = None, **extra: Any
+        self,
+        kind: str,
+        node: str,
+        status: str,
+        label: str,
+        edge: str | None = None,
+        at: float | None = None,
+        **extra: Any,
     ) -> dict:
+        """``at`` (epoch seconds) places an event where it happened when it is learned later,
+        e.g. a policy decision the agent only infers from the Gateway's reply."""
         with self._lock:
             self._n += 1
             n = self._n
-        now = time.time()
+        now = at if at is not None else time.time()
         item = {
             "run_id": self.run_id,
             "sk": f"{int(now * 1000):013d}#{self.source}#{n:03d}",

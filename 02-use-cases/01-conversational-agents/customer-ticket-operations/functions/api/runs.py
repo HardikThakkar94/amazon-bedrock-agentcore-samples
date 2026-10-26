@@ -7,11 +7,14 @@ The verdict comes from the before/after diff of the ticket table, so a run whose
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import time
 from typing import Any
 
 WRITES = ("close_ticket", "add_note")
+TOOLS = ("list_tickets", *WRITES)
 
 
 def uuid7() -> str:
@@ -29,9 +32,35 @@ def uuid7() -> str:
     return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
 
 
+def fingerprint(tickets: list[dict[str, Any]]) -> str:
+    """What the model read: ticket ids and text (not status, which the run itself may change).
+    A capture replays only against the same tickets; any edit or new ticket makes it stale."""
+    rows = sorted((t["ticket_id"], t.get("subject", ""), t.get("body", "")) for t in tickets)
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16]
+
+
+def capture(run_id: str, stage: str, tool_calls: list[dict[str, Any]], prints: str) -> dict | None:
+    """The live run's tool calls, as the model proposed them, for exact-response replay.
+    ``actor`` and ``run_id`` are dropped: on replay the runtime sets them from the caller's token."""
+    calls = [
+        {
+            "tool": c["tool"],
+            "input": {
+                k: v for k, v in (c.get("input") or {}).items() if k not in ("actor", "run_id")
+            },
+        }
+        for c in tool_calls
+        if c.get("tool") in TOOLS
+    ]
+    if not any(c["tool"] in WRITES for c in calls):
+        return None  # nothing consequential to replay
+    return {"run_id": run_id, "stage": stage, "fingerprint": prints, "calls": calls}
+
+
 def snapshot(tickets: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {
         t["ticket_id"]: {
+            "customer_id": t.get("customer_id", ""),
             "subject": t.get("subject", ""),
             "body": t.get("body", ""),
             "status": t.get("status", "OPEN"),
@@ -55,6 +84,7 @@ def effects(
                 {
                     "operation": op,
                     "target": ticket_id,
+                    "customer_id": a.get("customer_id", ""),
                     "status": "EXECUTED",
                     "before": b["status"],
                     "after": a["status"],
@@ -65,6 +95,7 @@ def effects(
                 {
                     "operation": "add_note",
                     "target": ticket_id,
+                    "customer_id": a.get("customer_id", ""),
                     "status": "EXECUTED",
                     "before": None,
                     "after": f"{a['notes']} note(s)",
@@ -86,6 +117,7 @@ def proposals(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "ticket_id": args.get("ticket_id", ""),
                 "reason": args.get("reason") or args.get("note") or "",
                 "gateway": call.get("status", ""),
+                "decision": call.get("decision", ""),
             }
         )
     return out
@@ -100,12 +132,16 @@ def refused(
     for call in tool_calls:
         args = call.get("input") or {}
         key = (call.get("tool"), args.get("ticket_id", ""))
-        if call.get("tool") in WRITES and call.get("status") == "ERROR" and key not in done:
+        status = {"ERROR": "DENIED_GATEWAY", "NOT_EVALUATED": "NOT_EVALUATED"}.get(
+            call.get("status")
+        )
+        if call.get("tool") in WRITES and status and key not in done:
             out.append(
                 {
                     "operation": key[0],
                     "target": key[1],
-                    "status": "DENIED_GATEWAY",
+                    "customer_id": args.get("customer_id", ""),
+                    "status": status,
                     "before": None,
                     "after": None,
                 }
@@ -113,23 +149,42 @@ def refused(
     return out
 
 
-def run_result(stage: str, agent: dict[str, Any], before: dict, after: dict) -> dict[str, Any]:
+def verdict(agent: dict[str, Any], executed: list[dict[str, Any]]) -> str:
+    """CHANGED if the store changed, whatever else happened; otherwise which control held."""
+    if executed:
+        return "CHANGED"
+    if agent.get("refused"):
+        return "STOPPED"  # refused at admission: the agent is latched stopped
+    if agent.get("halted"):
+        return "HALTED"  # V4: the first denial ended the run
+    if agent.get("blocked"):
+        return "BLOCKED"  # V2: the guardrail stopped the model call
+    if any(c.get("decision") == "DENY" for c in agent.get("tool_calls", [])):
+        return "HELD"  # the Gateway's policy denied a proposed write
+    return "NO_EFFECT"
+
+
+def run_result(
+    stage: str, agent: dict[str, Any], before: dict, after: dict, mode: str = "live"
+) -> dict[str, Any]:
     calls = agent.get("tool_calls", [])
     executed = effects(before, after)
     reads = [c for c in calls if c.get("tool") == "list_tickets"]
+    how = "replayed with no model call" if mode == "replay" else "through AgentCore Gateway"
     note = (
-        f"{len(reads)} list_tickets call(s) and {len(calls) - len(reads)} write call(s) through AgentCore Gateway; "
+        f"{len(reads)} list_tickets call(s) and {len(calls) - len(reads)} write call(s) {how}; "
         "effects are read back from DynamoDB, not taken from the agent's answer."
     )
     return {
         "run_id": agent.get("run_id", ""),
         "stage": stage,
+        "mode": mode,
         "source": f"AgentCore Runtime · {agent.get('model_id', '')}",
-        "status": "CHANGED" if executed else "NO_EFFECT",
-        "answer": agent.get("answer", ""),
+        "status": verdict(agent, executed),
+        "answer": agent.get("answer", "") or agent.get("refused", ""),
         "proposals": proposals(calls),
         "links": list(agent.get("links", [])),
-        "controls": [],
+        "controls": list(agent.get("controls", [])),
         "effects": executed + refused(calls, executed),
         "note": note,
         "regression": None,

@@ -7,7 +7,9 @@ BUILD_ID="b${BUILD_ID//[^A-Za-z0-9._-]/}"
 OUT="$(mktemp -d)"
 mkdir -p "$OUT/lambda" "$OUT/web"
 
-zip_dir() { (cd "$1" && zip -q -X -r "$2" . -x '__pycache__/*' '*.pyc'); }
+# Fixed timestamps and order make the zip byte-identical for unchanged code, so Terraform sees no
+# change (and does not redeploy a Lambda) unless its source actually changed.
+zip_dir() { (cd "$1" && find . -exec touch -h -t 202601010000 {} + && find . -type f ! -path '*/__pycache__/*' ! -name '*.pyc' | LC_ALL=C sort | zip -q -X -D "$2" -@); }
 
 # Lambda functions (one directory each under functions/, plus the demo tool Lambda)
 for fn in functions/*/; do
@@ -21,8 +23,9 @@ for fn in functions/*/; do
 done
 stage="$(mktemp -d)"; cp scripts/live/tool_lambda.py "$stage/"; zip_dir "$stage" "$OUT/lambda/evidence_tools.zip"
 
-# Web bundle
+# Web bundle, plus the agent's per-build controls as served source for the console's code view
 cp -R web/. "$OUT/web/"
+mkdir -p "$OUT/web/code" && cp src/sec310_agent/controls.py "$OUT/web/code/controls.py.txt"
 
 # Agent image (linux/arm64, native on this ARM build host). Tagged by a hash of its sources, so an
 # unchanged agent is not rebuilt and an immutable tag always means the same code.

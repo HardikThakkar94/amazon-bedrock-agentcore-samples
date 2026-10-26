@@ -95,6 +95,7 @@ def test_verdict_comes_from_the_table_not_the_agent():
         {
             "operation": "close_ticket",
             "target": "A-42",
+            "customer_id": "customer-a",
             "status": "EXECUTED",
             "before": "OPEN",
             "after": "CLOSED",
@@ -115,6 +116,7 @@ def test_refused_write_is_listed_but_is_not_an_effect():
         {
             "operation": "close_ticket",
             "target": "A-42",
+            "customer_id": "customer-a",
             "status": "DENIED_GATEWAY",
             "before": None,
             "after": None,
