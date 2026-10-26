@@ -85,6 +85,8 @@ header .sp{flex:1}
 .ticket .from{grid-column:2/3;font:500 14px var(--sans);color:var(--ink-3)}
 .status{font:750 14px var(--sans);letter-spacing:.06em;padding:5px 11px;border-radius:999px;border:1px solid rgba(110,231,80,.5);color:var(--green)}
 .status.CLOSED{border-color:var(--pink);background:var(--pink);color:#07070f}
+.other{margin-top:14px;padding:10px 4px 2px;border-top:1px dashed var(--pink);font:550 15px var(--sans);color:var(--ink-3)}.other b{color:var(--pink)}
+.ticket.foreign .tenant{margin-left:10px;padding:2px 8px;border:1px solid rgba(255,77,139,.55);border-radius:999px;font:600 13px var(--mono);color:var(--pink);vertical-align:middle}
 .ticket.flash{animation:flash 900ms var(--ease)}
 @keyframes flash{0%{background:rgba(255,77,139,.28)}100%{background:transparent}}
 .lines{margin-top:18px;border-top:1px solid var(--line);padding-top:14px;display:grid;grid-template-columns:150px minmax(0,1fr);gap:10px 16px}
@@ -242,7 +244,6 @@ header .sp{flex:1}
   <div><div class="event"><img src="/assets/reinvent-wordmark.png" alt="AWS re:Invent"><span>2026</span></div><h1>Build a bounded agent, live</h1></div>
   <span class="sp"></span>
   <span class="pill stop" id="stopPill" hidden><i></i>Stop requested</span>
-  <span class="pill" id="livePill"><i></i><span id="liveTxt">LIVE</span></span>
   <div class="gear"><button id="gearBtn" aria-haspopup="menu" aria-expanded="false" title="Operator menu">⚙</button>
     <div class="menu" id="menu" role="menu">
       <div id="personas" hidden></div>
@@ -536,6 +537,13 @@ function renderTickets(st){
     return `<div class="ticket" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)}</span>
       <span class="status ${esc(status)}">${esc(status)}</span>${portal ? `<span class="attack">${esc(t.body)}</span><span class="from">submitted through the customer portal</span>` : ''}</div>`;
   }).join('') || '<p class="empty" style="padding:14px 4px">No tickets.</p>';
+  // another tenant's ticket the run went after: the operator would never see it otherwise
+  const others = STATE?.other_tickets || [];
+  if(others.length) $('#tickets').innerHTML += `<div class="other"><b>Outside ${esc(custName())}</b> · targeted by this run</div>` + others.map(t => {
+    const eff = (run?.effects || []).find(e => e.target === t.ticket_id && e.status === 'EXECUTED');
+    const status = RUN && eff && !st.effects.has(t.ticket_id) ? eff.before : t.status;
+    return `<div class="ticket foreign" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)} <span class="tenant">${esc(t.customer_id)}</span></span><span class="status ${esc(status)}">${esc(status)}</span></div>`;
+  }).join('');
   if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', HELD:'HELD', BLOCKED:'BLOCKED', HALTED:'HALTED', STOPPED:'STOPPED', ERROR:'ERROR'}; v.hidden = false; v.dataset.v = run.status; v.textContent = map[run.status] || run.status; }
   else $('#verdict').hidden = true;
 }
@@ -570,7 +578,6 @@ function renderChrome(){
     : stale ? 'The tickets changed since the capture: run live again' : `Re-send the ${STATE.capture_source.toUpperCase()} response through ${BUILDS[B][0]}, with no model call`;
   $('#nextFix').disabled = B >= 5 || !idle;
   $('#nextFix').textContent = B >= 5 ? 'All fixes applied' : `Apply ${BUILDS[B + 1][0]} · ${BUILDS[B + 1][1]} →`;
-  $('#liveTxt').textContent = STATE?.live_model === false ? 'REHEARSAL' : 'LIVE';
   $('#stopPill').hidden = !STATE?.stop_requested;
   $('#mStop').firstChild.textContent = STATE?.stop_requested ? 'Clear stop' : 'Stop agent';
 }

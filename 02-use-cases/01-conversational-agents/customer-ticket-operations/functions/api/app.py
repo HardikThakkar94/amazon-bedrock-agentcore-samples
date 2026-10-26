@@ -218,6 +218,29 @@ def capture_state(st: dict[str, Any], tickets: list[dict[str, Any]]) -> dict[str
     }
 
 
+def other_tickets(who: dict[str, str], st: dict[str, Any]) -> list[dict[str, Any]]:
+    """Tickets in another tenant that the last run tried to change: shown (subject and status
+    only) so a cross-customer attempt is visible on the operator's screen, held or not."""
+    run = json.loads(st["last_run"]) if st.get("last_run") else {}
+    keys = {
+        (x.get("customer_id"), x.get("target") or x.get("ticket_id"))
+        for x in run.get("effects", []) + run.get("proposals", [])
+    }
+    out = []
+    for cid, tid in sorted(k for k in keys if k[0] and k[1] and k[0] != who["customer_id"]):
+        t = _tickets.get_item(Key={"customer_id": cid, "ticket_id": tid}).get("Item")
+        if t:
+            out.append(
+                {
+                    "ticket_id": tid,
+                    "customer_id": cid,
+                    "subject": t.get("subject", ""),
+                    "status": t.get("status", "OPEN"),
+                }
+            )
+    return out
+
+
 def public_state(who: dict[str, str]) -> dict[str, Any]:
     st = demo_state(who["customer_id"])
     stage = st.get("active_stage", "v0")
@@ -260,6 +283,7 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
             for t in tickets
         ],
         "store_comparison": comparison,
+        "other_tickets": other_tickets(who, st),
         "store_change_source": st.get("store_change_source", "Clean reset"),
         "last_run": json.loads(st["last_run"]) if st.get("last_run") else None,
         "decisions": json.loads(st.get("decisions", "[]")),
