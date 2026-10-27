@@ -216,6 +216,41 @@ def test_agent_confirm_close_carries_run_id_so_policy_can_forbid_it():
     assert result["tool_calls"][0]["decision"] == "DENY"
 
 
+def test_v3_live_hook_holds_every_close_for_approval_and_sends_nothing():
+    from sec310_agent.agent import Recorder
+
+    rec = Recorder(dict(ACTOR), run_id="r1", stage="v3", approvals=True)
+    close = SimpleNamespace(
+        tool_use={"name": "TicketTools___close_ticket", "input": {"ticket_id": "A-42"}},
+        cancel_tool=False,
+    )
+    note = SimpleNamespace(
+        tool_use={"name": "TicketTools___add_note", "input": {"ticket_id": "A-41"}},
+        cancel_tool=False,
+    )
+    rec.before(close)
+    rec.before(note)
+    assert "held for the operator's approval" in close.cancel_tool
+    assert note.cancel_tool is False  # only consequential tools wait for a human
+    assert [c.status for c in rec.calls] == ["PENDING_APPROVAL", "PENDING"]
+    assert rec.calls[0].input["actor"] == ACTOR and rec.calls[0].input["run_id"] == "r1"
+
+
+def test_v3_replay_sends_the_close_straight_to_the_gateway_where_policy_decides():
+    FakeGateway.replies = {"close_ticket": {"status": "error", "content": [{"text": DENIED}]}}
+    result = replay("v3")
+    assert "TicketTools___close_ticket" in [n for n, _ in FakeGateway.instances[0].sent]
+    assert result["tool_calls"][1]["decision"] == "DENY"
+
+
+def test_an_approved_call_is_sent_once_with_no_model_call():
+    calls = [{"tool": "close_ticket", "input": {"customer_id": "customer-a", "ticket_id": "A-41"}}]
+    result = replay("v3", calls=calls, extra={"approval": "r1-1"})
+    assert [n for n, _ in FakeGateway.instances[0].sent] == ["TicketTools___close_ticket"]
+    assert result["tool_calls"][0]["status"] == "OK"
+    assert "approved" in result["answer"]
+
+
 # ── V4: circuit breaker and kill switch ──────────────────────────────────
 def test_v4_first_denial_trips_the_breaker_and_skips_the_rest():
     FakeGateway.replies = {"close_ticket": {"status": "error", "content": [{"text": DENIED}]}}

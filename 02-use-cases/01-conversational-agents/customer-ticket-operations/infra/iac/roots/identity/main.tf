@@ -4,7 +4,7 @@
 locals {
   personas = {
     alice = { customer_id = "customer-a", role = "operator" } # runs the agent
-    carol = { customer_id = "customer-a", role = "customer" } # submits tickets (the attacker)
+    carol = { customer_id = "customer-a", role = "customer" } # submits tickets through the Ticket Portal
     bob   = { customer_id = "customer-b", role = "operator" } # tenant-isolation check
     # signs in once, then switches between the personas above (the sign-in edge function mints their
     # real Cognito tokens server-side); it has no tenant and cannot use the console or portal itself

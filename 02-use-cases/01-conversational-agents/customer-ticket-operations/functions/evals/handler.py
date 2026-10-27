@@ -120,7 +120,6 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
         "stage": build,
         "mode": "live",
         "policy_session": runs.uuid7(),
-        "confirmed": [],
     }
     out: dict[str, Any] = {"run_id": run_id, "sample": sample, "started": started}
     try:

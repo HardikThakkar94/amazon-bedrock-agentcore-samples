@@ -1,8 +1,8 @@
 """TicketTools: the AgentCore Gateway Lambda target behind the support agent.
 
 Four tools over the DynamoDB ticket table: ``list_tickets``, ``close_ticket``, ``add_note`` and
-``confirm_close``. ``confirm_close`` changes nothing: the operator console calls it so that the
-confirmation is recorded in the AgentCore Policy session, where V3's temporal permit for
+``confirm_close``. ``confirm_close`` changes nothing: the operator console calls it when the
+operator approves a close, so the approval is recorded in the AgentCore Policy session, where V3's temporal permit for
 ``close_ticket`` looks for it.
 The Gateway passes the tool arguments as the event and the tool name (``TicketTools___<tool>``)
 in the client context. Every call carries ``actor`` (the signed-in user's ``user_sub`` and

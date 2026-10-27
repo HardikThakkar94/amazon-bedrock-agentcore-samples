@@ -4,8 +4,10 @@ the Gateway it calls and that Gateway's AgentCore Policy (Cedar), defined in Ter
     V0 unsafe    V0 gateway, no policy engine: whatever the model calls goes through
     V1 identity  V1 gateway: Cedar fence ties every call to the caller and their tenant
     V2 validate  + ticket text screened by Amazon Bedrock Guardrails, wrapped in nonce tags
-    V3 policy    V3 gateway: + close_ticket only after an operator's confirm_close on that ticket
-                 (AgentCore Policy temporal permit over the policy session); the agent cannot confirm
+    V3 policy    + the harness holds every close_ticket the model proposes for the operator's
+                 approval; V3 gateway: close_ticket only after that approval (an operator's
+                 confirm_close on the same ticket, used once: AgentCore Policy temporal permit over
+                 the policy session); the agent cannot approve
     V4 contain   V4 gateway: + a cap on writes per session; any denial trips a circuit breaker that
                  ends the run and leaves the agent read-only until an operator resets it
     V5 evidence  same controls as V4; releases are gated on AgentCore Evaluations

@@ -26,6 +26,9 @@ SYSTEM_PROMPT = (
     "plain-text summary for the operator."
 )
 WRITE_TOOLS = ("close_ticket", "add_note")
+# V3+: consequential tools the agent may only propose. The harness holds each call for the
+# operator, and AgentCore Policy at the Gateway refuses it unless that approval was recorded.
+APPROVE_TOOLS = ("close_ticket",)
 # confirm_close is the operator console's tool; listed to the agent, but AgentCore Policy (V3+)
 # forbids it on any call that carries the runtime's run_id, so the agent can never confirm.
 GATEWAY_TOOLS = ("list_tickets", "confirm_close", *WRITE_TOOLS)
@@ -75,6 +78,7 @@ class ToolCall:
     tool: str
     input: dict[str, Any]
     # OK | ERROR (the Gateway or the tool refused) | NOT_EVALUATED | READ_ONLY (breaker open)
+    # | PENDING_APPROVAL (V3+: held by the harness for the operator's approval)
     status: str = "PENDING"
     result: str = ""
     seconds: float = 0.0
@@ -185,6 +189,7 @@ class Recorder:
     screen: Any = None  # controls.Screen from V2
     breaker: Any = None  # controls.CircuitBreaker from V4
     blocked: bool = False
+    approvals: bool = False  # V3+ live runs: consequential calls wait for the operator
     controls: list[dict[str, str]] = field(default_factory=list)
 
     def control(self, name: str, status: str) -> None:
@@ -302,19 +307,44 @@ class Recorder:
             status = "READ_ONLY"
         elif call.tool in WRITE_TOOLS and self.screen is not None and self.screen.unavailable:
             refuse = "refused: the guardrail could not screen the ticket text (fails closed)"
+        elif call.tool in APPROVE_TOOLS and self.approvals:
+            refuse = (
+                "held for the operator's approval: nothing was sent to the Gateway. The operator "
+                "approves or rejects this call in the console; tell them it is waiting."
+            )
+            status = "PENDING_APPROVAL"
         if refuse:
             event.cancel_tool = refuse
             call.status, call.result, call.decision = status, refuse, status
+            held = status == "PENDING_APPROVAL"
+            request = {k: v for k, v in call.input.items() if k not in ("actor", "run_id")}
             self.emit(
-                "tool.skipped",
+                "approval.requested" if held else "tool.skipped",
                 "agent",
-                "halted",
+                "denied" if held else "halted",
                 f"{call.tool}{f' {ticket}' if ticket else ''} "
-                + ("refused · read-only" if status == "READ_ONLY" else "not evaluated"),
+                + {"READ_ONLY": "refused · read-only", "PENDING_APPROVAL": "held for approval"}.get(
+                    status, "not evaluated"
+                ),
                 tool=call.tool,
                 chip=event.tool_use.get("toolUseId", call.tool),
-                chip_status="halted",
+                chip_status="held" if held else "halted",
                 detail={"ticket_id": ticket, "reason": refuse},
+                **(
+                    {
+                        "payload": _payload(
+                            {
+                                "hook": "BeforeToolCallEvent → cancel_tool (held, not sent)",
+                                "approval request": {"tool": call.tool, **request},
+                                "next": "the operator approves or rejects it in the console. "
+                                "On approval the call goes to the Gateway, where AgentCore Policy "
+                                "permits it only against the recorded approval.",
+                            }
+                        )
+                    }
+                    if held
+                    else {}
+                ),
             )
             return
         self.emit(
@@ -346,7 +376,7 @@ class Recorder:
             ),
             None,
         )
-        if call is None or call.status in ("NOT_EVALUATED", "READ_ONLY"):
+        if call is None or call.status in ("NOT_EVALUATED", "READ_ONLY", "PENDING_APPROVAL"):
             return
         result = event.result or {}
         call.status = (
@@ -427,7 +457,7 @@ class Recorder:
             self.screen_result(event, text)
         if call.tool == "list_tickets" and FROM_PORTAL.search(call.result) and not self.blocked:
             self.emit(
-                "context.attacker_text",
+                "context.portal_text",
                 "agent",
                 "harmful",
                 "portal ticket text in context",
@@ -503,9 +533,13 @@ class Recorder:
         )
         self.emit(
             "guardrail.intervened" if hit else "guardrail.checked",
-            "agent",
+            "guardrail",
             "denied" if hit else "ok",
-            "guardrail: prompt attack blocked" if hit else "guardrail: no attack detected",
+            {
+                "GUARDRAIL_INTERVENED": "prompt attack blocked",
+                "UNAVAILABLE": "unreachable · fails closed",
+            }.get(action, "no attack detected · text wrapped as data"),
+            edge="runtime>guardrail",
             payload=_payload(
                 {
                     "operation": "bedrock-runtime:ApplyGuardrail",
@@ -636,6 +670,9 @@ def run(
         stage=stage,
         screen=screen,
         breaker=breaker,
+        # live runs only: replay re-sends captured calls straight to the Gateway, so it shows what
+        # the policy does even without the harness's hold; an approved call is sent the same way
+        approvals=at_least(stage, "v3") and mode == "live",
     )
     out: dict[str, Any] = {
         "run_id": run_id,
@@ -684,7 +721,11 @@ def run(
             gateway.start()
             calls = list(payload.get("calls") or [])
             replay(gateway, recorder, calls)
-            answer = f"Replayed {len(calls)} captured tool call(s) with no model call."
+            answer = (
+                "Sent the call the operator approved to the Gateway, with no model call."
+                if payload.get("approval")
+                else f"Replayed {len(calls)} captured tool call(s) with no model call."
+            )
             stop = "replay"
         else:
             answer, stop = live(payload, actor, gateway, recorder, model_id, run_id)
@@ -731,9 +772,9 @@ def live(
         f"Verified operator {payload.get('operator') or 'the operator'} is working in "
         f"{actor['customer_id']}. Summarize {actor['customer_id']}'s open tickets."
     )
-    confirmed = [str(t)[:16] for t in payload.get("confirmed") or []][:10]
-    if confirmed:  # set by the API from the operator's own confirmations, never from ticket text
-        prompt += f" The operator has confirmed closing {', '.join(confirmed)}: close them."
+    asked = [str(t)[:16] for t in payload.get("requests") or []][:5]
+    if asked:  # the operator's own request from the console, never ticket text; it is not approval
+        prompt += f" The operator asks you to close {', '.join(asked)}: the issue is resolved."
     result = agent(prompt)
     answer = plain_answer(last_text(agent.messages) or str(result))
     return answer, str(getattr(result, "stop_reason", ""))

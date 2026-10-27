@@ -345,9 +345,11 @@ resource "aws_bedrockagentcore_policy" "tenant_fence" {
   depends_on = [aws_bedrockagentcore_gateway_target.tickets]
 }
 
-# V3: a human confirms consequential actions. close_ticket is permitted only if the same operator
-# confirmed closing that ticket earlier in this policy session (a Dogwood temporal condition over
-# the session's recorded confirm_close responses). An injected close has no confirmation: denied.
+# V3: a human approves consequential actions. The agent's harness holds each close_ticket the model
+# proposes; the operator approves it in the console, which records confirm_close through this
+# Gateway. close_ticket is then permitted once: there must be an approval of that ticket in this
+# policy session with no close of it since (a Dogwood temporal condition over the session's
+# recorded responses). A close nobody approved, or a second close on one approval, is denied.
 #
 # V4: bound the blast radius. More than write_cap calls of one write tool in a policy session is
 # denied, and any denial trips the agent's circuit breaker. (A count is scoped to the session the
@@ -356,18 +358,23 @@ locals {
   temporal = merge(
     { for gw in local.confirm_gws : "${gw}_confirmed_close" => {
       gw          = gw
-      description = "close_ticket only after the operator's confirm_close on the same ticket"
+      description = "close_ticket only after the operator's approval of that ticket, each approval used once"
       statement   = <<-CEDAR
         permit(
           principal is AgentCore::OAuthUser,
           action == ${local.close_action},
           resource == AgentCore::Gateway::"${aws_bedrockagentcore_gateway.build[gw].gateway_arn}"
         ) when temporal {
-          formerly within 1h AgentCore::Action::"${local.target}___confirm_close"::response{
+          !(AgentCore::Action::"${local.target}___close_ticket"::response{
+            eventResource: resource,
+            input.ticket_id: context.input.ticket_id
+          })
+          since within 1h
+          (AgentCore::Action::"${local.target}___confirm_close"::response{
             eventResource: resource,
             input.customer_id: context.input.customer_id,
             input.ticket_id: context.input.ticket_id
-          }
+          })
         } when {
           ${indent(10, trimspace(local.fence))}
         };

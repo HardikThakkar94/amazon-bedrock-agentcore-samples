@@ -78,7 +78,7 @@ TITLES = {
     "v0": "Unsafe: model output executes",
     "v1": "Identity: bind operator and customer",
     "v2": "Validation: treat records as data",
-    "v3": "Policy: authorize every effect; a human confirms closes",
+    "v3": "Policy: authorize every effect; a human approves closes",
     "v4": "Contain: a circuit breaker trips on the first denial",
     "v5": "Evidence: gate release on behavior",
 }
@@ -86,7 +86,7 @@ LESSONS = {
     "v0": "VULNERABLE — no independent boundary; the ticket can close.",
     "v1": "STILL VULNERABLE — identity passes because this attack stays inside Customer A.",
     "v2": "STILL VULNERABLE — valid, screened JSON is still not permission to act.",
-    "v3": "PROTECTED — close_ticket needs the operator's confirmation; the injected close is denied.",
+    "v3": "PROTECTED — every close waits for the operator's approval; one nobody approved is denied.",
     "v4": "CONTAINED — a denial trips the circuit breaker: the run ends, the agent stays read-only until reset.",
     "v5": "EVIDENCE — the halt and the unchanged ticket are recorded; the release invariant passes.",
 }
@@ -97,8 +97,9 @@ CONTROLS = {
     "Inbound JWT authorizer (AgentCore Identity on Runtime and Gateway)": "v0",
     "AgentCore Policy: caller and tenant fence (Cedar)": "v1",
     "Amazon Bedrock Guardrails: prompt-attack screen on ticket text": "v2",
-    "AgentCore Policy: close_ticket only after the operator's confirm_close (temporal)": "v3",
-    "AgentCore Policy: the agent can never call confirm_close (Cedar)": "v3",
+    "Human approval: the harness holds every close the model proposes (agent hook)": "v3",
+    "AgentCore Policy: close_ticket only once per operator approval (temporal)": "v3",
+    "AgentCore Policy: the agent can never approve, i.e. call confirm_close (Cedar)": "v3",
     "AgentCore Policy: at most 2 calls per write tool per session (temporal count)": "v4",
     "Circuit breaker: any denial ends the run; read-only until reset (agent hook)": "v4",
     "Kill switch: an operator stop refuses every run at admission, fails closed": "v4",
@@ -231,6 +232,38 @@ def confirmations(st: dict[str, Any]) -> list[dict[str, Any]]:
     return json.loads(st.get("confirmed", "[]"))
 
 
+def approvals(st: dict[str, Any]) -> list[dict[str, Any]]:
+    """V3+: closes the harness held for the operator in this policy session, with their decision."""
+    return json.loads(st.get("approvals", "[]"))
+
+
+def save_approvals(customer_id: str, items: list[dict[str, Any]]) -> None:
+    _state.update_item(
+        Key={"customer_id": customer_id},
+        UpdateExpression="SET approvals = :a",
+        ExpressionAttributeValues={":a": json.dumps(items)},
+    )
+
+
+def pending_approval(st: dict[str, Any], approval_id: str) -> dict[str, Any]:
+    item = next((a for a in approvals(st) if a["id"] == approval_id), None)
+    if item is None or item["status"] != "PENDING":
+        raise HttpError(409, "that request is no longer waiting for approval")
+    return item
+
+
+def operator_requests(who: dict[str, str], body: dict[str, Any]) -> tuple[str, ...]:
+    """Tickets the operator asks the agent to close (the console's toggles): open, their own
+    tenant's, never a portal ticket. A request makes the model propose; it approves nothing."""
+    asked = [str(t)[:16] for t in (body.get("requests") or [])][:3]
+    own = {t["ticket_id"]: t for t in tickets_for(who["customer_id"])}
+    for ticket_id in asked:
+        t = own.get(ticket_id)
+        if t is None or t.get("status") != "OPEN" or t.get("origin") != "seed":
+            raise HttpError(400, f"{ticket_id} is not an open ticket the operator can ask about")
+    return tuple(asked)
+
+
 def capture_state(st: dict[str, Any], tickets: list[dict[str, Any]]) -> dict[str, Any]:
     cap = json.loads(st["capture"]) if st.get("capture") else None
     return {
@@ -293,6 +326,7 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
         "breaker_reason": st.get("breaker_reason", ""),
         "breaker_at": int(st.get("breaker_at", 0)),
         "confirmed": confirmations(st),
+        "approvals": approvals(st),
         "policy_session": st.get("policy_session", ""),
         "active_stage": stage,
         "active_title": TITLES[stage],
@@ -381,16 +415,39 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
     require(who, "operator")
     st = demo_state(who["customer_id"])
     stage = st.get("active_stage", "v0")  # the build is server state, never taken from the body
-    mode = "replay" if body.get("mode") == "replay" else "live"
+    kind = body.get("mode") if body.get("mode") in ("replay", "approve") else "live"
+    mode = "live" if kind == "live" else "replay"
+    approved = (
+        pending_approval(st, str(body.get("approval", ""))[:40]) if kind == "approve" else None
+    )
+    v3 = STAGES.index(stage) >= STAGES.index("v3")
+    requests = operator_requests(who, body) if kind == "live" and v3 else ()
+    if approved:
+        # the operator's decision goes through the Gateway first, as confirm_close in the case's
+        # policy session: that recorded approval is what AgentCore Policy checks on the close
+        record_approval(who, token, stage, approved["ticket_id"])
+        st = demo_state(who["customer_id"])
     confirmed = tuple(c["ticket_id"] for c in confirmations(st))
     agent_payload: dict[str, Any] = {
         "operator": who["username"],
         "stage": stage,
         "mode": mode,
         "policy_session": policy_session(who["customer_id"]),
-        "confirmed": list(confirmed),
+        "requests": list(requests),
     }
-    if mode == "replay":
+    if approved:  # the held call, sent once to the Gateway with no model call
+        agent_payload["approval"] = approved["id"]
+        agent_payload["calls"] = [
+            {
+                "tool": approved["tool"],
+                "input": {
+                    "customer_id": approved["customer_id"],
+                    "ticket_id": approved["ticket_id"],
+                    "reason": approved["reason"] or "approved by the operator",
+                },
+            }
+        ]
+    elif mode == "replay":
         cap = capture_state(st, tickets_for(who["customer_id"]))
         if not cap["capture_available"]:
             raise HttpError(409, "nothing to replay yet: run the agent live first")
@@ -433,14 +490,32 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 "request": {
                     "method": "POST",
                     "path": "/api/run",
-                    "run_id": session_id,
                     "build (server state)": stage,
-                    "mode": mode,
+                    "mode": kind,
+                    **({"operator asks the agent to close": list(requests)} if requests else {}),
                 },
             },
             default=str,
         ),
     )
+    if approved:
+        emit(
+            "approval.granted",
+            "ingress",
+            "ok",
+            f"{who['username']} approved {approved['tool']} {approved['ticket_id']}",
+            payload=json.dumps(
+                {
+                    "approval": {k: approved[k] for k in ("tool", "ticket_id", "reason")},
+                    "requested by": approved["requested_by"],
+                    "approved by": who["username"],
+                    "recorded": "TicketTools___confirm_close through the Gateway, as the operator, "
+                    "in the case's AgentCore Policy session",
+                    "next": "the held call goes to the Gateway; AgentCore Policy permits it once",
+                },
+                default=str,
+            ),
+        )
     try:
         read = tickets_for(who["customer_id"])
         before = runs.snapshot(all_tickets())
@@ -465,7 +540,8 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
             }.get(
                 result["status"],
                 "denied"
-                if result["status"] in ("BLOCKED", "FILTERED", "CONFIRMED_BLOCKED")
+                if result["status"]
+                in ("BLOCKED", "FILTERED", "CONFIRMED_BLOCKED", "AWAITING_APPROVAL")
                 else "ok",
             ),
             {
@@ -477,6 +553,7 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 "CONFIRMED": "answer returned · confirmed close done",
                 "BLOCKED": "answer returned · write denied by policy",
                 "FILTERED": "guardrail withheld the ticket text",
+                "AWAITING_APPROVAL": "answer returned · close held for approval",
             }.get(result["status"], "answer returned to " + who["username"]),
             verdict=result["status"],
             payload=json.dumps(
@@ -505,6 +582,31 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
             },
         )
         print(json.dumps(runs.metrics(result, is_test=bool(body.get("is_test")))))
+        if approved:
+            done = any(
+                e.get("status") == "EXECUTED" and e.get("target") == approved["ticket_id"]
+                for e in result.get("effects", [])
+            )
+            save_approvals(
+                who["customer_id"],
+                [
+                    {
+                        **a,
+                        "status": "APPROVED" if done else "FAILED",
+                        "by": who["username"],
+                        "at": int(time.time()),
+                        "outcome": result["status"],
+                    }
+                    if a["id"] == approved["id"]
+                    else a
+                    for a in approvals(demo_state(who["customer_id"]))
+                ],
+            )
+        elif kind == "live" and v3:
+            save_approvals(
+                who["customer_id"],
+                runs.approval_requests(session_id, result.get("tool_calls", []), requests, read),
+            )
         cap = (
             runs.capture(session_id, stage, result["tool_calls"], runs.fingerprint(read))
             if mode == "live" and result["status"] != "ERROR"
@@ -706,7 +808,7 @@ def reopen(cid: str) -> None:
 def apply_patch(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     """Switch the build (next one, or the one named) and reopen the previous run's effects. The
     captured response, any stop and an open circuit breaker stay: the next build is judged on the
-    same response, and a stop or breaker is cleared only on purpose. Confirmations do not carry
+    same response, and a stop or breaker is cleared only on purpose. Approvals do not carry
     over: the build starts a new policy session."""
     require(who, "operator")
     cid = who["customer_id"]
@@ -721,7 +823,7 @@ def apply_patch(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         Key={"customer_id": cid},
         UpdateExpression=(
             "SET active_stage = :t, store_change_source = :src, policy_session = :ps "
-            "REMOVE last_run, run_id, before_tickets, confirmed"
+            "REMOVE last_run, run_id, before_tickets, confirmed, approvals"
         ),
         ExpressionAttributeValues={
             ":t": target,
@@ -794,20 +896,17 @@ def gateway_call(token: str, url: str, session: str, name: str, args: dict) -> t
     return not result.get("isError") and "CONFIRMED" in text, text[:600]
 
 
-def confirm_close(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str, Any]:
-    """V3+: the operator confirms closing one of their own open tickets. The confirmation goes
-    through the Gateway as confirm_close, so AgentCore Policy records it in the case's session;
-    the temporal permit for close_ticket looks for exactly this event."""
-    require(who, "operator")
+def record_approval(who: dict[str, str], token: str, stage: str, ticket_id: str) -> None:
+    """V3+: the operator approves closing one of their own open tickets. The approval goes through
+    the Gateway as confirm_close (no run_id: only the console may confirm), so AgentCore Policy
+    records it in the case's session; the temporal permit for close_ticket looks for exactly this
+    event, and allows one close per approval."""
     cid = who["customer_id"]
-    st = demo_state(cid)
-    stage = st.get("active_stage", "v0")
     if STAGES.index(stage) < STAGES.index("v3"):
-        raise HttpError(409, "confirmations are a V3 control: apply V3 first")
-    ticket_id = str(body.get("ticket_id", ""))[:16]
+        raise HttpError(409, "approvals are a V3 control: apply V3 first")
     t = _tickets.get_item(Key={"customer_id": cid, "ticket_id": ticket_id}).get("Item")
     if t is None or t.get("status") != "OPEN":
-        raise HttpError(400, "only an open ticket of your own customer can be confirmed")
+        raise HttpError(400, "only an open ticket of your own customer can be approved")
     url = json.loads(agent_param("gateway_urls", "{}")).get(GATEWAY_OF[stage])
     if not url:
         raise HttpError(503, "the agent is not deployed yet (make deploy-agent)")
@@ -820,8 +919,8 @@ def confirm_close(who: dict[str, str], token: str, body: dict[str, Any]) -> dict
         token, url, policy_session(cid), "TicketTools___confirm_close", args
     )
     if not allowed:
-        raise HttpError(502, f"the Gateway refused the confirmation: {text[:300]}")
-    done = [c for c in confirmations(st) if c["ticket_id"] != ticket_id] + [
+        raise HttpError(502, f"the Gateway refused the approval: {text[:300]}")
+    done = [c for c in confirmations(demo_state(cid)) if c["ticket_id"] != ticket_id] + [
         {"ticket_id": ticket_id, "by": who["username"], "at": int(time.time())}
     ]
     _state.update_item(
@@ -829,7 +928,21 @@ def confirm_close(who: dict[str, str], token: str, body: dict[str, Any]) -> dict
         UpdateExpression="SET confirmed = :c",
         ExpressionAttributeValues={":c": json.dumps(done)},
     )
-    return {"confirmed": done, "gateway_reply": text}
+
+
+def reject_approval(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+    """The operator declines a held call: nothing goes to the Gateway, and the decision is kept."""
+    require(who, "operator")
+    st = demo_state(who["customer_id"])
+    item = pending_approval(st, str(body.get("id", ""))[:40])
+    items = [
+        {**a, "status": "REJECTED", "by": who["username"], "at": int(time.time())}
+        if a["id"] == item["id"]
+        else a
+        for a in approvals(st)
+    ]
+    save_approvals(who["customer_id"], items)
+    return {"approvals": items}
 
 
 def eval_suites(who: dict[str, str]) -> dict[str, Any]:
@@ -937,8 +1050,8 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             return reply(200, reset_demo(who))
         if method == "POST" and path == "/api/stop":
             return reply(200, request_stop(who, body))
-        if method == "POST" and path == "/api/confirm":
-            return reply(200, confirm_close(who, access_token(event), body))
+        if method == "POST" and path == "/api/approvals/reject":
+            return reply(200, reject_approval(who, body))
         if method == "POST" and path == "/api/breaker/reset":
             return reply(200, reset_breaker(who))
         if method == "GET" and path == "/api/evals":
