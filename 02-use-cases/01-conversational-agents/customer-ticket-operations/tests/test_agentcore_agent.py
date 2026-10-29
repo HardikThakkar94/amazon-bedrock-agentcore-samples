@@ -420,14 +420,34 @@ def test_failed_run_returns_an_error_instead_of_a_runtime_500(monkeypatch):
     pytest.importorskip("bedrock_agentcore")
     import sec310_agent.app as entry
 
+    calls = []
+
     def boom(*args, **kwargs):
+        calls.append((args, kwargs))
         raise RuntimeError("model unavailable")
 
     monkeypatch.setattr(entry, "run", boom)
-    monkeypatch.setenv("GATEWAY_URLS", '{"v0": "https://gw"}')
+    monkeypatch.setattr(entry, "build_controls", lambda stage: {"gateway_url": "https://gw"})
     monkeypatch.setenv("MODEL_ID", "m")
     context = SimpleNamespace(request_headers={"Authorization": "Bearer t"}, session_id="s")
-    assert entry.invoke({}, context) == {"error": "RuntimeError: model unavailable"}
+    assert entry.invoke({"stage": "v0"}, context) == {"error": "RuntimeError: model unavailable"}
+    assert calls == [
+        (({"stage": "v0"}, "t"), {"model_id": "m", "session_id": "s", "gateway_url": "https://gw"})
+    ]
+
+
+@pytest.mark.parametrize("payload", [{}, {"stage": "invalid"}])
+def test_entrypoint_rejects_missing_or_invalid_build_before_dispatch(monkeypatch, payload):
+    pytest.importorskip("bedrock_agentcore")
+    import sec310_agent.app as entry
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid build must not reach controls or run")
+
+    monkeypatch.setattr(entry, "build_controls", unexpected)
+    monkeypatch.setattr(entry, "run", unexpected)
+    context = SimpleNamespace(request_headers={"Authorization": "Bearer t"}, session_id="s")
+    assert entry.invoke(payload, context) == {"error": "explicit valid build required"}
 
 
 def test_answer_wrapped_in_code_is_unwrapped():
