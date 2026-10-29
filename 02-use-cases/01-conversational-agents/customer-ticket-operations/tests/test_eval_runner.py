@@ -33,6 +33,17 @@ class Table:
         item = self.items.setdefault(self._k(Key), dict(Key))
         if "busy_until = :until" in UpdateExpression:
             item["busy_until"] = ExpressionAttributeValues[":until"]
+        if "busy_owner = :owner" in UpdateExpression:
+            item["busy_owner"] = ExpressionAttributeValues[":owner"]
+        if "busy_owner = :run" in UpdateExpression:
+            item["busy_owner"] = ExpressionAttributeValues[":run"]
+            item["busy_stage"] = ExpressionAttributeValues[":build"]
+            item["busy_sub"] = ExpressionAttributeValues[":sub"]
+            item["policy_session"] = ExpressionAttributeValues[":session"]
+        if "busy_owner = :suite" in UpdateExpression:
+            item["busy_owner"] = ExpressionAttributeValues[":suite"]
+            item.pop("busy_stage", None)
+            item.pop("busy_sub", None)
         if "stop_requested = :f" in UpdateExpression:
             item.update(stop_requested=False, breaker_open=False)
 
@@ -99,6 +110,7 @@ def runner(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(app, "_events", events)
     monkeypatch.setattr(h, "operator_token", lambda: "tok")
+    monkeypatch.setattr(h, "operator_sub", lambda token: "alice-sub")
     monkeypatch.setattr(h, "SPAN_POLL", 0)
 
     def invoke(token, run_id, payload):  # the "agent": closes A-42 whenever A-90 asks for it
@@ -171,6 +183,45 @@ def test_v0_suite_fails_the_gate_and_leaves_the_demo_reset(runner, monkeypatch):
     demo = runner.state.items[("customer-a",)]
     assert demo["active_stage"] == "v3" and "busy_until" not in demo  # back where it was, unlocked
     assert ("customer-a", "A-90") not in runner.tickets.items
+
+
+def test_eval_case_explicit_build_and_verified_actor_own_runtime_admission(runner, monkeypatch):
+    seen = []
+    original = runner.h.app.invoke_agent
+
+    def check(token, run_id, payload):
+        state = runner.state.items[("customer-a",)]
+        seen.append(
+            (
+                state.get("active_stage"),
+                state["busy_stage"],
+                state["busy_sub"],
+                state["busy_owner"],
+                payload["policy_session"],
+            )
+        )
+        assert (
+            state["busy_stage"],
+            state["busy_sub"],
+            state["busy_owner"],
+            state["policy_session"],
+        ) == ("v0", "alice-sub", run_id, payload["policy_session"])
+        return original(token, run_id, payload)
+
+    monkeypatch.setattr(runner.h.app, "invoke_agent", check)
+    out = runner.h.lambda_handler({"build": "v0", "suite_id": "owned"}, None)
+    assert out["status"] == "DONE" and seen
+    assert all(row[0] == "v3" and row[1] == "v0" for row in seen)
+    assert "busy_stage" not in runner.state.items[("customer-a",)]
+
+
+def test_unscored_suite_is_not_a_release_pass(runner, monkeypatch):
+    monkeypatch.setattr(runner.h, "spans_for", lambda sample, deadline: [])
+    out = runner.h.lambda_handler({"build": "v5", "suite_id": "no-spans"}, None)
+    assert out["passed"] is False
+    gate = suite_of(runner, "v5")["gate"]
+    assert gate["safety"] == "PASS" and gate["quality"]["passed"] is False
+    assert gate["quality"]["helpfulness_mean"] is None
 
 
 def test_v5_suite_passes_and_calls_every_evaluator(runner):

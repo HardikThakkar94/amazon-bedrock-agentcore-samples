@@ -280,6 +280,7 @@ header .sp{flex:1}
   <span class="sp"></span>
   <span class="pill gate" id="gatePill" hidden><i></i>Release gate</span>
   <span class="pill breaker" id="breakerPill" hidden title=""><i></i>Circuit breaker: OPEN · read-only</span>
+  <span class="pill breaker" id="recoveryPill" hidden title=""><i></i>Recovery required · see operator state</span>
   <span class="pill stop" id="stopPill" hidden><i></i>Stopped by operator</span>
   <div class="gear"><button id="gearBtn" aria-haspopup="menu" aria-expanded="false" title="Operator menu">⚙</button>
     <div class="menu" id="menu" role="menu">
@@ -623,8 +624,8 @@ function renderTickets(st){
 function renderApprovals(done){
   const items = build() >= 3 && done ? (STATE?.approvals || []) : [];
   if(!items.length) return;
-  const mark = {APPROVED:'✓ approved by', REJECTED:'✕ rejected by', FAILED:'approved, not executed ·'};
-  $('#tickets').innerHTML += `<div class="appr"><h3>Waiting for ${esc(who())}’s approval</h3>` + items.map(a => {
+  const mark = {APPROVED:'✓ approved by', REJECTED:'✕ rejected by', FAILED:'approval failed ·', EXPIRED:'expired ·'};
+  $('#tickets').innerHTML += `<div class="appr"><h3>Human approval requests and decisions</h3>` + items.map(a => {
     const src = a.requested_by === 'operator' ? `<span class="src op">Requested by ${esc(who())}</span>`
       : `<span class="src tt">Not requested by ${esc(who())} · from ticket text${a.sources?.length ? ' in ' + a.sources.map(esc).join(', ') : ''} (Ticket Portal)</span>`;
     const end = a.status === 'PENDING' ? `<span class="btns"><button class="yes" data-approve="${esc(a.id)}"${polling ? ' disabled' : ''}>Approve</button><button class="no" data-reject="${esc(a.id)}"${polling ? ' disabled' : ''}>Reject</button></span>`
@@ -638,7 +639,6 @@ function renderLines(st){
   if(!done){ $('#said').textContent = '…'; $('#said').className = 'empty'; }
   else { $('#said').textContent = run.answer || run.note || '—'; $('#said').className = ''; }
   const writes = run.proposals || [];
-  if(done && run.status === 'ERROR'){ for(const id of ['#tried', '#boundary', '#effect']){ $(id).textContent = '—'; $(id).className = 'empty'; } return; }
   if(!done){ $('#effect').textContent = '…'; $('#effect').className = 'empty'; }
   if(!done){ $('#tried').textContent = '…'; $('#tried').className = 'empty'; $('#boundary').textContent = '…'; return; }
   $('#tried').innerHTML = writes.length ? writes.map(p => `<code>${esc(p.operation)} ${esc(p.ticket_id)}</code>`).join(', ') : 'only read the tickets';
@@ -651,6 +651,7 @@ function renderLines(st){
   $('#boundary').className = '';
   const mine = STATE?.persona?.customer_id;
   $('#effect').innerHTML = executed.length ? executed.map(e => `<code>${esc(e.target)} ${esc(e.before)} → ${esc(e.after)}</code>${e.confirmed ? ' <span class="held">confirmed by the operator</span>' : ''}${e.customer_id && e.customer_id !== mine ? ` <span class="hit">in ${esc(e.customer_id)}</span>` : ''}`).join(', ')
+    : run.evidence_uncertain ? `<span class="held">${run.store_diff_available === false ? 'Store diff unavailable: effects unknown' : 'No effect observed in post-failure snapshot; later effects unknown'}</span>`
     : '<span class="held">nothing changed in DynamoDB</span>';
   $('#effect').className = executed.length && executed.some(e => !e.confirmed) ? '' : 'ok';
 }
@@ -665,7 +666,13 @@ function renderChrome(){
   $('#nextFix').textContent = B >= 5 ? 'All fixes applied' : `Apply ${BUILDS[B + 1][0]} · ${BUILDS[B + 1][1]} →`;
   $('#stopPill').hidden = !STATE?.stop_requested;
   $('#breakerPill').hidden = !STATE?.breaker_open; $('#breakerPill').title = STATE?.breaker_reason || '';
-  $('#mBreaker').hidden = !STATE?.breaker_open;
+  const rec = STATE?.recovery || {};
+  $('#recoveryPill').hidden = !rec.required;
+  $('#recoveryPill').textContent = rec.required ? `Recovery required · ${rec.disposition} · ${rec.run_id || rec.owner || 'breaker'}` : '';
+  $('#recoveryPill').title = `${rec.disposition || ''} · ${rec.owner || ''} · ${rec.reason || ''} · ${rec.next_step || ''}`;
+  $('#mBreaker').hidden = !(STATE?.breaker_open || STATE?.breaker_pending);
+  $('#mBreaker').disabled = !!rec.owner;
+  $('#mReset').disabled = !!STATE?.busy;
   $('#mStop').firstChild.textContent = STATE?.stop_requested ? 'Clear stop' : 'Stop agent';
 }
 

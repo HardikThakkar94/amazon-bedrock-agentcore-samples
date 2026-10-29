@@ -208,7 +208,7 @@ def tickets_for(customer_id: str) -> list[dict[str, Any]]:
 
 
 def demo_state(customer_id: str) -> dict[str, Any]:
-    item = _state.get_item(Key={"customer_id": customer_id}).get("Item")
+    item = _state.get_item(Key={"customer_id": customer_id}, ConsistentRead=True).get("Item")
     return item or {"customer_id": customer_id, "active_stage": "v0", "stop_requested": False}
 
 
@@ -237,16 +237,57 @@ def approvals(st: dict[str, Any]) -> list[dict[str, Any]]:
     return json.loads(st.get("approvals", "[]"))
 
 
-def save_approvals(customer_id: str, items: list[dict[str, Any]]) -> None:
-    _state.update_item(
-        Key={"customer_id": customer_id},
-        UpdateExpression="SET approvals = :a",
-        ExpressionAttributeValues={":a": json.dumps(items)},
-    )
+MAX_APPROVALS = 64
+APPROVAL_LIFETIME = 86400
+
+
+def current_approvals(st: dict[str, Any]) -> list[dict[str, Any]]:
+    """Explicit 24h pending expiry; keep recent terminal decisions within a bounded history."""
+    now = int(time.time())
+    items = [
+        {**a, "status": "EXPIRED", "at": now}
+        if a["status"] == "PENDING" and now - int(a.get("created_at", 0)) >= APPROVAL_LIFETIME
+        else a
+        for a in approvals(st)
+    ]
+    return [
+        a
+        for a in items
+        if a["status"] == "PENDING"
+        or now - int(a.get("at", a.get("created_at", 0))) < APPROVAL_LIFETIME
+    ]
+
+
+def save_approvals(
+    customer_id: str,
+    items: list[dict[str, Any]],
+    owner: str | None = None,
+    previous: str | None = None,
+) -> None:
+    if len(items) > MAX_APPROVALS or len({a["id"] for a in items}) != len(items):
+        raise HttpError(409, "approval history is full or contains duplicate identities")
+    values = {":a": json.dumps(items)}
+    if owner is not None:
+        values[":owner"] = owner
+        condition = "busy_owner = :owner"
+    elif previous is not None:
+        values[":previous"] = previous
+        condition = "attribute_not_exists(busy_owner) AND approvals = :previous"
+    else:
+        raise ValueError("approval update needs an owner or prior state")
+    try:
+        _state.update_item(
+            Key={"customer_id": customer_id},
+            UpdateExpression="SET approvals = :a",
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+        )
+    except _state.meta.client.exceptions.ConditionalCheckFailedException as exc:
+        raise HttpError(409, "approval state changed or a run is in progress") from exc
 
 
 def pending_approval(st: dict[str, Any], approval_id: str) -> dict[str, Any]:
-    item = next((a for a in approvals(st) if a["id"] == approval_id), None)
+    item = next((a for a in current_approvals(st) if a["id"] == approval_id), None)
     if item is None or item["status"] != "PENDING":
         raise HttpError(409, "that request is no longer waiting for approval")
     return item
@@ -314,19 +355,56 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
             "changed": bool(changed),
             "changed_fields": changed,
         }
+    owner = str(st.get("busy_owner") or "")
+    pending = bool(st.get("breaker_pending"))
+    uncertain = bool(st.get("approval_uncertain") or st.get("approval_dispatch"))
+    stale = bool(owner) and int(st.get("busy_until", 0)) <= time.time()
+    disposition_unknown = st.get("exclusion_disposition") == "UNKNOWN"
+    pending_recovery = pending and (not owner or stale or disposition_unknown)
+    authority_recovery = uncertain and (not owner or stale or disposition_unknown)
+    recovery = {
+        "required": authority_recovery or pending_recovery or stale or disposition_unknown,
+        "disposition": st.get("exclusion_disposition")
+        or ("OWNER_ACTIVE_OR_UNKNOWN" if owner else "BREAKER_PENDING" if pending else "NONE"),
+        "owner": owner,
+        "run_id": owner if owner and st.get("busy_stage") and RUN_ID.match(owner) else "",
+        "reason": st.get("exclusion_reason")
+        or (
+            "approval/session authority uncertain"
+            if uncertain
+            else "breaker latch unconfirmed"
+            if pending
+            else "owner remains after run's time hint; completion not proven"
+            if stale
+            else ""
+        ),
+        "next_step": (
+            "Do not clear this exclusion on elapsed time or silent logs. "
+            "Escalate for verified Runtime/tool quiescence, effect reconciliation, "
+            "and conditional owner/session recovery (README)."
+            if owner
+            else "Review effects; an operator may reset the breaker when no run owns the exclusion."
+            if pending
+            else ""
+        ),
+    }
     return {
         "persona": who,
+        "recovery": recovery,
         "model": model_label(),
         "live_model": True,
         "guardrail": "Amazon Bedrock Guardrails",
-        "busy": int(st.get("busy_until", 0)) > time.time(),
+        "busy": bool(st.get("busy_owner")) or int(st.get("busy_until", 0)) > time.time(),
+        "busy_owner": st.get("busy_owner", ""),
+        "approval_uncertain": bool(st.get("approval_uncertain")),
+        "breaker_pending": bool(st.get("breaker_pending")),
         "stop_requested": bool(st.get("stop_requested")),
         "stop_source": st.get("stop_source", "none"),
         "breaker_open": bool(st.get("breaker_open")),
         "breaker_reason": st.get("breaker_reason", ""),
         "breaker_at": int(st.get("breaker_at", 0)),
         "confirmed": confirmations(st),
-        "approvals": approvals(st),
+        "approvals": current_approvals(st),
         "policy_session": st.get("policy_session", ""),
         "active_stage": stage,
         "active_title": TITLES[stage],
@@ -398,17 +476,68 @@ def invoke_agent(token: str, session_id: str, payload: dict[str, Any]) -> dict[s
     return body
 
 
-def claim_run(customer_id: str) -> None:
+def claim_run(
+    customer_id: str,
+    owner: str,
+    duration: int = AGENT_TIMEOUT + 5,
+    stage: str | None = None,
+    principal: str | None = None,
+) -> None:
+    """A durable exclusion owner, not just an expiring hint. An expired orphan needs recovery;
+    expiration alone cannot prove that a timed-out invocation has stopped writing."""
     now = int(time.time())
     try:
+        values: dict[str, Any] = {":until": now + duration, ":now": now, ":owner": owner}
+        update = "SET busy_until = :until, busy_owner = :owner"
+        condition = (
+            "attribute_not_exists(busy_owner) AND "
+            "(attribute_not_exists(busy_until) OR busy_until < :now)"
+        )
+        if stage is not None:
+            if stage not in STAGES or not principal:
+                raise ValueError("owned agent admission requires a stage and principal")
+            values.update({":stage": stage, ":principal": principal})
+            update += (
+                ", busy_stage = :stage, busy_sub = :principal, "
+                "active_stage = if_not_exists(active_stage, :stage)"
+            )
+            condition += (
+                " AND (attribute_not_exists(active_stage) OR active_stage = :stage)"
+                if stage == "v0"
+                else " AND active_stage = :stage"
+            )
         _state.update_item(
             Key={"customer_id": customer_id},
-            UpdateExpression="SET busy_until = :until",
-            ConditionExpression="attribute_not_exists(busy_until) OR busy_until < :now",
-            ExpressionAttributeValues={":until": now + AGENT_TIMEOUT + 5, ":now": now},
+            UpdateExpression=update,
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
         )
     except _state.meta.client.exceptions.ConditionalCheckFailedException as exc:
         raise HttpError(409, "an agent run is already in progress") from exc
+
+
+def release_run(customer_id: str, owner: str) -> None:
+    _state.update_item(
+        Key={"customer_id": customer_id},
+        UpdateExpression="REMOVE busy_until, busy_owner, busy_stage, busy_sub, "
+        "exclusion_disposition, exclusion_reason",
+        ConditionExpression="busy_owner = :owner",
+        ExpressionAttributeValues={":owner": owner},
+    )
+
+
+def claim_seed_scope(owner: str) -> list[str]:
+    """Reseed touches every tenant, so acquire all affected exclusions before any ticket edit."""
+    claimed = []
+    try:
+        for cid in sorted(SEED):
+            claim_run(cid, owner)
+            claimed.append(cid)
+    except Exception:
+        for cid in reversed(claimed):
+            release_run(cid, owner)
+        raise
+    return claimed
 
 
 def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -422,11 +551,6 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
     )
     v3 = STAGES.index(stage) >= STAGES.index("v3")
     requests = operator_requests(who, body) if kind == "live" and v3 else ()
-    if approved:
-        # the operator's decision goes through the Gateway first, as confirm_close in the case's
-        # policy session: that recorded approval is what AgentCore Policy checks on the close
-        record_approval(who, token, stage, approved["ticket_id"])
-        st = demo_state(who["customer_id"])
     confirmed = tuple(c["ticket_id"] for c in confirmations(st))
     agent_payload: dict[str, Any] = {
         "operator": who["username"],
@@ -459,7 +583,39 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
     session_id = str(body.get("run_id") or runs.uuid7())
     if not RUN_ID.match(session_id):
         raise HttpError(400, "run_id must be a UUIDv7")
-    claim_run(who["customer_id"])
+    claim_run(who["customer_id"], session_id, stage=stage, principal=who["sub"])
+    # Re-read under exclusion: another decision/reset may have won before this claim.
+    st = demo_state(who["customer_id"])
+    if st.get("approval_uncertain") or st.get("approval_dispatch"):
+        release_run(who["customer_id"], session_id)
+        raise HttpError(409, "approval authority unresolved; operator recovery required")
+    if kind == "live" and v3 and len(current_approvals(st)) > MAX_APPROVALS - 12:
+        release_run(who["customer_id"], session_id)
+        raise HttpError(409, "approval history full; wait for the 24-hour retention window")
+    if (
+        st.get("active_stage", "v0") != stage
+        or st.get("policy_session") != agent_payload["policy_session"]
+        or (
+            approved
+            and next(
+                (
+                    a
+                    for a in current_approvals(st)
+                    if a["id"] == approved["id"] and a["status"] == "PENDING"
+                ),
+                None,
+            )
+            != approved
+        )
+    ):
+        release_run(who["customer_id"], session_id)
+        raise HttpError(409, "approval or build changed before admission")
+    if kind == "live" and v3:
+        try:
+            operator_requests(who, body)  # the ticket may have changed before admission
+        except Exception:
+            release_run(who["customer_id"], session_id)
+            raise
     try:
         _events.put_item(
             Item={
@@ -472,9 +628,7 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
             ConditionExpression="attribute_not_exists(run_id)",
         )
     except _events.meta.client.exceptions.ConditionalCheckFailedException as exc:
-        _state.update_item(
-            Key={"customer_id": who["customer_id"]}, UpdateExpression="REMOVE busy_until"
-        )
+        release_run(who["customer_id"], session_id)
         raise HttpError(409, "run id already used") from exc
     emit = runs.Emitter(_events, session_id)
     emit(
@@ -498,35 +652,66 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
             default=str,
         ),
     )
-    if approved:
-        emit(
-            "approval.granted",
-            "ingress",
-            "ok",
-            f"{who['username']} approved {approved['tool']} {approved['ticket_id']}",
-            payload=json.dumps(
-                {
-                    "approval": {k: approved[k] for k in ("tool", "ticket_id", "reason")},
-                    "requested by": approved["requested_by"],
-                    "approved by": who["username"],
-                    "recorded": "TicketTools___confirm_close through the Gateway, as the operator, "
-                    "in the case's AgentCore Policy session",
-                    "next": "the held call goes to the Gateway; AgentCore Policy permits it once",
-                },
-                default=str,
-            ),
-        )
     try:
+        if approved:
+            try:
+                record_approval(
+                    who, token, stage, approved, agent_payload["policy_session"], session_id
+                )
+                _events.update_item(
+                    Key={"run_id": session_id, "sk": OWNER_SK},
+                    UpdateExpression="SET confirmed = :confirmed",
+                    ConditionExpression="attribute_exists(run_id)",
+                    ExpressionAttributeValues={":confirmed": [approved["ticket_id"]]},
+                )
+                emit(
+                    "approval.granted",
+                    "ingress",
+                    "ok",
+                    f"{who['username']} approved {approved['tool']} {approved['ticket_id']}",
+                    payload=json.dumps(
+                        {
+                            "approval_id": approved["id"],
+                            "policy_session": agent_payload["policy_session"],
+                            "ticket_id": approved["ticket_id"],
+                        }
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - grant may have committed before error
+                try:
+                    retire_session(who["customer_id"], session_id, approved["id"])
+                except Exception as rotation_exc:  # noqa: BLE001 - retain owner and marker
+                    raise HttpError(
+                        503, "approval authority uncertain; operator recovery required"
+                    ) from rotation_exc
+                grant_aborted = True
+                if isinstance(exc, HttpError):
+                    raise
+                raise HttpError(502, "approval failed; prior policy session retired") from exc
+            st = demo_state(who["customer_id"])
+            confirmed = tuple(c["ticket_id"] for c in confirmations(st))
         read = tickets_for(who["customer_id"])
-        before = runs.snapshot(all_tickets())
+        before = None
         try:
+            before = runs.snapshot(all_tickets())
             agent = invoke_agent(token, session_id, {"run_id": session_id, **agent_payload})
             result = runs.run_result(
                 stage, agent, before, runs.snapshot(all_tickets()), mode, confirmed
             )
-        except Exception as exc:  # noqa: BLE001 - every failure is a visible, recorded run outcome
+        except Exception as exc:  # noqa: BLE001 - failure can follow a committed tool write
+            try:
+                after = runs.snapshot(all_tickets()) if before is not None else None
+            except Exception as read_exc:  # noqa: BLE001 - unknown is not zero effects
+                after = None
+                exc = RuntimeError(f"{exc}; post-failure store read: {read_exc}")
             result = runs.failed(
-                stage, session_id, "AgentCore Runtime", f"{type(exc).__name__}: {exc}"
+                stage,
+                session_id,
+                "AgentCore Runtime",
+                f"{type(exc).__name__}: {exc}",
+                before,
+                after,
+                confirmed,
             )
         emit(
             "run.completed",
@@ -599,13 +784,21 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                     }
                     if a["id"] == approved["id"]
                     else a
-                    for a in approvals(demo_state(who["customer_id"]))
+                    for a in current_approvals(demo_state(who["customer_id"]))
                 ],
+                owner=session_id,
             )
         elif kind == "live" and v3:
             save_approvals(
                 who["customer_id"],
-                runs.approval_requests(session_id, result.get("tool_calls", []), requests, read),
+                current_approvals(demo_state(who["customer_id"]))
+                + [
+                    {**a, "policy_session": agent_payload["policy_session"]}
+                    for a in runs.approval_requests(
+                        session_id, result.get("tool_calls", []), requests, read
+                    )
+                ],
+                owner=session_id,
             )
         cap = (
             runs.capture(session_id, stage, result["tool_calls"], runs.fingerprint(read))
@@ -618,10 +811,46 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 UpdateExpression="SET capture = :c",
                 ExpressionAttributeValues={":c": json.dumps(cap)},
             )
+        persisted_result = True
     finally:
-        _state.update_item(
-            Key={"customer_id": who["customer_id"]}, UpdateExpression="REMOVE busy_until"
+        if approved and demo_state(who["customer_id"]).get("approval_dispatch"):
+            try:
+                retire_session(
+                    who["customer_id"],
+                    session_id,
+                    approved["id"],
+                    executed=bool(locals().get("done")),
+                )
+            except Exception as exc:  # noqa: BLE001 - owner stays; no old-session reuse
+                raise HttpError(
+                    503, "approval session rotation uncertain; recovery required"
+                ) from exc
+        # A timed-out Runtime may still be executing. Keep the exclusion until externally
+        # verified quiescent; an expired time hint is not permission to reset/admit.
+        safe_release = bool(
+            locals().get("grant_aborted")
+            or (
+                locals().get("persisted_result")
+                and result["status"] != "ERROR"
+                and not result.get("evidence_uncertain")
+            )
         )
+        if safe_release:
+            release_run(who["customer_id"], session_id)
+        else:
+            try:
+                _state.update_item(
+                    Key={"customer_id": who["customer_id"]},
+                    UpdateExpression="SET exclusion_disposition = :status, exclusion_reason = :reason",
+                    ConditionExpression="busy_owner = :owner",
+                    ExpressionAttributeValues={
+                        ":status": "UNKNOWN",
+                        ":owner": session_id,
+                        ":reason": "Runtime/approval or evidence transition incomplete",
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - owner still excludes admission
+                print(f"exclusion reason not written: {type(exc).__name__}")
     return {"result": result}
 
 
@@ -756,20 +985,34 @@ def reset_demo(who: dict[str, str]) -> dict[str, Any]:
     """Back to a clean V0 for this operator's customer: seed tickets only, no stop, no last run."""
     require(who, "operator")
     cid = who["customer_id"]
-    for t in tickets_for(cid):
-        if t["ticket_id"] not in SEED.get(cid, {}):
-            _tickets.delete_item(Key={"customer_id": cid, "ticket_id": t["ticket_id"]})
-    reseed()
-    _state.put_item(
-        Item={
-            "customer_id": cid,
-            "active_stage": "v0",
-            "stop_requested": False,
-            "breaker_open": False,
-            "store_change_source": "Clean reset",
-            "policy_session": runs.uuid7(),
-        }
-    )
+    owner = runs.uuid7()
+    claimed = claim_seed_scope(owner)
+    try:
+        for t in tickets_for(cid):
+            if t["ticket_id"] not in SEED.get(cid, {}):
+                _tickets.delete_item(Key={"customer_id": cid, "ticket_id": t["ticket_id"]})
+        reseed()
+        _state.update_item(
+            Key={"customer_id": cid},
+            UpdateExpression="SET active_stage = :stage, stop_requested = :f, "
+            "breaker_open = :f, store_change_source = :src, policy_session = :ps "
+            "REMOVE last_run, run_id, before_tickets, confirmed, approvals, capture, "
+            "breaker_reason, breaker_pending, breaker_receipt, approval_uncertain, "
+            "approval_dispatch, exclusion_disposition, exclusion_reason",
+            ConditionExpression="busy_owner = :owner",
+            ExpressionAttributeValues={
+                ":stage": "v0",
+                ":f": False,
+                ":src": "Clean reset",
+                ":ps": runs.uuid7(),
+                ":owner": owner,
+            },
+        )
+        complete = True
+    finally:
+        if locals().get("complete"):
+            for tenant in reversed(claimed):
+                release_run(tenant, owner)
     return {"reset": True}
 
 
@@ -816,21 +1059,30 @@ def apply_patch(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     target = str(body.get("stage") or STAGES[min(STAGES.index(current) + 1, len(STAGES) - 1)])
     if target not in STAGES:
         raise HttpError(400, "unknown build")
-    if int(demo_state(cid).get("busy_until", 0)) > time.time():
-        raise HttpError(409, "an agent run is in progress")
-    reopen(cid)
-    _state.update_item(
-        Key={"customer_id": cid},
-        UpdateExpression=(
-            "SET active_stage = :t, store_change_source = :src, policy_session = :ps "
-            "REMOVE last_run, run_id, before_tickets, confirmed, approvals"
-        ),
-        ExpressionAttributeValues={
-            ":t": target,
-            ":src": f"Applied {target.upper()}; effects reopened",
-            ":ps": runs.uuid7(),
-        },
-    )
+    owner = runs.uuid7()
+    claimed = claim_seed_scope(owner)
+    try:
+        reopen(cid)
+        _state.update_item(
+            Key={"customer_id": cid},
+            UpdateExpression=(
+                "SET active_stage = :t, store_change_source = :src, policy_session = :ps "
+                "REMOVE last_run, run_id, before_tickets, confirmed, approvals, "
+                "approval_uncertain, approval_dispatch"
+            ),
+            ConditionExpression="busy_owner = :owner",
+            ExpressionAttributeValues={
+                ":t": target,
+                ":src": f"Applied {target.upper()}; effects reopened",
+                ":ps": runs.uuid7(),
+                ":owner": owner,
+            },
+        )
+        complete = True
+    finally:
+        if locals().get("complete"):
+            for tenant in reversed(claimed):
+                release_run(tenant, owner)
     return {"active_stage": target, "title": TITLES[target]}
 
 
@@ -848,11 +1100,21 @@ def request_stop(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
 def reset_breaker(who: dict[str, str]) -> dict[str, Any]:
     """A human closes the circuit breaker; it never closes on its own."""
     require(who, "operator")
-    _state.update_item(
-        Key={"customer_id": who["customer_id"]},
-        UpdateExpression="SET breaker_open = :f, breaker_reset_by = :by REMOVE breaker_reason",
-        ExpressionAttributeValues={":f": False, ":by": who["username"]},
-    )
+    try:
+        _state.update_item(
+            Key={"customer_id": who["customer_id"]},
+            UpdateExpression="SET breaker_open = :f, breaker_reset_by = :by "
+            "REMOVE breaker_reason, breaker_pending",
+            ConditionExpression="attribute_not_exists(busy_owner) AND "
+            "(attribute_not_exists(busy_until) OR busy_until < :now)",
+            ExpressionAttributeValues={
+                ":f": False,
+                ":by": who["username"],
+                ":now": int(time.time()),
+            },
+        )
+    except _state.meta.client.exceptions.ConditionalCheckFailedException as exc:
+        raise HttpError(409, "cannot recover breaker while a run owns exclusion") from exc
     return {"breaker_open": False}
 
 
@@ -896,14 +1158,22 @@ def gateway_call(token: str, url: str, session: str, name: str, args: dict) -> t
     return not result.get("isError") and "CONFIRMED" in text, text[:600]
 
 
-def record_approval(who: dict[str, str], token: str, stage: str, ticket_id: str) -> None:
+def record_approval(
+    who: dict[str, str], token: str, stage: str, card: dict[str, Any], session: str, owner: str
+) -> None:
     """V3+: the operator approves closing one of their own open tickets. The approval goes through
     the Gateway as confirm_close (no run_id: only the console may confirm), so AgentCore Policy
     records it in the case's session; the temporal permit for close_ticket looks for exactly this
     event, and allows one close per approval."""
     cid = who["customer_id"]
-    if STAGES.index(stage) < STAGES.index("v3"):
-        raise HttpError(409, "approvals are a V3 control: apply V3 first")
+    ticket_id = card["ticket_id"]
+    if (
+        STAGES.index(stage) < STAGES.index("v3")
+        or card["tool"] != "close_ticket"
+        or card["customer_id"] != cid
+        or card.get("policy_session") != session
+    ):
+        raise HttpError(409, "approval does not match this build, tenant or policy session")
     t = _tickets.get_item(Key={"customer_id": cid, "ticket_id": ticket_id}).get("Item")
     if t is None or t.get("status") != "OPEN":
         raise HttpError(400, "only an open ticket of your own customer can be approved")
@@ -915,18 +1185,82 @@ def record_approval(who: dict[str, str], token: str, stage: str, ticket_id: str)
         "ticket_id": ticket_id,
         "actor": {"user_sub": who["sub"], "customer_id": cid},
     }
-    allowed, text = gateway_call(
-        token, url, policy_session(cid), "TicketTools___confirm_close", args
+    # This marker precedes any possibly committed Gateway grant. Even a lost reply cannot
+    # open another replay/admission in this session until a durable rotation retires it.
+    marker = json.dumps(
+        {
+            "owner": owner,
+            "user_sub": who["sub"],
+            "id": card["id"],
+            "session": session,
+            "tool": card["tool"],
+            "ticket_id": ticket_id,
+            "reason": card["reason"] or "approved by the operator",
+        }
     )
+    _state.update_item(
+        Key={"customer_id": cid},
+        UpdateExpression="SET approval_uncertain = :marker",
+        ConditionExpression="busy_owner = :owner AND policy_session = :session "
+        "AND attribute_not_exists(approval_uncertain) AND attribute_not_exists(approval_dispatch)",
+        ExpressionAttributeValues={":marker": marker, ":owner": owner, ":session": session},
+    )
+    allowed, text = gateway_call(token, url, session, "TicketTools___confirm_close", args)
     if not allowed:
         raise HttpError(502, f"the Gateway refused the approval: {text[:300]}")
     done = [c for c in confirmations(demo_state(cid)) if c["ticket_id"] != ticket_id] + [
-        {"ticket_id": ticket_id, "by": who["username"], "at": int(time.time())}
+        {
+            "ticket_id": ticket_id,
+            "by": who["username"],
+            "at": int(time.time()),
+            "approval_id": card["id"],
+            "policy_session": session,
+        }
     ]
     _state.update_item(
         Key={"customer_id": cid},
-        UpdateExpression="SET confirmed = :c",
-        ExpressionAttributeValues={":c": json.dumps(done)},
+        UpdateExpression="SET confirmed = :c, approval_dispatch = :marker REMOVE approval_uncertain",
+        ConditionExpression="busy_owner = :owner AND policy_session = :session "
+        "AND approval_uncertain = :marker",
+        ExpressionAttributeValues={
+            ":c": json.dumps(done),
+            ":marker": marker,
+            ":owner": owner,
+            ":session": session,
+        },
+    )
+
+
+def retire_session(cid: str, owner: str, card_id: str, executed: bool = False) -> None:
+    """CAS rotation fences all future dispatch from an uncertain/consumed grant. The old
+    Gateway grant may still exist in the retired session; it is not claimed to be revoked."""
+    st = demo_state(cid)
+    session = st.get("policy_session", "")
+    items = [
+        {
+            **a,
+            "status": "APPROVED" if executed else "FAILED",
+            "outcome": "effect observed; session retired" if executed else "policy session retired",
+            "at": int(time.time()),
+        }
+        if a["id"] == card_id and a["status"] == "PENDING"
+        else {**a, "status": "EXPIRED", "outcome": "policy session retired", "at": int(time.time())}
+        if a["status"] == "PENDING" and a.get("policy_session") == session
+        else a
+        for a in current_approvals(st)
+    ]
+    _state.update_item(
+        Key={"customer_id": cid},
+        UpdateExpression="SET policy_session = :fresh, approvals = :cards, confirmed = :empty "
+        "REMOVE approval_uncertain, approval_dispatch",
+        ConditionExpression="busy_owner = :owner AND policy_session = :session",
+        ExpressionAttributeValues={
+            ":fresh": runs.uuid7(),
+            ":cards": json.dumps(items),
+            ":empty": "[]",
+            ":owner": owner,
+            ":session": session,
+        },
     )
 
 
@@ -939,9 +1273,9 @@ def reject_approval(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]
         {**a, "status": "REJECTED", "by": who["username"], "at": int(time.time())}
         if a["id"] == item["id"]
         else a
-        for a in approvals(st)
+        for a in current_approvals(st)
     ]
-    save_approvals(who["customer_id"], items)
+    save_approvals(who["customer_id"], items, previous=st.get("approvals", "[]"))
     return {"approvals": items}
 
 
@@ -1067,6 +1401,11 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         return reply(exc.status, {"error": str(exc)})
     except (ValueError, json.JSONDecodeError):
         return reply(400, {"error": "invalid request"})
+    except Exception as exc:  # noqa: BLE001 - no false success on ambiguous state/service replies
+        print(f"API transition unavailable: {type(exc).__name__}")
+        return reply(
+            503, {"error": "operation outcome uncertain; check exclusion and store evidence"}
+        )
 
 
 def reply(status: int, payload: dict[str, Any]) -> dict[str, Any]:

@@ -188,7 +188,11 @@ class Recorder:
     stage: str = "v0"
     screen: Any = None  # controls.Screen from V2
     breaker: Any = None  # controls.CircuitBreaker from V4
+    state_table: Any = None  # server-owned admission, checked again before Gateway dispatch
+    policy_session: str = ""
     blocked: bool = False
+    admission_lost: bool = False
+    held_count: int = 0
     approvals: bool = False  # V3+ live runs: consequential calls wait for the operator
     controls: list[dict[str, str]] = field(default_factory=list)
 
@@ -300,19 +304,58 @@ class Recorder:
         self.calls.append(call)
         ticket = call.input.get("ticket_id")
         refuse, status = "", "NOT_EVALUATED"
-        if self.breaker is not None and self.breaker.tripped:
+        if self.state_table is not None:
+            try:
+                state = (
+                    self.state_table.get_item(
+                        Key={"customer_id": self.actor["customer_id"]}, ConsistentRead=True
+                    ).get("Item")
+                    or {}
+                )
+                if (
+                    state.get("busy_owner") != self.run_id
+                    or state.get("busy_stage") != self.stage
+                    or state.get("busy_sub") != self.actor["user_sub"]
+                    or (self.policy_session and state.get("policy_session") != self.policy_session)
+                    or state.get("approval_uncertain")
+                ):
+                    refuse = "not evaluated: owned admission or policy session changed"
+            except Exception:  # noqa: BLE001 - no fresh authority to dispatch
+                refuse = "not evaluated: owned admission state unreadable"
+            if refuse:
+                self.blocked = True
+                self.admission_lost = True
+                agent = getattr(event, "agent", None)
+                if agent is not None:
+                    agent.cancel(message=refuse, after_current_tools=True)
+        if not refuse and self.breaker is not None and self.breaker.tripped:
             refuse = "not evaluated: the circuit breaker tripped and ended this run"
-        elif call.tool in WRITE_TOOLS and self.breaker is not None and self.breaker.read_only:
+        elif (
+            not refuse
+            and call.tool in WRITE_TOOLS
+            and self.breaker is not None
+            and self.breaker.read_only
+        ):
             refuse = "refused: the circuit breaker is OPEN, so the agent is read-only until reset"
             status = "READ_ONLY"
-        elif call.tool in WRITE_TOOLS and self.screen is not None and self.screen.unavailable:
+        elif (
+            not refuse
+            and call.tool in WRITE_TOOLS
+            and self.screen is not None
+            and self.screen.unavailable
+        ):
             refuse = "refused: the guardrail could not screen the ticket text (fails closed)"
-        elif call.tool in APPROVE_TOOLS and self.approvals:
-            refuse = (
-                "held for the operator's approval: nothing was sent to the Gateway. The operator "
-                "approves or rejects this call in the console; tell them it is waiting."
-            )
-            status = "PENDING_APPROVAL"
+        elif not refuse and call.tool in APPROVE_TOOLS and self.approvals:
+            if self.held_count >= 12:
+                refuse = "not evaluated: per-run approval card limit (12) reached"
+                self.control("Human approval", "LIMIT · excess proposals not sent to Gateway")
+            else:
+                self.held_count += 1
+                refuse = (
+                    "held for the operator's approval: nothing was sent to the Gateway. The operator "
+                    "approves or rejects this call in the console; tell them it is waiting."
+                )
+                status = "PENDING_APPROVAL"
         if refuse:
             event.cancel_tool = refuse
             call.status, call.result, call.decision = status, refuse, status
@@ -476,7 +519,14 @@ class Recorder:
         """V4: open the circuit breaker. The run ends (tools already requested finish as
         NOT_EVALUATED) and the agent stays read-only until an operator resets the breaker."""
         self.breaker.trip(reason)
-        self.control("Circuit breaker", f"OPEN · tripped by {what} · agent is read-only")
+        self.control(
+            "Circuit breaker",
+            (
+                f"OPEN · tripped by {what} · agent is read-only"
+                if self.breaker.durable
+                else f"UNCONFIRMED latch · tripped by {what} · admission intent retained"
+            ),
+        )
         if agent is not None:
             agent.cancel(
                 message=f"Run ended: {reason}. The circuit breaker is open; the agent is "
@@ -487,8 +537,13 @@ class Recorder:
             "run.halted",
             "agent",
             "halted",
-            "circuit breaker tripped · run ended, agent read-only",
-            detail={"reason": reason},
+            "circuit breaker tripped · run ended"
+            + (", durable OPEN" if self.breaker.durable else ", persistence uncertain"),
+            detail={
+                "reason": reason,
+                "durable": self.breaker.durable,
+                "persistence_error": self.breaker.persistence_error,
+            },
             payload=_payload(
                 {
                     "hook": "AfterToolCallEvent → agent.cancel(after_current_tools=True)",
@@ -496,7 +551,10 @@ class Recorder:
                         "any AgentCore Policy DENY (incl. the write cap)",
                         "turn limit",
                     ],
-                    "durable state": {"breaker_open": True, "breaker_reason": reason},
+                    "durable state": {
+                        "breaker_open": self.breaker.durable,
+                        "writable_intent_retained_if_unconfirmed": True,
+                    },
                     "while open": "runs are admitted read-only; every write is refused",
                     "reset": "an operator only (⚙ Reset circuit breaker)",
                 }
@@ -580,6 +638,8 @@ def replay(gateway: Any, recorder: Recorder, calls: list[dict[str, Any]]) -> Non
         event = ReplayToolEvent(use)
         recorder.before(event)
         if event.cancel_tool:
+            if recorder.blocked:
+                break
             continue
         try:
             event.result = dict(gateway.call_tool_sync(use["toolUseId"], use["name"], use["input"]))
@@ -607,13 +667,15 @@ def run(
     (V4 on) are supplied by the entrypoint; ``mode="replay"`` re-sends captured tool calls."""
     from strands.tools.mcp import MCPClient
 
-    from sec310_agent.controls import SESSION_HEADER, CircuitBreaker, at_least, build_of
+    from sec310_agent.controls import BUILDS, SESSION_HEADER, CircuitBreaker, at_least
     from sec310_agent.events import Events
 
     claims = claims_of(token)
     actor = actor_from(claims)
     run_id = str(payload.get("run_id") or session_id or "")[:64]
-    stage = build_of(payload.get("stage"))
+    stage = payload.get("stage")
+    if stage not in BUILDS:
+        raise PermissionError("explicit valid build required")
     mode = "replay" if payload.get("mode") == "replay" else "live"
     events = Events(run_id, "runtime")
     events.emit(
@@ -659,7 +721,11 @@ def run(
             }
         ),
     )
-    breaker = CircuitBreaker(actor["customer_id"], state_table) if state_table is not None else None
+    breaker = (
+        CircuitBreaker(actor["customer_id"], state_table)
+        if at_least(stage, "v4") and state_table is not None
+        else None
+    )
     label = MODEL_LABEL if "llama4-maverick" in model_id else model_id.split(".", 1)[-1]
     recorder = Recorder(
         actor,
@@ -670,6 +736,8 @@ def run(
         stage=stage,
         screen=screen,
         breaker=breaker,
+        state_table=state_table,
+        policy_session=str(payload.get("policy_session") or "") if at_least(stage, "v3") else "",
         # live runs only: replay re-sends captured calls straight to the Gateway, so it shows what
         # the policy does even without the harness's hold; an approved call is sent the same way
         approvals=at_least(stage, "v3") and mode == "live",
@@ -690,7 +758,50 @@ def run(
         "blocked": False,
         "refused": "",
     }
-    refused = breaker.admit() if breaker is not None else None
+    refused = "durable admission state unavailable" if state_table is None else None
+    if not refused:
+        try:
+            state = (
+                state_table.get_item(
+                    Key={"customer_id": actor["customer_id"]}, ConsistentRead=True
+                ).get("Item")
+                or {}
+            )
+            session = payload.get("policy_session")
+            if (
+                claims.get("role") != "operator"
+                or state.get("busy_owner") != run_id
+                or state.get("busy_stage") != stage
+                or state.get("busy_sub") != actor["user_sub"]
+                or state.get("approval_uncertain")
+                or (
+                    at_least(stage, "v3")
+                    and (not session or state.get("policy_session") != session)
+                )
+            ):
+                refused = "owned build, caller or policy session is not current"
+            elif at_least(stage, "v3") and mode == "replay" and payload.get("approval"):
+                grant = json.loads(state.get("approval_dispatch") or "{}")
+                calls = payload.get("calls") or []
+                if (
+                    grant.get("owner") != run_id
+                    or grant.get("user_sub") != actor["user_sub"]
+                    or grant.get("session") != session
+                    or grant.get("id") != payload["approval"]
+                    or len(calls) != 1
+                    or calls[0].get("tool") != grant.get("tool")
+                    or calls[0].get("input", {}).get("ticket_id") != grant.get("ticket_id")
+                    or calls[0].get("input", {}).get("customer_id") != actor["customer_id"]
+                    or calls[0].get("input", {}).get("reason") != grant.get("reason")
+                    or set(calls[0].get("input", {})) != {"customer_id", "ticket_id", "reason"}
+                ):
+                    refused = "approved call does not match owned grant and target"
+            elif at_least(stage, "v3") and state.get("approval_dispatch"):
+                refused = "approval dispatch in progress; other calls refused"
+        except Exception as exc:  # noqa: BLE001
+            refused = f"policy session state unavailable ({type(exc).__name__})"
+    if not refused and breaker is not None:
+        refused = breaker.admit()
     if refused:
         recorder.control("Kill switch", "REFUSED at admission · agent is stopped")
         events.emit(
@@ -731,6 +842,13 @@ def run(
             answer, stop = live(payload, actor, gateway, recorder, model_id, run_id)
     finally:
         gateway.stop(None, None, None)
+    if breaker is not None and not breaker.tripped:
+        if recorder.admission_lost or any(c.status == "ERROR" for c in recorder.calls):
+            breaker.persistence_error = "admission lost or tool outcome unresolved; intent retained"
+        else:
+            breaker.complete()  # a fully withheld Guardrail result is a clean read-only end
+    if breaker is not None and breaker.persistence_error:
+        recorder.control("Circuit breaker persistence", f"UNCERTAIN · {breaker.persistence_error}")
     return {
         **out,
         "answer": answer,
@@ -738,7 +856,11 @@ def run(
         "tool_calls": [asdict(c) for c in recorder.calls],
         "halted": bool(breaker and breaker.tripped),
         "read_only": bool(breaker and breaker.read_only),
+        "containment_durable": bool(breaker and breaker.durable),
+        "containment_uncertain": bool(breaker and breaker.tripped and not breaker.durable),
+        "persistence_error": breaker.persistence_error if breaker else "",
         "blocked": recorder.blocked,
+        "admission_lost": recorder.admission_lost,
     }
 
 

@@ -151,6 +151,21 @@ const firstOf = (cfg, realm) => Object.keys(cfg.personas).find((u) => realmOf(cf
 // Browsers mark cross-site requests; a switch only follows a same-site click or a typed URL.
 const crossSite = (headers) => ["cross-site", "same-site"].includes(headers["sec-fetch-site"]?.[0]?.value);
 
+// Return destinations are browser URLs, not string prefixes: WHATWG treats /\\host as //host.
+// Revalidate the PKCE cookie on callback too; the cookie is not an authority to redirect.
+function returnPath(value, host) {
+  if (typeof value !== "string" || !value.startsWith("/") || /[\\\u0000-\u001f\u007f]/.test(value)) return "/";
+  try {
+    const origin = new URL(`https://${host}`);
+    const url = new URL(value, origin);
+    if (url.origin !== origin.origin || !url.pathname.startsWith("/") ||
+        /%(?:2f|5c|25|0[0-9a-f]|1[0-9a-f]|7f)/i.test(url.pathname)) return "/";
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return "/";
+  }
+}
+
 async function switchTo(cfg, host, query, headers, jar) {
   if (crossSite(headers)) return deny(403, "cross-site persona switch refused");
   const q = new URLSearchParams(query);
@@ -160,8 +175,8 @@ async function switchTo(cfg, host, query, headers, jar) {
   const as = await signInAs(cfg, user);
   if (!as) return page(400, "Unknown persona", "That persona cannot be switched to.", "Back to the console", "/");
   console.log(JSON.stringify({ event: "persona_switch", presenter: who.claims.sub, as: user, realm: as.realm }));
-  let back = q.get("b") || "/";
-  if (!back.startsWith("/") || back.startsWith("//") || back.startsWith("/auth")) back = "/";
+  let back = returnPath(q.get("b") || "/", host);
+  if (back.startsWith("/auth")) back = "/";
   if (as.realm === "portal") back = "/portal/";
   else if (back.startsWith("/portal")) back = "/";
   return redirect(back, [...who.cookies, ...as.cookies]);
@@ -228,7 +243,7 @@ p{margin:0 0 24px}a{display:inline-block;padding:12px 24px;border-radius:999px;b
 
 async function startLogin(cfg, host, uri, realm, jar) {
   realm = realm === "portal" ? "portal" : "op";
-  if (!uri.startsWith("/") || uri.startsWith("//")) uri = "/"; // only same-site paths
+  uri = returnPath(uri, host);
   // A signed-in presenter whose persona session expired gets that persona back without a login page.
   const who = await presenter(cfg, jar);
   if (who) {
@@ -299,7 +314,7 @@ async function callback(cfg, host, query, jar) {
     const [op, portal] = await Promise.all([signInAs(cfg, firstOf(cfg, "op")), signInAs(cfg, firstOf(cfg, "portal"))]);
     if (!op || !portal) return deny(503, "persona sign-in unavailable");
     console.log(JSON.stringify({ event: "presenter_signed_in", presenter: claims.sub }));
-    return redirect(state.r === "portal" ? "/portal/" : state.b, [
+    return redirect(state.r === "portal" ? "/portal/" : returnPath(state.b, host), [
       ...presenterCookies(tokens.access_token, tokens.refresh_token, ttl),
       ...op.cookies,
       ...portal.cookies,
@@ -310,7 +325,7 @@ async function callback(cfg, host, query, jar) {
     return page(403, "Operators only", "The operator console needs an operator persona such as alice or bob.", "Sign in as another user", "/auth/logout");
   if (state.r === "portal" && claims.role !== "customer")
     return page(403, "Customers only", "The support portal needs a customer persona such as carol.", "Sign in as another user", "/auth/logout");
-  return redirect(state.b, [...sessionCookies(cfg, state.r, tokens.access_token, claims, ttl), setCookie(`sec310_pkce_${nonce}`, "", 0)]);
+  return redirect(returnPath(state.b, host), [...sessionCookies(cfg, state.r, tokens.access_token, claims, ttl), setCookie(`sec310_pkce_${nonce}`, "", 0)]);
 }
 
 export const handler = async (event) => {

@@ -14,7 +14,7 @@ from typing import Any
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from sec310_agent.agent import bearer, run
-from sec310_agent.controls import GATEWAY, Screen, at_least, build_of
+from sec310_agent.controls import GATEWAY, Screen, at_least
 
 app = BedrockAgentCoreApp()
 log = logging.getLogger("sec310_agent")
@@ -28,10 +28,9 @@ def build_controls(stage: str) -> dict[str, Any]:
     }
     if at_least(stage, "v2"):
         controls["screen"] = Screen(os.environ["GUARDRAIL_ID"], os.environ["GUARDRAIL_VERSION"])
-    if at_least(stage, "v4"):
-        import boto3
+    import boto3
 
-        controls["state_table"] = boto3.resource("dynamodb").Table(os.environ["STATE_TABLE"])
+    controls["state_table"] = boto3.resource("dynamodb").Table(os.environ["STATE_TABLE"])
     return controls
 
 
@@ -44,12 +43,14 @@ def invoke(payload: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"error": str(exc)}
     payload = payload or {}
     try:
+        if payload.get("stage") not in GATEWAY:
+            return {"error": "explicit valid build required"}
         result = run(
             payload,
             token,
             model_id=os.environ["MODEL_ID"],
             session_id=getattr(context, "session_id", None),
-            **build_controls(build_of(payload.get("stage"))),
+            **build_controls(payload["stage"]),
         )
     except Exception as exc:  # noqa: BLE001 - a failed run is an answer, not a Runtime 500
         log.exception("run failed")

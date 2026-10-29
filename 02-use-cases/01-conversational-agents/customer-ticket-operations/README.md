@@ -268,6 +268,50 @@ Official sources:
 - [AgentCore observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html)
 - [Gateway logs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-gateway-metrics.html)
 
+## AgentCore browser demo: unresolved-run recovery
+
+The deployed SEC310 browser/API demo uses `busy_owner` (and `busy_stage`/`busy_sub`) as an
+owned exclusion, not a lease that expires by itself. A Runtime timeout, lost grant reply,
+failed state transition, or interrupted eval may leave an owner in place. `/api/state`
+returns `recovery` with the disposition, owner/run ID, reason and safe next step; the
+console shows **Recovery required**. Reset and apply return 409 while an owner exists.
+`breaker_pending` without an owner is read-only until an operator reviews effects and
+uses **Reset circuit breaker**. A completed clean run can automatically release its
+exact owner; a failed breaker trip retains a durable writable-intent marker even when
+the OPEN update did not commit. A policy-session rotation fences *new application
+dispatch*, but does not revoke an already issued Gateway grant or stop in-flight work.
+
+**Out-of-band operator recovery (not automated by this sample):**
+
+1. In the confirmed demo account and region, identify the exact tenant and `busy_owner`,
+   `busy_stage`, `busy_sub`, `policy_session`, `breaker_pending`, `breaker_open`,
+   `approval_uncertain` / `approval_dispatch`, and `last_run` from a **consistent** state
+   read. Identify associated Runtime invocation, run events, Gateway/tool records, and
+   before/after ticket snapshots. Do not put access tokens, credentials or session secrets
+   in recovery notes.
+2. Establish from supported AgentCore Runtime and Gateway/tool contracts that *all*
+   relevant invocations/tool work have quiesced or have been authoritatively fenced.
+   **Elapsed `busy_until` and quiet logs are not evidence of quiescence.** The precise
+   service-supported quiescence/fencing procedure has **not** been established by this
+   offline remediation; it is an unresolved prerequisite before clearing an orphan.
+   Do not run a recovery write merely because the owner looks stale.
+3. Reconcile actual ticket effects with the run's ERROR/evidence-uncertain record and
+   the exact held approval's decision. Treat lost Gateway replies as potentially granted.
+   Record who approved recovery and the evidence used. Keep terminal approval/effect
+   history; pending requests from a retired session must be marked expired/failed, not
+   silently moved to another session.
+4. Only after step 2 is proven, use approved break-glass access to make **one conditional
+   state transition** against the exact observed tenant, owner, policy session and
+   relevant marker/revision values. Rotate to a fresh policy session, retire old cards,
+   clear only that owner's busy fields/uncertain marker, and keep the breaker OPEN until
+   the operator separately chooses to reset it after inspecting the effects. If any
+   condition fails or the write reply is uncertain, read back consistently and restart
+   reconciliation; never remove a different owner's exclusion. No unconditional PutItem
+   or time-only release. The application does not offer a button that asserts quiescence.
+
+This is an operational prerequisite, not proof that real AgentCore/Gateway temporal
+behavior, Runtime cancellation, or DynamoDB consistency has been observed live.
+
 ## What this sample is not
 
 It is not a framework, not a reference architecture, and not a claim about any specific

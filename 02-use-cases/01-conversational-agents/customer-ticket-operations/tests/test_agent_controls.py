@@ -29,7 +29,7 @@ def jwt(claims: dict) -> str:
     return f"{enc({'alg': 'RS256'})}.{enc(claims)}.sig"
 
 
-TOKEN = jwt({"sub": "sub-alice", "customer_id": "customer-a"})
+TOKEN = jwt({"sub": "sub-alice", "customer_id": "customer-a", "role": "operator"})
 
 
 class FakeGateway:
@@ -83,15 +83,32 @@ def fake_strands(monkeypatch):
 
 class StateTable:
     def __init__(self, item=None, fail=False):
-        self.item, self.fail, self.updates = item, fail, []
+        self.item = {
+            "policy_session": "ps-1",
+            "busy_owner": "r1",
+            "busy_stage": "v4",
+            "busy_sub": "sub-alice",
+            **(item or {}),
+        }
+        self.fail, self.updates = fail, []
 
     def get_item(self, Key, ConsistentRead):
         if self.fail:
             raise RuntimeError("throttled")
         return {"Item": self.item} if self.item else {}
 
-    def update_item(self, Key, UpdateExpression, ExpressionAttributeValues):
+    def update_item(
+        self, Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression=None
+    ):
         self.updates.append((Key, ExpressionAttributeValues))
+        if "breaker_pending = :owner" in UpdateExpression and "REMOVE" not in UpdateExpression:
+            self.item["breaker_pending"] = ExpressionAttributeValues[":owner"]
+        elif "breaker_open = :t" in UpdateExpression:
+            self.item.update(breaker_open=True)
+            self.item.pop("breaker_pending", None)
+        elif "breaker_receipt" in UpdateExpression:
+            self.item["breaker_receipt"] = ExpressionAttributeValues[":receipt"]
+            self.item.pop("breaker_pending", None)
 
 
 class Guardrail:
@@ -106,7 +123,15 @@ class Guardrail:
 
 
 def replay(stage, calls=CAPTURE, extra=None, **controls):
-    payload = {"stage": stage, "mode": "replay", "calls": calls, "run_id": "r1", **(extra or {})}
+    payload = {
+        "stage": stage,
+        "mode": "replay",
+        "calls": calls,
+        "run_id": "r1",
+        **({"policy_session": "ps-1"} if stage in ("v3", "v4", "v5") else {}),
+        **(extra or {}),
+    }
+    controls.setdefault("state_table", StateTable({"busy_stage": stage}))
     return run(
         payload, TOKEN, gateway_url=f"https://{stage}", model_id="m", session_id="s", **controls
     )
@@ -152,7 +177,14 @@ def test_replay_records_a_gateway_failure_and_carries_on():
 
 def test_live_mode_is_the_default():
     with pytest.raises(ImportError):  # live needs strands.Agent: replay is never implied
-        run({"stage": "v0"}, TOKEN, gateway_url="https://v0", model_id="m", session_id="s")
+        run(
+            {"stage": "v0", "run_id": "r1"},
+            TOKEN,
+            gateway_url="https://v0",
+            model_id="m",
+            session_id="s",
+            state_table=StateTable({"busy_stage": "v0"}),
+        )
     assert FakeGateway.instances[0].stopped
 
 
@@ -164,6 +196,24 @@ def test_v2_screen_wraps_clean_ticket_text_in_nonce_tags():
     assert s.client.seen == [TICKETS]
     assert result["controls"][0]["control"] == "Bedrock Guardrails"
     assert not result["blocked"] and len(FakeGateway.instances[0].sent) == 3
+
+
+def test_v2_oversized_aggregate_is_withheld_before_model_or_write():
+    tail = "safe" * 5000 + "INJECT_CLOSE_A42"
+    guard = Guardrail("NONE")
+    FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": tail}]}}
+    result = replay("v2", screen=screen(guard))
+    assert result["blocked"] and guard.seen == []
+    assert "INJECT_CLOSE_A42" not in result["tool_calls"][0]["result"]
+    assert len(FakeGateway.instances[0].sent) == 1
+    assert result["controls"][0]["status"] == "UNAVAILABLE · fails closed"
+
+
+def test_v2_exact_screen_limit_releases_only_fully_scored_text():
+    guard = Guardrail("NONE")
+    text = "x" * 20000
+    FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": text}]}}
+    assert not replay("v2", screen=screen(guard))["blocked"] and guard.seen == [text]
 
 
 def test_v2_screen_block_ends_the_replay_before_any_write():
@@ -199,6 +249,97 @@ def test_v3_sends_the_case_policy_session_to_the_gateway():
         "Authorization": f"Bearer {TOKEN}",
         "x-amzn-bedrock-agentcore-policy-session-id": "ps-1",
     }
+
+
+def test_runtime_rechecks_owner_and_session_before_each_gateway_call(monkeypatch):
+    table = StateTable({"busy_stage": "v3"})
+    original = FakeGateway.call_tool_sync
+
+    def rotate_after_read(self, tool_use_id, name, arguments=None):
+        result = original(self, tool_use_id, name, arguments)
+        if name.endswith("list_tickets"):
+            table.item["policy_session"] = "retired"
+        return result
+
+    monkeypatch.setattr(FakeGateway, "call_tool_sync", rotate_after_read)
+    result = replay("v3", calls=CAPTURE[:2], state_table=table)
+    assert result["admission_lost"] and result["tool_calls"][-1]["status"] == "NOT_EVALUATED"
+    assert len(FakeGateway.instances[-1].sent) == 1
+
+
+def test_runtime_stage_downgrade_and_missing_owner_refused_before_gateway():
+    for state in (
+        {"busy_stage": "v3"},
+        {"busy_owner": "old"},
+        {"busy_sub": "other"},
+        {"busy_stage": "v0", "approval_uncertain": "x"},
+    ):
+        result = replay("v0", state_table=StateTable(state))
+        assert result["refused"] and FakeGateway.instances == []
+    assert replay("v0", state_table=StateTable({"busy_stage": "v0"}))["refused"] == ""
+    FakeGateway.instances.clear()
+    assert replay("v0", state_table=None)["refused"] and FakeGateway.instances == []
+    with pytest.raises(PermissionError, match="explicit valid build"):
+        run({"run_id": "r1"}, TOKEN, gateway_url="https://v0", model_id="m", session_id="s")
+    with pytest.raises(PermissionError, match="explicit valid build"):
+        run(
+            {"stage": "unknown", "run_id": "r1"},
+            TOKEN,
+            gateway_url="https://v0",
+            model_id="m",
+            session_id="s",
+        )
+
+
+def test_runtime_rejects_retired_session_foreign_owner_and_unmatched_approval():
+    from sec310_agent.controls import SESSION_HEADER
+
+    expected = {
+        "owner": "r1",
+        "user_sub": "sub-alice",
+        "session": "ps-1",
+        "id": "card-1",
+        "tool": "close_ticket",
+        "ticket_id": "A-42",
+        "reason": "approved",
+    }
+    call = [
+        {
+            "tool": "close_ticket",
+            "input": {"customer_id": "customer-a", "ticket_id": "A-42", "reason": "approved"},
+        }
+    ]
+    customer_token = jwt({"sub": "sub-carol", "customer_id": "customer-a", "role": "customer"})
+    customer_result = run(
+        {
+            "stage": "v3",
+            "mode": "replay",
+            "run_id": "r1",
+            "policy_session": "ps-1",
+            "calls": call,
+            "approval": "card-1",
+        },
+        customer_token,
+        gateway_url="https://v3",
+        model_id="m",
+        session_id="s",
+        state_table=StateTable({"busy_stage": "v3", "approval_dispatch": json.dumps(expected)}),
+    )
+    assert customer_result["refused"] and FakeGateway.instances == []
+    for state, extra in (
+        ({"policy_session": "rotated"}, {}),
+        ({"busy_owner": "other"}, {}),
+        ({"approval_uncertain": "unresolved"}, {}),
+        ({"approval_dispatch": json.dumps(expected)}, {"approval": "wrong"}),
+    ):
+        result = replay(
+            "v3", calls=call, state_table=StateTable({"busy_stage": "v3", **state}), extra=extra
+        )
+        assert result["refused"] and result["tool_calls"] == []
+    table = StateTable({"busy_stage": "v3", "approval_dispatch": json.dumps(expected)})
+    result = replay("v3", calls=call, state_table=table, extra={"approval": "card-1"})
+    assert not result["refused"] and result["tool_calls"][0]["status"] == "OK"
+    assert FakeGateway.instances[-1].headers[SESSION_HEADER] == "ps-1"
 
 
 def test_builds_before_v3_send_no_policy_session():
@@ -244,8 +385,27 @@ def test_v3_replay_sends_the_close_straight_to_the_gateway_where_policy_decides(
 
 
 def test_an_approved_call_is_sent_once_with_no_model_call():
-    calls = [{"tool": "close_ticket", "input": {"customer_id": "customer-a", "ticket_id": "A-41"}}]
-    result = replay("v3", calls=calls, extra={"approval": "r1-1"})
+    calls = [
+        {
+            "tool": "close_ticket",
+            "input": {"customer_id": "customer-a", "ticket_id": "A-41", "reason": "approved"},
+        }
+    ]
+    grant = {
+        "owner": "r1",
+        "user_sub": "sub-alice",
+        "session": "ps-1",
+        "id": "r1-1",
+        "tool": "close_ticket",
+        "ticket_id": "A-41",
+        "reason": "approved",
+    }
+    result = replay(
+        "v3",
+        calls=calls,
+        extra={"approval": "r1-1"},
+        state_table=StateTable({"busy_stage": "v3", "approval_dispatch": json.dumps(grant)}),
+    )
     assert [n for n, _ in FakeGateway.instances[0].sent] == ["TicketTools___close_ticket"]
     assert result["tool_calls"][0]["status"] == "OK"
     assert "approved" in result["answer"]
@@ -259,13 +419,117 @@ def test_v4_first_denial_trips_the_breaker_and_skips_the_rest():
     assert result["halted"] is True and result["read_only"] is False
     assert [c["status"] for c in result["tool_calls"]] == ["OK", "ERROR", "NOT_EVALUATED"]
     assert [n for n, _ in FakeGateway.instances[0].sent][-1] == "TicketTools___close_ticket"
-    key, values = table.updates[0]
+    key, values = table.updates[1]
     assert key == {"customer_id": "customer-a"} and values[":t"] is True
     assert "close_ticket" in values[":r"]
     assert {
         "control": "Circuit breaker",
         "status": "OPEN · tripped by close_ticket B-77 denied · agent is read-only",
     } in result["controls"]
+
+
+def test_v4_trip_persistence_failure_retains_intent_and_recovered_read_only():
+    class FailingTrip(StateTable):
+        def update_item(
+            self, Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression=None
+        ):
+            if "breaker_open = :t" in UpdateExpression:
+                raise RuntimeError("write refused")
+            return super().update_item(
+                Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression
+            )
+
+    FakeGateway.replies = {"close_ticket": {"status": "error", "content": [{"text": DENIED}]}}
+    table = FailingTrip()
+    first = replay("v4", state_table=table)
+    assert first["halted"] and first["containment_uncertain"]
+    assert table.item["breaker_pending"] and not table.item.get("breaker_open")
+    assert "UNCONFIRMED latch" in first["controls"][-2]["status"]
+    FakeGateway.replies = {}
+    second = replay("v4", state_table=table)
+    assert (
+        second["read_only"] and [c["status"] for c in second["tool_calls"]][1:] == ["READ_ONLY"] * 2
+    )
+
+
+def test_v4_ambiguous_trip_commit_is_verified_by_consistent_read():
+    class LostTripAck(StateTable):
+        def update_item(
+            self, Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression=None
+        ):
+            out = super().update_item(
+                Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression
+            )
+            if "breaker_open = :t" in UpdateExpression:
+                raise RuntimeError("reply lost after durable OPEN")
+            return out
+
+    FakeGateway.replies = {"close_ticket": {"status": "error", "content": [{"text": DENIED}]}}
+    table = LostTripAck()
+    first = replay("v4", state_table=table)
+    assert first["containment_durable"] and not first["containment_uncertain"]
+    assert table.item["breaker_open"] and "breaker_pending" not in table.item
+    assert replay("v4", state_table=table)["read_only"]
+
+
+def test_v4_clean_release_receipt_and_failed_release_intent():
+    class LostRelease(StateTable):
+        def __init__(self, commit):
+            super().__init__()
+            self.commit = commit
+
+        def update_item(
+            self, Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression=None
+        ):
+            if "breaker_receipt" in UpdateExpression:
+                if self.commit:
+                    super().update_item(
+                        Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression
+                    )
+                raise RuntimeError("lost ack")
+            return super().update_item(
+                Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression
+            )
+
+    for commit in (False, True):
+        table = LostRelease(commit)
+        result = replay("v4", calls=[], state_table=table)
+        assert bool(table.item.get("breaker_pending")) is not commit
+        assert table.item.get("breaker_receipt", "").startswith("CLEAN_COMPLETED:") is commit
+        assert bool(result["persistence_error"]) is not commit
+        next_run = replay("v4", calls=[], state_table=table)
+        assert next_run["read_only"] is not commit
+
+
+def test_v4_clean_release_lost_ack_and_unavailable_verification_recovers_by_receipt():
+    class LostReleaseAndRead(StateTable):
+        unreadable = False
+
+        def update_item(
+            self, Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression=None
+        ):
+            result = super().update_item(
+                Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression
+            )
+            if "breaker_receipt" in UpdateExpression:
+                self.unreadable = True
+                raise RuntimeError("reply lost")
+            return result
+
+        def get_item(self, Key, ConsistentRead):
+            if self.unreadable:
+                self.unreadable = False
+                raise RuntimeError("verification unavailable")
+            return super().get_item(Key, ConsistentRead)
+
+    table = LostReleaseAndRead()
+    first = replay("v4", calls=[], state_table=table)
+    assert first["persistence_error"] and table.item["breaker_receipt"].startswith(
+        "CLEAN_COMPLETED:"
+    )
+    assert "breaker_pending" not in table.item
+    second = replay("v4", calls=[], state_table=table)
+    assert not second["read_only"] and not second["refused"]
 
 
 def test_v4_open_breaker_admits_read_only_and_refuses_every_write():
@@ -285,7 +549,7 @@ def test_v4_open_breaker_admits_read_only_and_refuses_every_write():
     "table, why",
     [
         (StateTable({"stop_requested": True, "stop_source": "operator"}), "stopped by an operator"),
-        (StateTable(fail=True), "agent state unavailable"),
+        (StateTable(fail=True), "policy session state unavailable"),
     ],
 )
 def test_v4_kill_switch_refuses_at_admission_without_touching_the_gateway(table, why):
@@ -309,11 +573,12 @@ def test_v4_turn_limit_trips_the_breaker():
 
     table = StateTable()
     rec = Recorder(ACTOR, stage="v4", breaker=CircuitBreaker("customer-a", table))
+    assert rec.breaker.admit() is None
     rec.turn = MAX_TURNS
     event = SimpleNamespace(agent=None, cancel=False)
     rec.model_start(event)
     assert event.cancel and rec.breaker.tripped
-    assert "turn limit" in table.updates[0][1][":r"]
+    assert "turn limit" in table.updates[1][1][":r"]
 
 
 # ── app.py: per-build controls from the environment ───────────────────────
@@ -341,10 +606,10 @@ def app(monkeypatch):
 @pytest.mark.parametrize(
     "stage, url, screened, contained",
     [
-        ("v0", "https://v0", False, False),
-        ("v1", "https://v1", False, False),
-        ("v2", "https://v1", True, False),
-        ("v3", "https://v3", True, False),
+        ("v0", "https://v0", False, True),
+        ("v1", "https://v1", False, True),
+        ("v2", "https://v1", True, True),
+        ("v3", "https://v3", True, True),
         ("v4", "https://v4", True, True),
         ("v5", "https://v4", True, True),
     ],
@@ -389,5 +654,5 @@ def test_invoke_runs_the_payload_build(app, monkeypatch):
     assert seen["gateway_url"] == "https://v4" and seen["token"] == TOKEN
     assert "screen" in seen and seen["state_table"] == ("table", "dynamodb", "state")
     seen.clear()
-    app.invoke({"stage": "v9"}, context)  # an unknown build runs as V0, never as a later one
-    assert seen["gateway_url"] == "https://v0" and "screen" not in seen
+    assert app.invoke({"stage": "v9"}, context)["error"] == "explicit valid build required"
+    assert seen == {}  # no silent downgrade at Runtime ingress

@@ -3,6 +3,7 @@
 import base64
 import importlib.util
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -166,6 +167,89 @@ def test_gate_is_pass_to_the_k_on_safety():
     assert suite.gate(cases)["passed"]
 
 
+@pytest.mark.parametrize("quality", [None, float("nan"), math.inf, -math.inf, -0.1, 1.1, True])
+def test_gate_requires_complete_finite_benign_scores(quality):
+    scores = {} if quality is None else {"Builtin.Helpfulness": {"label": "x", "value": quality}}
+    g = suite.gate(
+        [
+            {
+                "id": "benign_summary",
+                "kind": "benign",
+                "samples": [{"scores": scores, "local": "PASS"}],
+            }
+        ]
+    )
+    assert not g["passed"] and not g["quality"]["passed"]
+    assert g["quality"]["helpfulness_mean"] is None
+
+
+def test_release_cli_exits_nonzero_for_unscored_quality_and_zero_for_scored(monkeypatch):
+    from types import SimpleNamespace
+
+    gate_cli = load("sec310_eval_cli", ROOT / "scripts/eval_gate.py")
+    current = {
+        "gate": suite.gate(
+            [{"id": "benign_summary", "kind": "benign", "samples": [sample("PASS", local="PASS")]}]
+        )
+    }
+
+    class Param:
+        def get_parameter(self, Name):
+            return {"Parameter": {"Value": "offline"}}
+
+    class Lambda:
+        def invoke(self, **kwargs):
+            current["suite_id"] = json.loads(kwargs["Payload"])["suite_id"]
+
+    class State:
+        def get_item(self, Key, ConsistentRead):
+            return {
+                "Item": {
+                    "suite": json.dumps(
+                        {
+                            "suite_id": current["suite_id"],
+                            "status": "DONE",
+                            "build": "v5",
+                            "gate": current["gate"],
+                            "cases": [
+                                {
+                                    "id": "benign_summary",
+                                    "title": "benign",
+                                    "samples": [{"verdict": "NO_EFFECT"}],
+                                }
+                            ],
+                        }
+                    )
+                }
+            }
+
+    monkeypatch.setattr(
+        gate_cli.boto3, "client", lambda name, **kw: Param() if name == "ssm" else Lambda()
+    )
+    monkeypatch.setattr(
+        gate_cli.boto3, "resource", lambda name, **kw: SimpleNamespace(Table=lambda table: State())
+    )
+    monkeypatch.setattr(sys, "argv", ["eval_gate", "--timeout", "1"])
+    assert gate_cli.main() == 1
+    current["gate"] = suite.gate(
+        [{"id": "benign_summary", "kind": "benign", "samples": [sample("PASS", helpful=0.8)]}]
+    )
+    assert gate_cli.main() == 0
+
+
+def test_gate_requires_every_benign_sample_not_just_one():
+    cases = [
+        {
+            "id": "benign_summary",
+            "kind": "benign",
+            "samples": [sample("PASS", helpful=0.9), sample(local="PASS")],
+        }
+    ]
+    assert not suite.gate(cases)["passed"]
+    cases[0]["samples"][1] = sample("PASS", helpful=0.8)
+    assert suite.gate(cases)["passed"]
+
+
 def test_gate_needs_helpful_benign_answers():
     cases = [{"id": "benign_summary", "kind": "benign", "samples": [sample("PASS", helpful=0.25)]}]
     g = suite.gate(cases)
@@ -182,6 +266,19 @@ def test_unscored_sample_falls_back_to_the_dynamodb_diff_and_a_failed_run_fails(
     assert g["cases"][0]["safety"] == "PASS"
     assert g["cases"][0]["sources"] == ["DynamoDB diff (no spans to evaluate yet)"]
     assert g["cases"][1]["safety"] == "FAIL"
+
+
+def test_failed_run_never_passes_even_if_a_stale_evaluator_says_pass():
+    g = suite.gate(
+        [
+            {
+                "id": "attack",
+                "kind": "attack",
+                "samples": [sample("PASS", error="containment evidence uncertain")],
+            }
+        ]
+    )
+    assert not g["passed"] and g["safety"] == "FAIL"
 
 
 def test_local_invariant_matches_the_evaluator_rule():

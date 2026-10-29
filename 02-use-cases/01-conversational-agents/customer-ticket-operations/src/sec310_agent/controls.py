@@ -63,13 +63,16 @@ class Screen:
         return self.client
 
     def check(self, text: str) -> tuple[str, dict[str, Any]]:
-        """Returns (action, trace): NONE, GUARDRAIL_INTERVENED or UNAVAILABLE."""
+        """Only release text screened in full; oversized results are withheld, never truncated."""
+        if len(text) > 20000:
+            self.unavailable = True
+            return "UNAVAILABLE", {"error": "ticket result exceeds 20000-character screen limit"}
         try:
             r = self._bedrock().apply_guardrail(
                 guardrailIdentifier=self.guardrail_id,
                 guardrailVersion=self.version,
                 source="INPUT",
-                content=[{"text": {"text": text[:20000]}}],
+                content=[{"text": {"text": text}}],
             )
         except Exception as exc:  # noqa: BLE001 - any failure means the text is not cleared
             self.unavailable = True
@@ -105,6 +108,9 @@ class CircuitBreaker:
     reason: str = ""
     read_only: bool = False  # already OPEN when this run was admitted
     open_reason: str = ""
+    owner: str = ""
+    durable: bool = False
+    persistence_error: str = ""
 
     def admit(self) -> str | None:
         """None to admit (possibly read-only); otherwise why not."""
@@ -115,21 +121,89 @@ class CircuitBreaker:
         state = item.get("Item") or {}
         if state.get("stop_requested"):
             return "agent is stopped by an operator (kill switch); clear the stop to run again"
-        if state.get("breaker_open"):
+        if state.get("breaker_open") or state.get("breaker_pending"):
             self.read_only = True
-            self.open_reason = str(state.get("breaker_reason", ""))
-        return None
-
-    def trip(self, reason: str) -> None:
-        self.tripped, self.reason = True, reason
+            self.open_reason = str(state.get("breaker_reason") or "writable outcome uncertain")
+            return None
+        self.owner = secrets.token_hex(16)
         try:
             self.table.update_item(
                 Key={"customer_id": self.customer_id},
-                UpdateExpression="SET breaker_open = :t, breaker_reason = :r, breaker_at = :at",
-                ExpressionAttributeValues={":t": True, ":r": reason[:200], ":at": int(time.time())},
+                UpdateExpression="SET breaker_pending = :owner",
+                ConditionExpression="(attribute_not_exists(breaker_open) OR breaker_open = :f) "
+                "AND attribute_not_exists(breaker_pending) "
+                "AND (attribute_not_exists(stop_requested) OR stop_requested = :f)",
+                ExpressionAttributeValues={":owner": self.owner, ":f": False},
             )
-        except Exception:  # noqa: BLE001 - the in-run halt still holds; the next admit fails closed
-            pass
+        except Exception as exc:  # noqa: BLE001 - ambiguous admission cannot dispatch a write
+            self.owner = ""
+            return f"writable admission not acknowledged ({type(exc).__name__}): refusing to run"
+        return None
+
+    def _observe(self) -> dict[str, Any] | None:
+        try:
+            return (
+                self.table.get_item(Key={"customer_id": self.customer_id}, ConsistentRead=True).get(
+                    "Item"
+                )
+                or {}
+            )
+        except Exception:  # noqa: BLE001 - no proof of durable containment
+            return None
+
+    def trip(self, reason: str) -> None:
+        self.tripped, self.reason = True, reason
+        if not self.owner:  # already read-only; pending is not an acknowledged OPEN
+            state = self._observe()
+            self.durable = bool(state and state.get("breaker_open"))
+            if not self.durable:
+                self.persistence_error = "previous writable outcome remains uncertain"
+            return
+        try:
+            self.table.update_item(
+                Key={"customer_id": self.customer_id},
+                UpdateExpression="SET breaker_open = :t, breaker_reason = :r, breaker_at = :at "
+                "REMOVE breaker_pending",
+                ConditionExpression="breaker_pending = :owner",
+                ExpressionAttributeValues={
+                    ":t": True,
+                    ":r": reason[:200],
+                    ":at": int(time.time()),
+                    ":owner": self.owner,
+                },
+            )
+            self.durable = True
+        except Exception as exc:  # noqa: BLE001 - owner remains unless OPEN committed
+            state = self._observe()
+            self.durable = bool(state and state.get("breaker_open"))
+            self.persistence_error = f"{type(exc).__name__}: {exc}"[:200]
+
+    def complete(self) -> None:
+        """Only clean completion clears the matching intent and records a durable receipt.
+        A lost acknowledgment is distinct from an unsafe trip: a later consistent admission
+        can safely recognize CLEAN_COMPLETED, while an uncommitted release retains intent."""
+        if not self.owner or self.tripped:
+            return
+        try:
+            self.table.update_item(
+                Key={"customer_id": self.customer_id},
+                UpdateExpression="SET breaker_receipt = :receipt REMOVE breaker_pending",
+                ConditionExpression="breaker_pending = :owner",
+                ExpressionAttributeValues={
+                    ":owner": self.owner,
+                    ":receipt": f"CLEAN_COMPLETED:{self.owner}",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            state = self._observe()
+            if (
+                not state
+                or state.get("breaker_receipt") != f"CLEAN_COMPLETED:{self.owner}"
+                or state.get("breaker_pending")
+            ):
+                self.persistence_error = (
+                    f"clean release acknowledgment unknown ({type(exc).__name__})"
+                )
 
 
 def summary(stage: str) -> dict[str, Any]:

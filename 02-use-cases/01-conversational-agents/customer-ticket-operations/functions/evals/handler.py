@@ -45,6 +45,11 @@ def save(**fields: Any) -> None:
     )
 
 
+def operator_sub(token: str) -> str:
+    """Bind each eval Runtime admission to the verified operator, not just its tenant."""
+    return str(app.verify(token, app.ISSUER, app.client_id())["sub"])
+
+
 def operator_token() -> str:
     ssm = boto3.client("ssm")
     prefix = f"/{os.environ['PROJECT']}/{os.environ['ENVIRONMENT']}"
@@ -67,13 +72,18 @@ def operator_token() -> str:
 
 
 def lock() -> None:
-    now = int(time.time())
-    app._state.update_item(
-        Key={"customer_id": CID},
-        UpdateExpression="SET busy_until = :until",
-        ConditionExpression="attribute_not_exists(busy_until) OR busy_until < :now",
-        ExpressionAttributeValues={":until": now + 900, ":now": now},
-    )
+    claimed = app.claim_seed_scope("eval-suite")  # all tenants the suite reopens
+    try:
+        app._state.update_item(
+            Key={"customer_id": CID},
+            UpdateExpression="SET busy_until = :until",
+            ConditionExpression="busy_owner = :owner",
+            ExpressionAttributeValues={":until": int(time.time()) + 900, ":owner": "eval-suite"},
+        )
+    except Exception:
+        for cid in reversed(claimed):
+            app.release_run(cid, "eval-suite")
+        raise
 
 
 def prepare(case: dict[str, Any]) -> None:
@@ -114,12 +124,26 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
         app._events.put_item(Item={"run_id": run_id, "sk": sk, "expires": expires, **extra})
     started = time.time()
     before = runs.snapshot(app.all_tickets())
+    policy_session = runs.uuid7()
+    app._state.update_item(
+        Key={"customer_id": CID},
+        UpdateExpression="SET busy_owner = :run, busy_stage = :build, busy_sub = :sub, "
+        "policy_session = :session",
+        ConditionExpression="busy_owner = :suite",
+        ExpressionAttributeValues={
+            ":run": run_id,
+            ":suite": "eval-suite",
+            ":session": policy_session,
+            ":build": build,
+            ":sub": operator_sub(token),
+        },
+    )
     payload = {
         "run_id": run_id,
         "operator": OPERATOR,
         "stage": build,
         "mode": "live",
-        "policy_session": runs.uuid7(),
+        "policy_session": policy_session,
     }
     out: dict[str, Any] = {"run_id": run_id, "sample": sample, "started": started}
     try:
@@ -130,11 +154,27 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
             verdict=result["status"],
             effects=[f"{e['operation']} {e['target']}" for e in executed],
             answer=result["answer"][:400],
-            local=suite.local_invariant(case, result["effects"]),
+            local=(
+                "FAIL"
+                if result.get("evidence_uncertain")
+                else suite.local_invariant(case, result["effects"])
+            ),
+            **(
+                {"error": "containment evidence uncertain"}
+                if result.get("evidence_uncertain")
+                else {}
+            ),
         )
-    except Exception as exc:  # noqa: BLE001 - a failed run is a failed sample, not a failed suite
+    except Exception as exc:  # noqa: BLE001 - a timed-out Runtime may still be writing
         out.update(verdict="ERROR", error=f"{type(exc).__name__}: {exc}"[:300], local="FAIL")
+        raise RuntimeError("eval run incomplete; exclusion retained for operator recovery") from exc
     out["ended"] = time.time()
+    app._state.update_item(
+        Key={"customer_id": CID},
+        UpdateExpression="SET busy_owner = :suite REMOVE busy_stage, busy_sub",
+        ConditionExpression="busy_owner = :run",
+        ExpressionAttributeValues={":suite": "eval-suite", ":run": run_id},
+    )
     return out
 
 
@@ -259,7 +299,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     }
     try:
         lock()
-    except app._state.meta.client.exceptions.ConditionalCheckFailedException:
+    except (app.HttpError, app._state.meta.client.exceptions.ConditionalCheckFailedException):
         save(
             **common,
             status="ERROR",
@@ -310,8 +350,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
 
 def restore(previous: dict[str, Any]) -> None:
-    """Leave the demo clean, on the build it was on."""
+    """Leave the demo clean only when no timed-out invocation owns the exclusion."""
+    if app.demo_state(CID).get("busy_owner") != "eval-suite":
+        return  # unresolved Runtime may still write; no reseed or lease removal
     prepare({"ticket": None})
+    for tenant in reversed(sorted(app.SEED)):
+        if tenant != CID:
+            app.release_run(tenant, "eval-suite")
     app._state.put_item(
         Item={
             "customer_id": CID,
