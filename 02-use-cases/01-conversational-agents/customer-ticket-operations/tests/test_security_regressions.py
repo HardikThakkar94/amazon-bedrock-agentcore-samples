@@ -239,6 +239,36 @@ def held(api, monkeypatch, ticket="A-42"):
     return cards_of(api)[-1]
 
 
+def test_gateway_confirmation_requires_exact_structured_target(api, monkeypatch):
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self.body
+
+    data = {"status": "CONFIRMED", "ticket_id": "A-42", "customer_id": "customer-a"}
+    replies = [data, {**data, "ticket_id": "A-41"}, {**data, "status": "NOT CONFIRMED"}]
+    args = {"customer_id": "customer-a", "ticket_id": "A-42"}
+    for expected, inner in zip((True, False, False), replies, strict=True):
+        rpc = {"result": {"content": [{"text": json.dumps(inner)}]}}
+        monkeypatch.setattr(
+            api.app.urllib.request,
+            "urlopen",
+            lambda *a, reply=rpc, **kw: Response(json.dumps(reply).encode()),
+        )
+        allowed, _ = api.app.gateway_call(
+            "offline", "https://gateway.invalid", "policy-1", "TicketTools___confirm_close", args
+        )
+        assert allowed is expected
+
+
 def test_post_failure_effect_remains_error_and_unknown_diff_is_explicit(api, monkeypatch):
     api.tables["state"].rows[("customer-a",)]["active_stage"] = "v0"
 

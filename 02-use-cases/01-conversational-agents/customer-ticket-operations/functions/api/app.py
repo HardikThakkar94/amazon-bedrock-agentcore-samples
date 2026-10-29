@@ -1151,11 +1151,30 @@ def gateway_call(token: str, url: str, session: str, name: str, args: dict) -> t
         reply = json.loads(raw)
     except ValueError:
         return False, raw[:300]
+    if not isinstance(reply, dict):
+        return False, "unstructured Gateway response"
     if "error" in reply:
         return False, json.dumps(reply["error"])[:600]
     result = reply.get("result") or {}
-    text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
-    return not result.get("isError") and "CONFIRMED" in text, text[:600]
+    if not isinstance(result, dict):
+        return False, "unstructured Gateway result"
+    text = " ".join(
+        str(c.get("text", "")) for c in result.get("content", []) if isinstance(c, dict)
+    )[:600]
+    try:
+        record = json.loads(text)
+        if isinstance(record, str):  # some Gateway replies serialize the Lambda JSON twice
+            record = json.loads(record)
+    except (ValueError, TypeError):
+        return False, text
+    allowed = (
+        not result.get("isError")
+        and isinstance(record, dict)
+        and record.get("status") == "CONFIRMED"
+        and record.get("customer_id") == args["customer_id"]
+        and record.get("ticket_id") == args["ticket_id"]
+    )
+    return bool(allowed), text
 
 
 def record_approval(
