@@ -1,16 +1,30 @@
 # Account/Region-wide Bedrock model invocation logging (scripts/live_logging.py equivalent).
-# Every text-model call in this account and Region lands here: synthetic demo inputs only.
-
+# In reuse mode the existing destination is referenced only; do not take ownership of it.
 locals {
-  log_group = "/aws/bedrock/${var.name_prefix}_invocations"
+  create_invocation_logging = var.existing_invocation_log_group == null
+  log_group                 = "/aws/bedrock/${var.name_prefix}_invocations"
+  invocation_log_group      = local.create_invocation_logging ? aws_cloudwatch_log_group.invocations[0].name : var.existing_invocation_log_group
+}
+
+moved {
+  from = aws_cloudwatch_log_group.invocations
+  to   = aws_cloudwatch_log_group.invocations[0]
 }
 
 resource "aws_cloudwatch_log_group" "invocations" {
+  count             = local.create_invocation_logging ? 1 : 0
   name              = local.log_group
   retention_in_days = 3
 }
 
+moved {
+  from = data.aws_iam_policy_document.bedrock_trust
+  to   = data.aws_iam_policy_document.bedrock_trust[0]
+}
+
 data "aws_iam_policy_document" "bedrock_trust" {
+  count = local.create_invocation_logging ? 1 : 0
+
   statement {
     actions = ["sts:AssumeRole"]
     principals {
@@ -30,32 +44,63 @@ data "aws_iam_policy_document" "bedrock_trust" {
   }
 }
 
+moved {
+  from = aws_iam_role.invocation_logging
+  to   = aws_iam_role.invocation_logging[0]
+}
+
 resource "aws_iam_role" "invocation_logging" {
+  count              = local.create_invocation_logging ? 1 : 0
   name               = "${var.name_prefix}_invocation_logging"
   description        = "SEC310 demo; lets Bedrock write model invocation logs"
-  assume_role_policy = data.aws_iam_policy_document.bedrock_trust.json
+  assume_role_policy = data.aws_iam_policy_document.bedrock_trust[0].json
+}
+
+moved {
+  from = data.aws_iam_policy_document.write_logs
+  to   = data.aws_iam_policy_document.write_logs[0]
 }
 
 data "aws_iam_policy_document" "write_logs" {
+  count = local.create_invocation_logging ? 1 : 0
+
   statement {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-    resources = ["${aws_cloudwatch_log_group.invocations.arn}:log-stream:aws/bedrock/modelinvocations"]
+    resources = ["${aws_cloudwatch_log_group.invocations[0].arn}:log-stream:aws/bedrock/modelinvocations"]
   }
 }
 
+moved {
+  from = aws_iam_role_policy.write_logs
+  to   = aws_iam_role_policy.write_logs[0]
+}
+
 resource "aws_iam_role_policy" "write_logs" {
+  count  = local.create_invocation_logging ? 1 : 0
   name   = "write_invocation_logs"
-  role   = aws_iam_role.invocation_logging.id
-  policy = data.aws_iam_policy_document.write_logs.json
+  role   = aws_iam_role.invocation_logging[0].id
+  policy = data.aws_iam_policy_document.write_logs[0].json
 }
 
 # A new role is not usable by Bedrock for a few seconds (IAM eventual consistency).
+moved {
+  from = time_sleep.iam_propagation
+  to   = time_sleep.iam_propagation[0]
+}
+
 resource "time_sleep" "iam_propagation" {
+  count           = local.create_invocation_logging ? 1 : 0
   depends_on      = [aws_iam_role_policy.write_logs]
   create_duration = "20s"
 }
 
+moved {
+  from = aws_bedrock_model_invocation_logging_configuration.this
+  to   = aws_bedrock_model_invocation_logging_configuration.this[0]
+}
+
 resource "aws_bedrock_model_invocation_logging_configuration" "this" {
+  count      = local.create_invocation_logging ? 1 : 0
   depends_on = [time_sleep.iam_propagation]
 
   logging_config {
@@ -65,8 +110,8 @@ resource "aws_bedrock_model_invocation_logging_configuration" "this" {
     video_data_delivery_enabled     = false
 
     cloudwatch_config {
-      log_group_name = aws_cloudwatch_log_group.invocations.name
-      role_arn       = aws_iam_role.invocation_logging.arn
+      log_group_name = aws_cloudwatch_log_group.invocations[0].name
+      role_arn       = aws_iam_role.invocation_logging[0].arn
     }
   }
 }
