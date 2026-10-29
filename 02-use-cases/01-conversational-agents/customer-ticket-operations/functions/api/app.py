@@ -777,7 +777,11 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 [
                     {
                         **a,
-                        "status": "APPROVED" if done else "FAILED",
+                        "status": "APPROVED"
+                        if done
+                        else "UNCERTAIN"
+                        if result.get("evidence_uncertain")
+                        else "FAILED",
                         "by": who["username"],
                         "at": int(time.time()),
                         "outcome": result["status"],
@@ -820,6 +824,7 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                     session_id,
                     approved["id"],
                     executed=bool(locals().get("done")),
+                    uncertain=bool(locals().get("result", {}).get("evidence_uncertain")),
                 )
             except Exception as exc:  # noqa: BLE001 - owner stays; no old-session reuse
                 raise HttpError(
@@ -1250,7 +1255,9 @@ def record_approval(
     )
 
 
-def retire_session(cid: str, owner: str, card_id: str, executed: bool = False) -> None:
+def retire_session(
+    cid: str, owner: str, card_id: str, executed: bool = False, uncertain: bool = False
+) -> None:
     """CAS rotation fences all future dispatch from an uncertain/consumed grant. The old
     Gateway grant may still exist in the retired session; it is not claimed to be revoked."""
     st = demo_state(cid)
@@ -1258,8 +1265,14 @@ def retire_session(cid: str, owner: str, card_id: str, executed: bool = False) -
     items = [
         {
             **a,
-            "status": "APPROVED" if executed else "FAILED",
-            "outcome": "effect observed; session retired" if executed else "policy session retired",
+            "status": "APPROVED" if executed else "UNCERTAIN" if uncertain else "FAILED",
+            "outcome": (
+                "effect observed; session retired"
+                if executed
+                else "write outcome unresolved; session retired"
+                if uncertain
+                else "policy session retired"
+            ),
             "at": int(time.time()),
         }
         if a["id"] == card_id and a["status"] == "PENDING"

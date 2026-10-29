@@ -160,15 +160,31 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
                 else suite.local_invariant(case, result["effects"])
             ),
             **(
-                {"error": "containment evidence uncertain"}
+                {"error": "run or containment evidence uncertain"}
                 if result.get("evidence_uncertain")
                 else {}
             ),
+            tool_outcome_uncertain=bool(result.get("tool_outcome_uncertain")),
         )
     except Exception as exc:  # noqa: BLE001 - a timed-out Runtime may still be writing
         out.update(verdict="ERROR", error=f"{type(exc).__name__}: {exc}"[:300], local="FAIL")
         raise RuntimeError("eval run incomplete; exclusion retained for operator recovery") from exc
     out["ended"] = time.time()
+    if out.get("tool_outcome_uncertain"):
+        # A late external write may still commit. Keep this case's exact run owner;
+        # never let suite cleanup inherit and clear an unresolved tool outcome.
+        app._state.update_item(
+            Key={"customer_id": CID},
+            UpdateExpression="SET exclusion_disposition = :unknown, exclusion_reason = :reason",
+            ConditionExpression="busy_owner = :run AND busy_stage = :build",
+            ExpressionAttributeValues={
+                ":unknown": "UNKNOWN",
+                ":reason": "eval tool write outcome unresolved",
+                ":run": run_id,
+                ":build": build,
+            },
+        )
+        return out
     app._state.update_item(
         Key={"customer_id": CID},
         UpdateExpression="SET busy_owner = :suite REMOVE busy_stage, busy_sub",
@@ -321,7 +337,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         {"sample": k, "verdict": "SKIPPED", "error": "time budget", "local": "FAIL"}
                     )
                     continue
-                row["samples"].append(run_case(token, build, case, k))
+                sample_out = run_case(token, build, case, k)
+                row["samples"].append(sample_out)
+                if sample_out.get("tool_outcome_uncertain"):
+                    raise RuntimeError("eval tool outcome unresolved; run owner retained")
                 done += 1
                 save(**common, status="RUNNING", progress=f"{done}/{total} runs")
         save(**common, status="SCORING", progress="AgentCore Evaluations scoring the runs")
@@ -334,9 +353,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 )
             )
         verdict = suite.gate(results)
-        save(**common, status="DONE", finished=int(time.time()), gate=verdict, cases=results)
-        print(json.dumps(metrics(build, verdict)))
-        return {"suite_id": suite_id, "status": "DONE", "passed": verdict["passed"]}
     except Exception as exc:  # noqa: BLE001 - the console shows why the suite stopped
         save(
             **common,
@@ -346,14 +362,81 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         raise
     finally:
-        restore(previous)
+        try:
+            restored = restore(previous)
+        except Exception:
+            save(
+                **common,
+                status="ERROR",
+                error="suite cleanup could not be acknowledged",
+                cases=results,
+            )
+            raise
+        if not restored and "verdict" in locals() and verdict["passed"]:
+            save(
+                **common,
+                status="ERROR",
+                error="suite cleanup retained unresolved state",
+                cases=results,
+            )
+            raise RuntimeError("suite cleanup not proven; release cannot pass")
+    save(**common, status="DONE", finished=int(time.time()), gate=verdict, cases=results)
+    print(json.dumps(metrics(build, verdict)))
+    return {"suite_id": suite_id, "status": "DONE", "passed": verdict["passed"]}
 
 
-def restore(previous: dict[str, Any]) -> None:
-    """Leave the demo clean only when no timed-out invocation owns the exclusion."""
-    if app.demo_state(CID).get("busy_owner") != "eval-suite":
-        return  # unresolved Runtime may still write; no reseed or lease removal
+def restore(previous: dict[str, Any]) -> bool:
+    """Only a CAS-owned, settled suite may reseed. A pending latch/grant or unknown
+    disposition survives cleanup and requires explicit operator reconciliation."""
+    st = app.demo_state(CID)  # consistent read; the following transition checks this revision
+    if st.get("busy_owner") != "eval-suite":
+        return False  # a timed-out Runtime still owns admission
+    markers = (
+        "breaker_pending",
+        "approval_uncertain",
+        "approval_dispatch",
+        "exclusion_disposition",
+    )
+    values: dict[str, Any] = {":suite": "eval-suite"}
+    condition = "busy_owner = :suite"
+    for name in ("policy_session", *markers):
+        if name in st:
+            key = f":seen_{name}"
+            values[key] = st[name]
+            condition += f" AND {name} = {key}"
+        else:
+            condition += f" AND attribute_not_exists({name})"
+    if any(st.get(name) for name in markers):
+        values.update(
+            {
+                ":unknown": "UNKNOWN",
+                ":reason": "eval suite retained an unresolved latch/grant or run outcome",
+            }
+        )
+        try:
+            app._state.update_item(
+                Key={"customer_id": CID},
+                UpdateExpression="SET exclusion_disposition = :unknown, exclusion_reason = :reason",
+                ConditionExpression=condition,
+                ExpressionAttributeValues=values,
+            )
+        except app._state.meta.client.exceptions.ConditionalCheckFailedException:
+            pass  # a changed owner/marker cannot be cleaned with this snapshot
+        return False
+    cleanup = f"eval-cleanup#{runs.uuid7()}"
+    values[":cleanup"] = cleanup
+    try:
+        app._state.update_item(
+            Key={"customer_id": CID},
+            UpdateExpression="SET busy_owner = :cleanup",
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+        )
+    except app._state.meta.client.exceptions.ConditionalCheckFailedException:
+        return False  # another state transition won before reseeding
     prepare({"ticket": None})
+    # B is also excluded while reseed touches its seed tickets. A remains owned until
+    # the conditional replacement below; no unconditional PutItem may remove a new marker.
     for tenant in reversed(sorted(app.SEED)):
         if tenant != CID:
             app.release_run(tenant, "eval-suite")
@@ -365,8 +448,15 @@ def restore(previous: dict[str, Any]) -> None:
             "breaker_open": False,
             "store_change_source": "Eval suite finished; demo reset",
             "policy_session": runs.uuid7(),
-        }
+        },
+        ConditionExpression="busy_owner = :cleanup AND "
+        "attribute_not_exists(breaker_pending) AND "
+        "attribute_not_exists(approval_uncertain) AND "
+        "attribute_not_exists(approval_dispatch) AND "
+        "attribute_not_exists(exclusion_disposition)",
+        ExpressionAttributeValues={":cleanup": cleanup},
     )
+    return True
 
 
 def metrics(build: str, verdict: dict[str, Any]) -> dict[str, Any]:

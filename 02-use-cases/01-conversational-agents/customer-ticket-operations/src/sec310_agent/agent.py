@@ -434,7 +434,7 @@ class Recorder:
         if self.policy:
             call.decision = (
                 "DENY"
-                if call.status == "ERROR" and denied_by_policy(text)
+                if call.status == "ERROR" and event.exception is None and denied_by_policy(text)
                 else ("ALLOW" if call.status == "OK" else "")
             )
         if call.decision:

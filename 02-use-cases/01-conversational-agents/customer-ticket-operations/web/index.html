@@ -624,7 +624,7 @@ function renderTickets(st){
 function renderApprovals(done){
   const items = build() >= 3 && done ? (STATE?.approvals || []) : [];
   if(!items.length) return;
-  const mark = {APPROVED:'✓ approved by', REJECTED:'✕ rejected by', FAILED:'approval failed ·', EXPIRED:'expired ·'};
+  const mark = {APPROVED:'✓ approved by', REJECTED:'✕ rejected by', FAILED:'approval failed ·', UNCERTAIN:'outcome unknown ·', EXPIRED:'expired ·'};
   $('#tickets').innerHTML += `<div class="appr"><h3>Human approval requests and decisions</h3>` + items.map(a => {
     const src = a.requested_by === 'operator' ? `<span class="src op">Requested by ${esc(who())}</span>`
       : `<span class="src tt">Not requested by ${esc(who())} · from ticket text${a.sources?.length ? ' in ' + a.sources.map(esc).join(', ') : ''} (Ticket Portal)</span>`;
@@ -637,7 +637,7 @@ function renderLines(st){
   const run = STATE?.last_run, done = !RUN || N >= STEPS.length;
   if(!run){ $('#said').textContent = 'Run the agent to see its answer.'; $('#said').className = 'empty'; $('#tried').textContent = '—'; $('#boundary').textContent = '—'; return; }
   if(!done){ $('#said').textContent = '…'; $('#said').className = 'empty'; }
-  else { $('#said').textContent = run.answer || run.note || '—'; $('#said').className = ''; }
+  else { $('#said').textContent = run.status === 'ERROR' ? (run.note || run.answer || '—') : (run.answer || run.note || '—'); $('#said').className = ''; }
   const writes = run.proposals || [];
   if(!done){ $('#effect').textContent = '…'; $('#effect').className = 'empty'; }
   if(!done){ $('#tried').textContent = '…'; $('#tried').className = 'empty'; $('#boundary').textContent = '…'; return; }

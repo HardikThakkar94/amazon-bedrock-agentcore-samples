@@ -1,5 +1,6 @@
 """Real API handler with in-memory conditional DynamoDB; no network or credentials."""
 
+import base64
 import importlib.util
 import json
 import sys
@@ -188,13 +189,13 @@ def api(monkeypatch):
     return SimpleNamespace(app=app, tables=tables)
 
 
-def request(api, path, body=None):
+def request(api, path, body=None, token="offline"):
     reply = api.app.lambda_handler(
         {
             "requestContext": {"http": {"method": "POST"}},
             "rawPath": path,
             "body": json.dumps(body or {}),
-            "headers": {"x-sec310-access-token": "offline"},
+            "headers": {"x-sec310-access-token": token},
         },
         None,
     )
@@ -573,6 +574,243 @@ def test_failed_rotation_retains_uncertainty_and_owned_exclusion(api, monkeypatc
     assert st["policy_session"] == old and st.get("approval_uncertain") and st.get("busy_owner")
     assert request(api, "/api/reset")[0] == 409
     assert request(api, "/api/run")[0] == 409
+
+
+def _local_jwt():
+    def part(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
+
+    return (
+        f"{part({'alg': 'RS256'})}."
+        f"{part({'sub': 'alice-sub', 'customer_id': 'customer-a', 'role': 'operator'})}.sig"
+    )
+
+
+def _lost_tool_runtime(api, monkeypatch, tool, live=False, settled_refusal=None):
+    """The real Runtime/Recorder dispatch a fake Gateway tool whose reply is lost;
+    its actual ticket write is released only after the API has returned."""
+    from sec310_agent import agent as runtime
+    from sec310_agent.agent import ReplayToolEvent
+
+    dispatched, release, committed = threading.Event(), threading.Event(), threading.Event()
+    workers = []
+
+    class Gateway:
+        def __init__(self, url, headers):
+            self.headers = headers
+
+        def start(self):
+            return self
+
+        def stop(self, *args):
+            pass
+
+        def list_tools_sync(self):
+            return [
+                SimpleNamespace(tool_name=f"TicketTools___{name}")
+                for name in ("list_tickets", "close_ticket", "add_note", "confirm_close")
+            ]
+
+        def call_tool_sync(self, tool_use_id, name, arguments=None):
+            if name.endswith(tool):
+                if settled_refusal is not None:
+                    dispatched.set()
+                    return {
+                        "toolUseId": tool_use_id,
+                        "status": "error",
+                        "content": [{"text": settled_refusal}],
+                    }
+
+                def write_later():
+                    if release.wait(5):
+                        with api.tables["tickets"].lock:
+                            ticket = api.tables["tickets"].rows[("customer-a", "A-42")]
+                            if tool == "close_ticket":
+                                ticket["status"] = "CLOSED"
+                            else:
+                                ticket.setdefault("notes", []).append("late authorized note")
+                        committed.set()
+
+                worker = threading.Thread(target=write_later, daemon=True)
+                workers.append(worker)
+                worker.start()
+                dispatched.set()
+                raise TimeoutError("Gateway reply lost after dispatch")
+            return {"toolUseId": tool_use_id, "status": "success", "content": [{"text": "{}"}]}
+
+    mcp = ModuleType("strands.tools.mcp")
+    mcp.MCPClient = Gateway
+    monkeypatch.setitem(sys.modules, "strands", ModuleType("strands"))
+    monkeypatch.setitem(sys.modules, "strands.tools", ModuleType("strands.tools"))
+    monkeypatch.setitem(sys.modules, "strands.tools.mcp", mcp)
+    if live:
+
+        def fake_model(payload, actor, gateway, recorder, model_id, run_id):
+            use = {
+                "toolUseId": "live-1",
+                "name": f"TicketTools___{tool}",
+                "input": {"customer_id": "customer-a", "ticket_id": "A-42", "note": "yes"},
+            }
+            event = ReplayToolEvent(use)
+            recorder.before(event)
+            assert not event.cancel_tool
+            try:
+                event.result = gateway.call_tool_sync(use["toolUseId"], use["name"], use["input"])
+            except Exception as exc:  # actual hook receives the failed Gateway call
+                event.exception = exc
+                event.result = {"status": "error", "content": [{"text": str(exc)}]}
+            recorder.after(event)
+            return "summary", "end"
+
+        monkeypatch.setattr(runtime, "live", fake_model)
+
+    def invoke(token, run_id, payload):
+        return runtime.run(
+            {"run_id": run_id, **{k: v for k, v in payload.items() if k != "run_id"}},
+            token,
+            gateway_url="https://fake-gateway",
+            model_id="model",
+            session_id=run_id,
+            state_table=api.tables["state"],
+        )
+
+    monkeypatch.setattr(api.app, "invoke_agent", invoke)
+    return dispatched, release, committed, workers
+
+
+def test_approved_close_lost_tool_reply_retains_owner_card_and_late_effect(api, monkeypatch):
+    card = held(api, monkeypatch)
+    monkeypatch.setattr(api.app, "gateway_call", lambda *args: (True, "CONFIRMED"))
+    dispatched, release, committed, workers = _lost_tool_runtime(api, monkeypatch, "close_ticket")
+    before = api.app.runs.snapshot(api.app.all_tickets())
+    try:
+        status, out = request(
+            api, "/api/run", {"mode": "approve", "approval": card["id"]}, token=_local_jwt()
+        )
+        assert status == 200 and dispatched.is_set() and not committed.is_set()
+        result = out["result"]
+        assert result["status"] == "ERROR" and result["tool_outcome_uncertain"]
+        assert result["evidence_uncertain"] and result["effects"][0]["status"] == "OUTCOME_UNKNOWN"
+        assert api.app.runs.metrics(result)["EvidenceUncertain"] == 1
+        state = api.app.demo_state("customer-a")
+        assert (
+            state["busy_owner"] == result["run_id"] and state["exclusion_disposition"] == "UNKNOWN"
+        )
+        assert api.app.public_state(ALICE)["recovery"]["required"]
+        assert cards_of(api)[0]["status"] == "UNCERTAIN" and state["policy_session"] != "policy-1"
+        assert request(api, "/api/reset")[0] == 409 and request(api, "/api/run")[0] == 409
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join(5)
+    assert (
+        committed.is_set()
+        and api.tables["tickets"].rows[("customer-a", "A-42")]["status"] == "CLOSED"
+    )
+    assert api.app.demo_state("customer-a")["store_change_source"] != "Clean reset"
+    actual = api.app.runs.effects(before, api.app.runs.snapshot(api.app.all_tickets()), ("A-42",))
+    assert actual[0]["confirmed"] is True  # late effect authorized, but completion was unknown
+
+
+def test_approved_close_authoritatively_denied_finishes_without_unknown(api, monkeypatch):
+    card = held(api, monkeypatch)
+    monkeypatch.setattr(api.app, "gateway_call", lambda *args: (True, "CONFIRMED"))
+    sent, _, committed, _ = _lost_tool_runtime(
+        api, monkeypatch, "close_ticket", settled_refusal="AgentCore Policy denied: not authorized"
+    )
+    status, out = request(
+        api, "/api/run", {"mode": "approve", "approval": card["id"]}, token=_local_jwt()
+    )
+    result = out["result"]
+    assert status == 200 and sent.is_set() and not committed.is_set()
+    assert result["status"] == "BLOCKED" and not result["evidence_uncertain"]
+    assert result["effects"][0]["status"] == "DENIED_GATEWAY"
+    assert cards_of(api)[0]["status"] == "FAILED"
+    assert not api.app.demo_state("customer-a").get("busy_owner")
+    assert request(api, "/api/reset")[0] == 200
+
+
+def test_pre_dispatch_invalid_request_and_holds_do_not_create_unknown_effect(api, monkeypatch):
+    monkeypatch.setattr(
+        api.app, "invoke_agent", lambda *args: pytest.fail("invalid request dispatched")
+    )
+    assert request(api, "/api/run", {"requests": ["B-77"]})[0] == 400
+    assert not api.app.demo_state("customer-a").get("busy_owner")
+    monkeypatch.setattr(api.app, "invoke_agent", lambda token, run_id, payload: tool_run(payload))
+    status, out = request(api, "/api/run", {"requests": ["A-42"]})
+    assert status == 200 and out["result"]["status"] == "AWAITING_APPROVAL"
+    assert not out["result"]["evidence_uncertain"] and not api.app.demo_state("customer-a").get(
+        "busy_owner"
+    )
+
+
+def test_authoritative_policy_denial_is_completed_not_unknown(api, monkeypatch):
+    state = api.tables["state"].rows[("customer-a",)]
+    state["active_stage"] = "v1"
+    state["capture"] = json.dumps(
+        {
+            "stage": "v1",
+            "run_id": "captured",
+            "fingerprint": api.app.runs.fingerprint(api.app.tickets_for("customer-a")),
+            "calls": [
+                {
+                    "tool": "close_ticket",
+                    "input": {"customer_id": "customer-a", "ticket_id": "A-42"},
+                }
+            ],
+        }
+    )
+    sent, _, committed, _ = _lost_tool_runtime(
+        api, monkeypatch, "close_ticket", settled_refusal="AgentCore Policy denied: not authorized"
+    )
+    status, out = request(api, "/api/run", {"mode": "replay"}, token=_local_jwt())
+    result = out["result"]
+    assert status == 200 and sent.is_set() and not committed.is_set()
+    assert result["status"] == "BLOCKED" and not result["evidence_uncertain"]
+    assert result["effects"][0]["status"] == "DENIED_GATEWAY"
+    assert api.app.runs.metrics(result)["EvidenceUncertain"] == 0
+    assert not api.app.demo_state("customer-a").get("busy_owner")
+    assert request(api, "/api/reset")[0] == 200
+
+
+@pytest.mark.parametrize(
+    "stage,mode,tool", [("v0", "live", "add_note"), ("v1", "replay", "close_ticket")]
+)
+def test_earlier_stage_lost_write_reply_never_cleanly_completes(
+    api, monkeypatch, stage, mode, tool
+):
+    state = api.tables["state"].rows[("customer-a",)]
+    state["active_stage"] = stage
+    if mode == "replay":
+        state["capture"] = json.dumps(
+            {
+                "stage": stage,
+                "run_id": "captured",
+                "fingerprint": api.app.runs.fingerprint(api.app.tickets_for("customer-a")),
+                "calls": [
+                    {"tool": tool, "input": {"customer_id": "customer-a", "ticket_id": "A-42"}}
+                ],
+            }
+        )
+    dispatched, release, committed, workers = _lost_tool_runtime(
+        api, monkeypatch, tool, live=mode == "live"
+    )
+    try:
+        status, out = request(api, "/api/run", {"mode": mode}, token=_local_jwt())
+        assert status == 200 and dispatched.is_set() and not committed.is_set()
+        result = out["result"]
+        assert result["status"] == "ERROR" and result["tool_outcome_uncertain"]
+        assert result["effects"][0]["status"] == "OUTCOME_UNKNOWN"
+        assert api.app.runs.metrics(result)["EvidenceUncertain"] == 1
+        assert api.app.demo_state("customer-a")["busy_owner"] == result["run_id"]
+        assert request(api, "/api/reset")[0] == 409
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join(5)
+    assert committed.is_set()
+    ticket = api.tables["tickets"].rows[("customer-a", "A-42")]
+    assert ticket["status"] == "CLOSED" if tool == "close_ticket" else len(ticket["notes"]) == 1
 
 
 def test_concurrent_rejection_and_reset_blocked_before_gateway_grant(api, monkeypatch):

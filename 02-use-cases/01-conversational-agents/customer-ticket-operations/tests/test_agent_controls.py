@@ -243,6 +243,18 @@ def test_v3_policy_denial_is_recorded_but_does_not_halt():
 
 
 # ── V3: policy session and confirmations ──────────────────────────────────
+def test_exception_text_cannot_masquerade_as_authoritative_policy_denial():
+    FakeGateway.replies = {"close_ticket": TimeoutError("policy denied in lost reply")}
+    result = replay(
+        "v1",
+        calls=[
+            {"tool": "close_ticket", "input": {"customer_id": "customer-a", "ticket_id": "A-42"}}
+        ],
+    )
+    assert result["tool_calls"][0]["status"] == "ERROR"
+    assert result["tool_calls"][0]["decision"] == ""
+
+
 def test_v3_sends_the_case_policy_session_to_the_gateway():
     replay("v3", extra={"policy_session": "ps-1"})
     assert FakeGateway.instances[0].headers == {

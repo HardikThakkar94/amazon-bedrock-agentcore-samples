@@ -103,25 +103,26 @@ def test_verdict_comes_from_the_table_not_the_agent():
     ]
 
 
-def test_refused_write_is_listed_but_is_not_an_effect():
+def test_unresolved_write_is_not_misreported_as_denial_or_no_effect():
     call = {
         "tool": "close_ticket",
         "input": {"customer_id": "customer-a", "ticket_id": "A-42", "reason": "dup"},
         "status": "ERROR",
     }
     result = runs.run_result("v0", {"tool_calls": [call]}, runs.snapshot(SEED), runs.snapshot(SEED))
-    assert result["status"] == "NO_EFFECT"
+    assert result["status"] == "ERROR" and result["evidence_uncertain"]
     assert result["proposals"][0]["operation"] == "close_ticket"
     assert result["effects"] == [
         {
             "operation": "close_ticket",
             "target": "A-42",
             "customer_id": "customer-a",
-            "status": "DENIED_GATEWAY",
+            "status": "OUTCOME_UNKNOWN",
             "before": None,
             "after": None,
         }
     ]
+    assert runs.metrics(result)["EvidenceUncertain"] == 1
 
 
 def closed(ticket_id: str) -> list[dict]:
