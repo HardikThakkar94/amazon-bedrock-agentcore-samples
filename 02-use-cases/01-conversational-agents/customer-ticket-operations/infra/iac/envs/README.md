@@ -18,7 +18,7 @@ set `existing_invocation_log_group` **only on the observability root** in a priv
 Terraform input file outside the repository. Example values (not real identifiers):
 
 ```hcl
-# /private/path/observability-reuse.tfvars (never commit this file)
+# /private/path/observability-reuse.tfvars (operator-private, outside version control)
 existing_invocation_log_group = "/aws/bedrock/example_existing_invocations"
 ```
 
@@ -29,8 +29,9 @@ file, e.g. from `infra/iac/roots/foundation/observability`:
 terraform plan -var-file="../../../envs/burner.tfvars" -var-file="/private/path/observability-reuse.tfvars"
 ```
 
-Supply `TF_VAR_account_id` through the operator's private environment; do not put an
-account ID, profile, credential, real log-group name or secret in a tracked file.
+Supply `TF_VAR_account_id` through the operator's private environment; account IDs,
+profiles, credentials, real log-group names and secrets stay in operator-private inputs
+outside tracked files.
 For `make plan-observability`/`deploy-observability`, `TFVARS` is a single path, so
 use an **external combined** file with all environment variables plus the reuse input
 rather than editing tracked `burner.tfvars`. Set a distinct `name_prefix` there for
@@ -45,13 +46,13 @@ approved Transaction Search resources (CloudWatchLogs X-Ray destination and Defa
 logging configuration, or IAM role/policy; an operator must independently check that
 logging really targets that group before deployment. All references in the app root
 continue to read the same SSM path. Transaction Search is account/Region-wide and
-must be separately approved. Do not run `scripts/live_logging.py up/down` as a substitute
-for this read-only reuse setting: that script changes account-wide logging.
+must be separately approved. Reuse references the current destination without changing
+it; `scripts/live_logging.py up/down` instead changes account-wide logging.
 
 The `moved` blocks retain default-mode addresses when upgrading an existing *default*
-observability state. **Do not flip an existing state that owns invocation logging into
-reuse mode:** doing so would plan deletion of those previously owned resources, including
-the account-wide configuration. Use a fresh isolated state for reuse. If migration of a
+observability state. **Switching a populated default state into reuse mode would plan
+deletion of its previously owned invocation resources, including the account-wide
+configuration.** Reuse is scoped to a fresh isolated state. If migration of a
 populated state is ever required, arrange explicit operator-controlled state detachment
 and inspect a no-delete plan first. The offline mock plans cover clean-state behavior,
 not account or populated-state verification.
