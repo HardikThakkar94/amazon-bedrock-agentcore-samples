@@ -97,12 +97,6 @@ Production-ready templates for provisioning AgentCore resources with CloudFormat
 
 Complete, deployment-ready agentic applications with integrated services, authentication, and business logic you can customize for your use case.
 
-### 📦 [`legacy/`](./legacy/)
-
-**Starter Toolkit Samples (Pending Migration)**
-
-Samples that still depend on the [Bedrock AgentCore Starter Toolkit](https://github.com/aws/bedrock-agentcore-starter-toolkit) CLI. These will be migrated to the AgentCore CLI as SDK support rolls out. See [`MIGRATION.md`](./MIGRATION.md) for status.
-
 ## Quick Start with the AgentCore CLI
 
 The [AgentCore CLI](https://github.com/aws/agentcore-cli) is the recommended way to create, develop, and deploy agents on Amazon Bedrock AgentCore. It replaces the previous Starter Toolkit with a streamlined project-based workflow.
@@ -206,7 +200,7 @@ jupyter notebook path/to/your/notebook.ipynb
 
 - [AgentCore CLI](https://github.com/aws/agentcore-cli)
 - [Amazon Bedrock AgentCore Documentation](https://docs.aws.amazon.com/bedrock-agentcore/)
-- [Getting started with Amazon Bedrock AgentCore - Workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/850fcd5c-fd1f-48d7-932c-ad9babede979/en-US)
+- [Getting started with Amazon Bedrock AgentCore - Workshop](https://catalog.workshops.aws/agentcore-getting-started/en-US)
 - [Diving Deep into Bedrock AgentCore - Workshop](https://catalog.workshops.aws/agentcore-deep-dive/en-US)
 - [Amazon Bedrock AgentCore pricing](https://aws.amazon.com/bedrock/agentcore/pricing/)
 - [Amazon Bedrock AgentCore FAQs](https://aws.amazon.com/bedrock/agentcore/faqs/)

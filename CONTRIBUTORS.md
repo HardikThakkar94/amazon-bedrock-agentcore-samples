@@ -37,6 +37,7 @@
 - rahullks
 - rameshv29
 - rohillasandeep
+- Roger Thant (rlthant)
 - satveerkhurpa
 - seanslavichaws
 - Shanicus Yee
@@ -130,4 +131,19 @@
 - tsubasakong
 - Chris Wajule (ggChris2)
 - Anil Nadiminti (aniloncloud)
+- Deepak Singh (deepaxs)
+- Irene Arroyo Delgado (iiarroyo)
+- rmncardoso
+- mccartnick
 - ach1ntya
+- Shruthi Rajoli (rajolishruthi)
+- ratnopam
+- Mark Roy (markproy)
+- Bent Krause (krausexb)
+- Georgios Tsoukas (gtsoukasaws)
+- Muhammad Zain Akram - muzaak
+- Sana Iqbal (sanaiqbalw)
+- Olawale Olaleye (berry2012)
+- Srividya Ponnada (psrivi)
+- Gilbert Lepadatu (gilbertlep)
+- Santhosh Kuriakose (kuriaks1)

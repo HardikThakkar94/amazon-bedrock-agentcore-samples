@@ -12,7 +12,7 @@ So instead of trying to constrain the agent from inside its own prompt (which a 
 
 - **Python 3.12+** and **uv** ([install uv](https://docs.astral.sh/uv/getting-started/installation/)) for the MCP server and setup scripts
 - **Node.js 20+** and **npm** for the web app (Step 4)
-- **[AgentCore CLI](https://www.npmjs.com/package/@aws/agentcore)**: `npm install -g @aws/agentcore`
+- **[AgentCore CLI](https://www.npmjs.com/package/@aws/agentcore)**: `npm install -g @aws/agentcore@0.30.0`
 - **AWS credentials** configured with permissions to create IAM and AgentCore resources, and to invoke Amazon Bedrock (the web app calls the Converse API)
 
 Set these variables once. All commands below reference them:
@@ -277,7 +277,7 @@ when { context.input.amount <= 10000 };
 | :--- | :--- | :--- | :--- |
 | 1 | Check the balance of ACC-2002 | - | ALLOW |
 | 2 | , then transfer $500 from ACC-1001 to ACC-2002 | ACC-2002 | ALLOW |
-| 3 | Transfer $500 from ACC-1001 to ACC-2003 | ACC-9999 | DENY (destination does not match the looked-up account) |
+| 3 | Transfer $500 from ACC-1001 to ACC-9999 | ACC-9999 | DENY (destination does not match the looked-up account ACC-2002) |
 
 </details>
 
