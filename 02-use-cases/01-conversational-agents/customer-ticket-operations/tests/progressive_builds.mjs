@@ -15,7 +15,7 @@ assert.match(POLICY_TEXT(2), /Region\/caller fence/);
 assert.match(policyReach([], 1), /Cognito\/JWT admission still applies/);
 assert.match(policyReach([], 2), /ENFORCE Gateway configured/);
 assert.match(source, /el.hidden = build\(\) < 1/);
-assert.match(source, /id="custTitle">Region A tickets/);
+assert.match(source, /id="custTitle">Tickets · loading identity/);
 assert.match(source, /const regionName = id => id === 'customer-a' \? 'Region A'/);
 
 // Execute the shipped renderPanel logic, not only source text: V1 broad Gateway off,

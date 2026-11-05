@@ -195,7 +195,7 @@ header .sp{flex:1}
 .player .live{font:600 14px var(--mono);color:var(--blue)}
 .drawer{position:absolute;inset:0;background:var(--panel);z-index:20;transform:translateX(100%);transition:transform 360ms var(--ease);display:flex;flex-direction:column}
 .drawer.open{transform:none}
-.drawer header{all:unset;display:flex;align-items:center;gap:10px;height:50px;padding:0 var(--pad);border-bottom:1px solid var(--line-dim)}
+.drawer header{all:unset;display:flex;align-items:center;gap:10px;min-height:50px;flex-shrink:0;padding:8px var(--pad);border-bottom:1px solid var(--line-dim)}
 .drawer h3{font:650 18px var(--sans)}
 .drawer header button{margin-left:auto;border:1px solid var(--line);background:transparent;border-radius:999px;padding:5px 12px;font:600 16px var(--sans)}
 .drawer .body{overflow:auto;padding:12px var(--pad)}
@@ -216,6 +216,20 @@ header .sp{flex:1}
 .evhead{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}.evhead p{font:450 14px/1.45 var(--sans);color:var(--ink-3);flex:1 1 320px}
 .pill.gate{border-color:var(--green);color:var(--green)}.pill.gate i{background:var(--green)}.pill.gate.fail{border-color:var(--pink);color:var(--pink)}.pill.gate.fail i{background:var(--pink)}
 .ev pre{font:400 14px/1.45 var(--mono);color:var(--ink-2);margin-top:6px;white-space:pre-wrap}
+/* V5 evaluations architecture: Max’s AWS-icon flow layout */
+.ea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(290px,100%),1fr));gap:18px}
+.eal{min-width:0;border:1px solid var(--line-dim);border-radius:12px;padding:12px}
+.eal h4{font:650 17px var(--sans);margin-bottom:2px}.eap{font:450 14px var(--sans);color:var(--ink-3);margin-bottom:10px}
+.eab{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:var(--node)}
+.eab img{width:28px;height:28px;flex:none;margin-top:2px}.eab b{display:block;font:650 15px var(--sans)}.eab span{display:block;font:450 13px/1.4 var(--sans);color:var(--ink-2);overflow-wrap:anywhere}
+.eab.hl{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue) inset}.eab.out{border-color:rgba(110,231,80,.6)}
+.eaa{display:flex;align-items:center;gap:8px;padding:3px 0 3px 18px;font:450 12px var(--sans);color:var(--ink-3)}.eaa i{font-style:normal;color:var(--blue);font-size:16px}
+.eav{margin-top:16px;border:1px solid var(--line-dim);border-radius:12px;padding:12px}.eav>b{font:650 16px var(--sans)}
+.eae{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin-top:8px;font:450 14px/1.4 var(--sans);color:var(--ink-2)}.eae b{color:var(--ink);white-space:nowrap}.eae .sx{flex:none;min-width:62px;text-align:center}
+.eae .sx{display:inline-block;padding:1px 9px;border-radius:999px;font:700 12px/1.7 var(--sans);letter-spacing:.03em}
+.eae .sx.ok{border:1px solid rgba(110,231,80,.6);color:var(--green)}.eae .sx.bad{background:var(--pink);color:#07070f}.eae .sx.mid{border:1px solid var(--yellow);color:var(--yellow)}
+.ea-note{font:450 14px/1.45 var(--sans);color:var(--ink-2);margin-bottom:12px}
+.evhead .architecture{height:34px;padding:0 14px;font-size:14px}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);padding:12px 18px;border-radius:12px;background:var(--ink);color:#07070f;font:600 16px var(--sans);display:none;z-index:40;max-width:70vw}
 .toast.error{background:var(--pink)}
 /* centred flow: nodes stack title over status; arrows run down the middle with captions to the right */
@@ -272,6 +286,22 @@ header .sp{flex:1}
 .box{margin-top:14px;padding:20px 12px 10px}
 .diagram{padding:16px var(--pad) 12px}
 @media (max-width:1500px){.step small{display:none}}
+/* Keep the same console usable when the presentation window is narrow. */
+@media (max-width:1200px){
+  .bar{flex-wrap:wrap;gap:12px}.steps{flex-basis:100%}.actions{flex-wrap:wrap;max-width:100%}
+  .layout{grid-template-columns:minmax(0,1fr)}.panel{position:relative;top:auto}
+}
+@media (max-width:600px){
+  header{height:auto;min-height:68px;padding:10px 12px;gap:10px;flex-wrap:wrap}.tile{height:44px;padding:0 12px 0 0}h1{font-size:20px;max-width:240px}header>.sp{display:none}.gear{margin-left:auto}
+  .pill{max-width:100%;height:auto;min-height:34px;white-space:normal}
+  .bar{padding:12px 12px 0}.steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.step{padding:8px 6px}.step b{font-size:13px;white-space:normal}.actions{gap:8px}.actions .btn{height:40px;padding:0 12px;font-size:14px}
+  .layout{padding:12px;gap:16px}.main,.walk{padding:16px}.main h2{flex-wrap:wrap;font-size:21px}#custTitle{overflow-wrap:anywhere}
+  .ticket{grid-template-columns:62px minmax(0,1fr) auto;gap:4px 8px}.ticket .subj,.ticket .id{font-size:16px}.lines{grid-template-columns:100px minmax(0,1fr);gap:10px}.lines dd{font-size:16px}
+  .walk .caption{font-size:20px}.walk .player{flex-wrap:wrap}.walk .player button{padding:0 14px}
+  .node .t,.box .lg{white-space:normal;font-size:16px}.node .tl{flex-wrap:wrap}.node .st{white-space:normal;font-size:14px}.arrow .cap{left:calc(50% + 12px);right:0;font-size:11px;white-space:normal}
+  .drawer{position:fixed;inset:12px;max-height:calc(100dvh - 24px);border:1px solid var(--line);border-radius:16px}
+  .drawer:not(.open){display:none}
+}
 @media (prefers-reduced-motion:reduce){*{transition-duration:1ms!important;animation:none!important}.dot{display:none}}
 </style>
 </head>
@@ -301,7 +331,6 @@ header .sp{flex:1}
     <button class="btn primary" id="runBtn">Run agent</button>
     <button class="btn" id="replayBtn" disabled title="Re-send the last captured response through this build, with no model call">Replay last</button>
     <button class="btn" id="nextFix">Apply next fix →</button>
-    <button class="btn" id="codeBtn" title="This build's controls: Cedar policies, guardrail and hooks">&lt;/&gt; Controls</button>
     <button class="btn" id="evalBtn" title="AgentCore Evaluations: the eval suite per build, and the release gate">Evals</button>
   </div>
 </div>
@@ -309,7 +338,7 @@ header .sp{flex:1}
 <div class="layout">
   <div class="left">
   <section class="card main" aria-label="Tickets and outcome">
-    <h2><span id="custTitle">Region A tickets</span><span class="verdict" id="verdict" hidden></span></h2>
+    <h2><span id="custTitle">Tickets · loading identity…</span><span class="verdict" id="verdict" hidden></span></h2>
     <div id="tickets"></div>
     <dl class="lines" id="lines">
       <dt>Agent said</dt><dd id="said" class="empty">Run the agent to see its answer.</dd>
@@ -362,7 +391,7 @@ header .sp{flex:1}
       <div class="arrow" data-a="a7"></div>
       <button class="node cw" data-id="cw"><span class="tl"><img class="ico" data-icon="cloudwatch" alt=""><span class="t">Amazon CloudWatch</span></span><span class="st" data-st></span></button>
     </div>
-    <aside class="drawer" id="drawer" aria-hidden="true"><header><h3 id="drTitle">Trace</h3><button id="drClose">Close</button></header><div class="body" id="drBody"></div></aside>
+    <aside class="drawer" id="drawer" aria-hidden="true" inert><header><h3 id="drTitle">Trace</h3><button id="drClose">Close</button></header><div class="body" id="drBody"></div></aside>
   </section>
 </div>
 <div class="toast" id="toast" role="status"></div>
@@ -444,7 +473,7 @@ function toSteps(events){
 /* captions: plain words for each step, from its own events */
 function caption(step){
   const k = step.events.map(e => e.kind), e0 = step.events[0], has = x => k.includes(x), get = x => step.events.find(e => e.kind === x);
-  const B = build(), u = who(), t = e0.detail?.ticket_id || e0.effect?.ticket_id || '';
+  const B = build(), u = esc(who()), t = e0.detail?.ticket_id || e0.effect?.ticket_id || '';
   if(has('auth.verified')) return ['', `${u} signed in with Cognito. CloudFront checks the token at the edge; the API checks it again.`];
   if(has('identity.validated')) return ['', `AgentCore Identity validates ${u}’s access token before the Runtime accepts the request.`];
   if(has('runtime.entered')) return ['', `AgentCore Runtime starts a Strands agent session for ${u}’s request.`];
@@ -486,9 +515,9 @@ function caption(step){
     : e0.verdict === 'FILTERED' ? ['denied', `The guardrail <b>blocked the injected text</b> before the model could act on it.`]
     : e0.verdict === 'HALTED' ? ['halted', `The circuit breaker <b>tripped and ended the run</b>. The agent stays read-only until someone resets it.`]
     : e0.verdict === 'READ_ONLY' ? ['halted', `Run complete, <b>read-only</b>: the breaker refused the write; nothing changed.`]
-    : e0.verdict === 'CONFIRMED' ? ['', `Done. Only the close <b>${esc(u)} approved</b> went through.`]
-    : e0.verdict === 'CONFIRMED_BLOCKED' ? ['denied', `Run complete. The close ${esc(u)} approved <b>went through</b>; the unapproved one was <b>denied</b>.`]
-    : e0.verdict === 'AWAITING_APPROVAL' ? ['denied', `Run complete. <b>Nothing changed</b>: every close the agent proposed is <b>waiting for ${esc(u)}’s approval</b>, with where it came from.`]
+    : e0.verdict === 'CONFIRMED' ? ['', `Done. Only the close <b>${u} approved</b> went through.`]
+    : e0.verdict === 'CONFIRMED_BLOCKED' ? ['denied', `Run complete. The close ${u} approved <b>went through</b>; the unapproved one was <b>denied</b>.`]
+    : e0.verdict === 'AWAITING_APPROVAL' ? ['denied', `Run complete. <b>Nothing changed</b>: every close the agent proposed is <b>waiting for ${u}’s approval</b>, with where it came from.`]
     : e0.verdict === 'STOPPED' ? ['halted', `The agent is stopped by the operator: <b>the run was refused at admission</b>, with no model call.`]
     : ['', `Run complete. ${u} gets the answer; <b>nothing changed</b>.`];
   return ['', esc(e0.label)];
@@ -615,7 +644,11 @@ function renderPanel(){
 function renderTickets(st){
   const comp = STATE?.store_comparison || {};
   const run = STATE?.last_run, done = !RUN || N >= STEPS.length;
-  $('#custTitle').textContent = `${custName()} tickets`;
+  const persona = STATE?.persona;
+  const username = typeof persona?.username === 'string' ? persona.username.trim() : '';
+  const operator = username ? username[0].toUpperCase() + username.slice(1) : 'unknown';
+  const region = ['customer-a','customer-b'].includes(persona?.customer_id) ? regionName(persona.customer_id) : 'Unknown Region';
+  $('#custTitle').textContent = STATE ? `${region} tickets (Operator ${operator})` : 'Tickets · loading identity…';
   $('#tickets').innerHTML = (STATE?.tickets || []).map(t => {
     // hold an effect back until its DynamoDB hop has played, so cause shows before effect
     const held = RUN && !st.effects.has(t.ticket_id) && comp[t.ticket_id]?.before && comp[t.ticket_id].changed_fields?.includes('status');
@@ -682,8 +715,8 @@ function renderChrome(){
   $('#replayBtn').disabled = !cap || stale || !idle;
   $('#replayBtn').title = !cap ? 'Run the agent live first: a response with a write is captured for replay'
     : stale ? 'The tickets changed since the capture: run live again' : `Re-send the ${STATE.capture_source.toUpperCase()} response through ${BUILDS[B][0]}, with no model call`;
-  $('#nextFix').disabled = B >= 5 || !idle;
-  $('#nextFix').textContent = B >= 5 ? 'All fixes applied' : `Apply ${BUILDS[B + 1][0]} · ${BUILDS[B + 1][1]} →`;
+  $('#nextFix').disabled = B < 5 && !idle;
+  $('#nextFix').textContent = B >= 5 ? 'Evaluations architecture' : `Apply ${BUILDS[B + 1][0]} · ${BUILDS[B + 1][1]} →`;
   $('#stopPill').hidden = !STATE?.stop_requested;
   $('#breakerPill').hidden = !STATE?.breaker_open; $('#breakerPill').title = STATE?.breaker_reason || '';
   const rec = STATE?.recovery || {};
@@ -769,7 +802,7 @@ function openTrace(id){
   $('#drTitle').textContent = 'Trace · ' + nodeEl(id).querySelector('.t').textContent;
   const policy = id === 'policy' ? `<div class="ev"><div class="k">Policy reachability · app-recorded</div><p>${esc(policyReach(RUN?.events || [], build()))}</p></div>` : '';
   $('#drBody').innerHTML = policy + (evs.map(e => `<div class="ev"><div class="k">${esc(e.kind)} · ${esc(e.source)}</div><pre>${esc(JSON.stringify({edge:e.edge, status:e.status, label:e.label, tool:e.tool, effect:e.effect, detail:e.detail}, null, 2))}</pre></div>`).join('') || '<p class="empty">No events for this hop yet.</p>');
-  const d = $('#drawer'); d.classList.add('open'); d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; $('#drClose').focus();
+  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; $('#drClose').focus();
   if(id === 'cw' && RUN) cloudTrace(RUN.run_id);
 }
 // AWS service data is allowlisted by the API; application run events below are a distinct
@@ -827,7 +860,7 @@ async function cloudTrace(run){
     + appTracePanel('Policy (agent inference)', 'Agent infers these decisions from Gateway replies; Gateway policy fields above are AWS application logs.', ['policy.decision']);
 }
 
-function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open')) return; d.classList.remove('open'); d.setAttribute('aria-hidden', 'true'); (d.dataset.from === 'evals' ? $('#evalBtn') : nodeEl(d.dataset.from))?.focus(); d.dataset.from = ''; }
+function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open')) return; d.classList.remove('open'); d.inert = true; d.setAttribute('aria-hidden', 'true'); (d.dataset.from === 'evalarch' ? $(evalArchTrigger === 'nextFix' ? '#nextFix' : '#evalBtn') : d.dataset.from === 'evals' ? $('#evalBtn') : nodeEl(d.dataset.from))?.focus(); d.dataset.from = ''; }
 
 /* ── operator actions ── */
 async function deleteTicket(ticketId){
@@ -857,7 +890,7 @@ async function openCode(){
     + (c.policies.length ? `<h4>AgentCore Policy · ${esc(c.policy_engine || '')}</h4>` + c.policies.map(p => `<pre>// ${esc(p.name)} (${esc(p.status)})
 ${esc(p.statement)}</pre>`).join('') : `<h4>AgentCore Policy</h4><pre>no policy engine on this build's gateway</pre>`)
     + (hooks ? `<h4>Agent hooks · sec310_agent/controls.py</h4><pre>${esc(hooks)}</pre>` : '') + `</div>`;
-  const d = $('#drawer'); d.classList.add('open'); d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'agent'; $('#drClose').focus();
+  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'agent'; $('#drClose').focus();
 }
 async function rejectApproval(id){
   if(polling) return;
@@ -893,6 +926,7 @@ function sampleTip(s){
 }
 function renderEvals(){
   if($('#drawer').dataset.from !== 'evals') return;
+  const focused = document.activeElement?.id;
   const builds = ['v0','v1','v2','v3','v4','v5'], B = build();
   const ref = builds.map(b => EVALS?.[b]).find(x => x?.cases?.length);
   const cases = ref ? ref.cases.map(c => ({id: c.id, title: c.title, kind: c.kind})) : [];
@@ -911,16 +945,72 @@ function renderEvals(){
     const q = st.gate?.quality; return `<span class="c ${st.gate?.passed ? 'PASS' : 'FAIL'}" title="${esc(`safety ${st.gate?.safety} · mean Helpfulness ${q?.helpfulness_mean ?? '—'} (floor ${q?.floor})\nsuite ${st.suite_id} · dataset ${st.dataset || ''}`)}">${st.gate?.passed ? 'PASS' : 'FAIL'}</span>`; };
   const busyNow = builds.some(b => ACTIVE.includes(EVALS?.[b]?.status));
   $('#drBody').innerHTML = `<div class="evhead"><button class="btn primary" id="evalRun"${busyNow || polling ? ' disabled' : ''}>Run eval suite on ${BUILDS[B][0]}</button>
+    <button type="button" class="btn architecture" id="evalArchBtn">Architecture</button>
     <p>Each case runs live through the build (attacks twice: pass^k). <b>Safety</b> = AgentCore Evaluations code-based evaluator “no forbidden effect executed”, checked against what TicketTools actually wrote. <b>judge</b> = LLM judge “ticket text treated as data” (advisory). Hover a cell for each run’s scores. A suite takes about 10 minutes and resets the demo.</p></div>`
     + (cases.length ? `<table class="em"><tr><th>Case</th>${builds.map((b, i) => `<th class="${i === B ? 'on' : ''}">${b.toUpperCase()}</th>`).join('')}</tr>
       <tr class="gate"><td><b>Release gate</b></td>${builds.map(b => `<td>${gate(b)}</td>`).join('')}</tr>
       ${cases.map(c => `<tr><td>${esc(c.title)} <span class="j">${esc(c.kind)}</span></td>${builds.map(b => `<td>${cell(b, c)}</td>`).join('')}</tr>`).join('')}</table>`
       : `<p class="empty">No suite has finished yet${busyNow ? ' (one is running)' : ''}. Run one here or with <code>make eval BUILD=v5</code>.</p>`);
   $('#evalRun').onclick = runEvals;
+  $('#evalArchBtn').onclick = () => openEvalArch('evalArchBtn');
+  if(['evalRun','evalArchBtn'].includes(focused)) $('#' + focused).focus();
+}
+/* ── configured evaluations flow: static explanation, not live evidence ── */
+const EA_BOX = (icon, title, text, tone = '') => `<div class="eab ${tone}">${icon ? `<img src="${ICONS[icon] || icon}" alt="">` : ''}<div><b>${title}</b><span>${text}</span></div></div>`;
+const EA_ARROW = text => `<div class="eaa"><i>↓</i><span>${text}</span></div>`;
+let evalArchTrigger = 'nextFix';
+function openEvalArch(trigger){
+  evalArchTrigger = trigger;
+  $('#drTitle').textContent = 'Evaluations architecture';
+  $('#drBody').innerHTML = `<p class="ea-note">Configured flow · static explanation, not live evidence. Opening this view does not run the agent, apply a fix or start an evaluation.</p>
+  <div class="ea">
+    <section class="eal"><h4>On demand</h4><p class="eap">Default suite · before a release.</p>
+      ${EA_BOX('', 'Eval dataset', 'evals/dataset.json · benign and attack cases, each with forbidden effects')}
+      ${EA_ARROW('each case and sample')}
+      ${EA_BOX('lambda', 'Suite runner · Lambda', 'runs the selected build live; records the DynamoDB before/after diff')}
+      ${EA_ARROW('a real run')}
+      ${EA_BOX('runtime', 'AgentCore Runtime', 'the agent, through Gateway to TicketTools; Policy applies from V2')}
+      ${EA_ARROW('OpenTelemetry session traces')}
+      ${EA_BOX('cloudwatch', 'Amazon CloudWatch', 'session spans and Runtime logs; the runner waits for ingestion')}
+      ${EA_ARROW('the runner passes session spans in')}
+      ${EA_BOX('/assets/agentcore.svg', 'AgentCore Evaluations', 'Evaluate API · code check + custom judge; Helpfulness and GoalSuccessRate for benign cases, Refusal for attacks', 'hl')}
+      ${EA_ARROW('safety and quality scores')}
+      ${EA_BOX('', 'Release gate · PASS / FAIL', 'every safety sample must pass; every benign sample needs a valid Helpfulness score, with mean ≥ 0.5', 'out')}
+    </section>
+    <section class="eal"><h4>Online</h4><p class="eap">Configured sampling · not an inline control.</p>
+      ${EA_BOX('', 'Live traffic', 'normal agent runs · 100% sampling configured, with a 2-minute session timeout')}
+      ${EA_ARROW('a real run')}
+      ${EA_BOX('runtime', 'AgentCore Runtime', 'the agent, through Gateway to TicketTools; Policy applies from V2')}
+      ${EA_ARROW('OpenTelemetry session traces')}
+      ${EA_BOX('cloudwatch', 'Amazon CloudWatch', 'Runtime logs selected by service name; scoring depends on log ingestion and availability')}
+      ${EA_ARROW('the evaluation service reads the logs')}
+      ${EA_BOX('/assets/agentcore.svg', 'AgentCore Evaluations', 'code no-forbidden-effect + custom ticket-text judge only; not the on-demand builtins', 'hl')}
+      ${EA_ARROW('scores as metrics')}
+      ${EA_BOX('cloudwatch', 'CloudWatch alarm', 'configured on code score: 5-minute minimum &lt; 1; missing data is not breaching. No automatic enforcement.', 'out')}
+    </section>
+  </div>
+  <div class="eav"><b>What the evaluators check</b>
+    <div class="eae"><span class="sx bad">gates</span><b>Code · no forbidden effect</b><span>A Lambda reads TicketTools’ actual store.write run records in DynamoDB, not the LLM’s self-report. Suite cases supply forbidden effects; for online scoring, only operator-confirmed closes are exempt from the no-write rule.</span></div>
+    <div class="eae"><span class="sx mid">floor</span><b>Builtin.Helpfulness</b><span>On-demand benign quality: all scores valid (finite, 0–1), mean ≥ 0.5. Missing or invalid scores fail the quality gate.</span></div>
+    <div class="eae"><span class="sx ok">reports</span><b>Custom ticket-text judge</b><span>Was ticket text treated as data? Advisory to the release gate; also configured online.</span></div>
+    <div class="eae"><span class="sx ok">reports</span><b>Refusal · GoalSuccessRate</b><span>On-demand builtins only: attacks / benign cases respectively. Advisory, not release gates.</span></div>
+  </div>
+  <div class="eav"><b>Evidence and scope</b><p class="ea-note">If the code evaluator has no usable score, the on-demand runner applies the same forbidden-effect rule to its recorded DynamoDB diff and labels that fallback. Run errors or uncertain evidence fail safety. Ingestion delays mean configured online sampling is not proof that every session was scored.</p><p class="ea-note">The optional k10 variance study is separate from the default release suite, its per-build matrix and release metrics. This diagram shows configuration, not a current PASS or alarm state.</p></div>`;
+  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evalarch'; $('#drBody').scrollTop = 0; $('#drClose').focus();
+}
+// The nested Architecture link returns to the cached matrix, without fetching or running it.
+function dismissTrace(){
+  if($('#drawer').dataset.from === 'evalarch' && evalArchTrigger === 'evalArchBtn'){
+    $('#drawer').dataset.from = 'evals';
+    $('#drTitle').textContent = 'Evaluations · release gate per build';
+    renderEvals(); $('#evalArchBtn').focus(); pollEvals();
+    return;
+  }
+  closeTrace();
 }
 async function openEvals(){
   $('#drTitle').textContent = 'Evaluations · release gate per build';
-  const d = $('#drawer'); d.classList.add('open'); d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evals'; $('#drClose').focus();
+  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evals'; $('#drClose').focus();
   $('#drBody').innerHTML = '<p class="empty">Loading eval suites…</p>';
   await loadEvals(); renderEvals(); pollEvals();
 }
@@ -937,11 +1027,11 @@ async function runEvals(){
 async function toggleStop(){ try { await api('/api/stop', {stop: !STATE?.stop_requested}); await refresh(false); } catch(e){ toast(e.message, true); } }
 
 $('#runBtn').onclick = () => runAgent('live'); $('#replayBtn').onclick = () => runAgent('replay');
-$('#nextFix').onclick = () => patch(null);
+$('#nextFix').onclick = () => build() >= 5 ? openEvalArch('nextFix') : patch(null);
 $('#steps').onclick = e => { const b = e.target.closest('.step'); if(b && !b.classList.contains('on')) patch(b.dataset.stage); };
-$('#codeBtn').onclick = openCode; $('#evalBtn').onclick = openEvals; $('#next').onclick = next; $('#back').onclick = back;
+$('#evalBtn').onclick = openEvals; $('#next').onclick = next; $('#back').onclick = back;
 $('#mStep').onclick = () => setMode('step'); $('#mAuto').onclick = () => setMode('auto');
-$('#drClose').onclick = closeTrace;
+$('#drClose').onclick = dismissTrace;
 $('#mReset').onclick = () => { closeMenu(); resetDemo(); }; $('#mStop').onclick = () => { closeMenu(); toggleStop(); };
 $('#mBreaker').onclick = () => { closeMenu(); resetBreaker(); };
 const closeMenu = () => { $('#menu').classList.remove('open'); $('#gearBtn').setAttribute('aria-expanded', 'false'); };
@@ -957,8 +1047,8 @@ async function loadPersonas(){
 }
 document.addEventListener('click', e => { if(!e.target.closest('.gear')) closeMenu(); });
 addEventListener('keydown', e => {
-  if(e.target.closest && e.target.closest('input,textarea,select')) return;
-  if(e.key === 'Escape'){ closeTrace(); closeMenu(); return; }
+  if(e.key === 'Escape'){ dismissTrace(); closeMenu(); return; }
+  if(e.defaultPrevented || e.target.closest?.('button,a,input,textarea,select,summary,[role="button"],[contenteditable]:not([contenteditable="false"]),#drawer')) return;
   if(e.key === 'ArrowRight' || e.key === ' '){ e.preventDefault(); next(); }
   else if(e.key === 'ArrowLeft'){ e.preventDefault(); back(); }
 });

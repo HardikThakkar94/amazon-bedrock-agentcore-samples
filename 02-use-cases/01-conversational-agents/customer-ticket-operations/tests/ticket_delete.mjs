@@ -17,7 +17,7 @@ const state = {tickets: initial, last_run:null, store_comparison:{}, approvals:[
 const context = vm.createContext({
   STATE: state, RUN:null, ASKS:new Set(), polling:null, console,
   $: id => id === '#tickets' ? tickets : ({textContent:'', hidden:true}),
-  build:() => 5, custName:() => 'Region A', who:() => 'alice',
+  build:() => 5, custName:() => 'Region A', regionName:() => 'Region A', who:() => 'alice',
   renderApprovals:() => {}, confirm:() => confirmed,
   api:async (path, body) => {calls.push([path, body]); assert.equal(path, '/api/tickets/delete'); return {deleted:'A-90', source:'operator'};},
   refresh:async () => {state.tickets = [initial[0]]; vm.runInContext('renderTickets({effects:new Set()})', context);},
