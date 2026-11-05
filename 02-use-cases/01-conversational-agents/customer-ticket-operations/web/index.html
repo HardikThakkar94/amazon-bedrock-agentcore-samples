@@ -393,7 +393,20 @@ document.querySelectorAll('[data-icon]').forEach(img => { img.onerror = () => { 
 const BUILDS = [
   ['V0','Unsafe','Model output executes'], ['V1','Identity','Caller identity checked'], ['V2','Validate','Input screened'],
   ['V3','Policy','Policy + human approval'], ['V4','Contain','Circuit breaker'], ['V5','Evidence','Release needs passing evals'] ];
-const POLICY_TEXT = b => b === 0 ? 'no policy engine' : b < 3 ? 'permit: caller is in tenant' : b === 3 ? 'close needs operator approval' : 'approval + write cap';
+const POLICY_TEXT = b => b === 0 ? 'no policy engine' : b < 3 ? 'ENFORCE · tenant fence' : b === 3 ? 'ENFORCE · approval required' : 'ENFORCE · approval + write cap';
+// A held/refused write has no Gateway Policy decision. Preserve any earlier read ALLOW;
+// OPEN containment must never dispatch a write just to make this node light up.
+function policyReach(events, b){
+  if(b === 0) return 'No policy engine on this build’s Gateway.';
+  const decisions = events.filter(e => e.kind === 'policy.decision' && ['ALLOW','DENY'].includes(e.decision));
+  const last = decisions.at(-1), write = e => ['close_ticket','add_note','confirm_close'].includes(e.tool);
+  const notReached = events.filter(e => ['approval.requested','tool.skipped'].includes(e.kind) && write(e)).at(-1);
+  const prior = last ? `${last.decision} ${last.tool || 'tool'} recorded by agent from Gateway reply` : 'No Gateway Policy decision recorded';
+  if(!notReached) return last ? prior + ' · ENFORCE Gateway configured' : 'ENFORCE Gateway configured · awaiting a Gateway call; no decision recorded';
+  const reason = notReached.kind === 'approval.requested' ? 'held for operator approval'
+    : /read-only/.test(notReached.label || '') ? 'OPEN breaker refused write' : 'agent refused write';
+  return `${prior}. ${notReached.tool} ${reason} before Gateway; Policy did not evaluate that write.`;
+}
 
 /* ── edges → arrow segments ── */
 const SEG = { 'ingress>acid':[['a1',1]], 'acid>runtime':[['a2',1]], 'runtime>bedrock':[['c1',1]], 'bedrock>runtime':[['c1',-1]],
@@ -496,6 +509,7 @@ function fold(n){
     if(ev.kind === 'store.write') st.effects.add(ev.effect?.ticket_id);
     if(ev.kind === 'run.completed' && st.n.agent.s === 'active') st.n.agent.s = ['harmful','halted','denied'].includes(ev.status) ? ev.status : 'ok';
   }
+  if(build() > 0) st.n.policy.text = policyReach(STEPS.slice(0, n).flatMap(step => step.events), build());
   // the node the current step lands on is the one the audience should look at
   const last = STEPS[n - 1]?.events.at(-1);
   if(last && st.n[last.node] && st.n[last.node].s === 'ok') st.n[last.node].s = 'active';
@@ -747,25 +761,64 @@ function openTrace(id){
   if(polling) return; // keep the live view in sight while a run is in flight
   const keys = HOPS[id], evs = (RUN?.events || []).filter(e => keys.includes(e.node) || (e.edge && e.edge.split('>').some(x => keys.includes(x))));
   $('#drTitle').textContent = 'Trace · ' + nodeEl(id).querySelector('.t').textContent;
-  $('#drBody').innerHTML = (evs.map(e => `<div class="ev"><div class="k">${esc(e.kind)} · ${esc(e.source)}</div><pre>${esc(JSON.stringify({edge:e.edge, status:e.status, label:e.label, tool:e.tool, effect:e.effect, detail:e.detail}, null, 2))}</pre></div>`).join('') || '<p class="empty">No events for this hop yet.</p>');
+  const policy = id === 'policy' ? `<div class="ev"><div class="k">Policy reachability · app-recorded</div><p>${esc(policyReach(RUN?.events || [], build()))}</p></div>` : '';
+  $('#drBody').innerHTML = policy + (evs.map(e => `<div class="ev"><div class="k">${esc(e.kind)} · ${esc(e.source)}</div><pre>${esc(JSON.stringify({edge:e.edge, status:e.status, label:e.label, tool:e.tool, effect:e.effect, detail:e.detail}, null, 2))}</pre></div>`).join('') || '<p class="empty">No events for this hop yet.</p>');
   const d = $('#drawer'); d.classList.add('open'); d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; $('#drClose').focus();
   if(id === 'cw' && RUN) cloudTrace(RUN.run_id);
 }
-// What AWS itself recorded for this run: Logs Insights over model, gateway and span logs.
+// AWS service data is allowlisted by the API; application run events below are a distinct
+// source, not native Cognito, Identity, Guardrails or Policy service logs.
+const TRACE_COLS = {
+  model: [['@timestamp','Time'],['modelId','Model'],['operation','Operation'],['in_tokens','Input tokens'],['out_tokens','Output tokens'],['stop','Stop']],
+  gateway: [['@timestamp','Time'],['operation','Operation'],['tool','Tool'],['decision','Policy decision'],['policies','Determining policy IDs'],['policy_ms','Policy latency'],['latency','Latency']],
+  spans: [['@timestamp','Time'],['name','Span'],['scope','Instrumentation'],['ms','ms'],['status','Status'],['traceId','Trace ID']],
+  runtime: [['@timestamp','Time'],['name','Event'],['scope','Instrumentation'],['status','Status'],['traceId','Trace ID']]
+};
+function traceTable(rows, cols){
+  if(!rows.length) return '<p class="empty">No correlated records ingested yet. Close and reopen to retry.</p>';
+  return `<div style="overflow:auto"><table class="tr"><thead><tr>${cols.map(([,label]) => `<th>${esc(label)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${cols.map(([key]) => `<td>${esc(r[key] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function appTraceEvents(kinds){
+  const allowed = new Set(kinds);
+  return (RUN?.events || []).filter(e => allowed.has(e.kind)).map(e => ({
+    kind: e.kind, status: ['ok','active','denied','halted','error'].includes(e.status) ? e.status : '',
+    source: e.source === 'api' ? 'API run event' : e.source === 'runtime' ? 'agent-recorded run event' : 'run event',
+    decision: ['ALLOW','DENY'].includes(e.decision) ? e.decision : ''
+  }));
+}
+function appTracePanel(title, note, kinds){
+  const events = appTraceEvents(kinds);
+  return `<div class="ev"><div class="k">${esc(title)} · ${events.length} app event(s)</div><p>${esc(note)}</p>`
+    + (events.length ? traceTable(events, [['kind','Event'],['status','State'],['decision','Inferred decision'],['source','Recorded by']]) : '<p class="empty">No app events for this run.</p>') + '</div>';
+}
+function cloudSource(src){
+  const cols = TRACE_COLS[src.key]; if(!cols) return '';
+  const status = src.status === 'done' ? `${src.records.length} projected record(s) of ${src.matched ?? src.records.length} matched`
+    : src.status === 'running' ? 'Query still running; close and reopen to retry'
+    : src.status === 'no log group yet' ? 'Log group not available yet'
+    : `Query failed: ${src.error || 'unknown error'}`;
+  return `<div class="ev"><div class="k">${esc(src.title)} · ${esc(status)}</div><p class="empty">Source: ${esc((src.log_groups || []).join(', ') || 'CloudWatch log group not found')}</p>`
+    + (src.status === 'done' ? (src.matched > 0 && !src.records.length
+      ? '<p class="empty">Records matched, but none had safe projected fields.</p>' : traceTable(src.records, cols)) : '') + '</div>';
+}
 async function cloudTrace(run){
   const body = $('#drBody');
-  body.innerHTML = `<p class="empty">Querying CloudWatch Logs Insights for this run…</p>`;
-  let t; try { t = await api(`/api/trace?run=${encodeURIComponent(run)}`); } catch(e){ body.innerHTML = `<p class="empty">${esc(e.message)}</p>`; return; }
-  if($('#drawer').dataset.from !== 'cw') return;
-  const table = rows => {
-    if(!rows.length) return '<p class="empty">No records yet (logs can take a minute to arrive). Close and reopen to query again.</p>';
-    const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
-    return `<div style="overflow:auto"><table class="tr"><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr>${rows.map(r => `<tr>${cols.map(c => `<td>${esc((r[c] || '').slice(0, 400))}</td>`).join('')}</tr>`).join('')}</table></div>`;
-  };
-  body.innerHTML = t.sources.map(src =>
-    `<div class="ev"><div class="k">${esc(src.title)} · ${src.records.length} record(s)</div>
-     <pre>${esc(src.log_groups.join('\n') || 'no log group yet')}\n\n${esc(src.query.replace(/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<this run>'))}</pre>${table(src.records)}</div>`).join('');
+  body.innerHTML = '<p class="empty">Querying CloudWatch Logs Insights for this run…</p>';
+  let t; try { t = await api(`/api/trace?run=${encodeURIComponent(run)}`); } catch(e){ if($('#drawer').dataset.from === 'cw') body.innerHTML = `<p class="empty">CloudWatch query unavailable: ${esc(e.message)}</p>`; return; }
+  if($('#drawer').dataset.from !== 'cw' || RUN?.run_id !== run) return;
+  const sources = Object.fromEntries(t.sources.map(src => [src.key, src]));
+  body.innerHTML = `<p class="empty">Run ${esc(t.run_id)} · ${esc(t.region || 'AWS region unknown')}. AWS records can arrive later. No log bodies, token claims or ticket text are shown.</p>`
+    + appTracePanel('Authentication / Identity', 'API and agent-recorded authorization milestones; not native Cognito or Identity audit logs.', ['auth.verified','identity.validated'])
+    + (sources.spans ? cloudSource(sources.spans) : '')
+    + (sources.runtime ? cloudSource(sources.runtime) : '')
+    + appTracePanel('Runtime controls', 'Agent-recorded run admission and outcome.', ['runtime.entered','run.halted','run.completed'])
+    + (sources.model ? cloudSource(sources.model) : '')
+    + appTracePanel('Guardrails', 'Agent-recorded ApplyGuardrail result; not native Guardrails service logs.', ['guardrail.checked','guardrail.intervened'])
+    + (sources.gateway ? cloudSource(sources.gateway) : '')
+    + `<div class="ev"><div class="k">Policy reachability · app-recorded</div><p>${esc(policyReach(RUN?.events || [], build()))}</p></div>`
+    + appTracePanel('Policy (agent inference)', 'Agent infers these decisions from Gateway replies; Gateway policy fields above are AWS application logs.', ['policy.decision']);
 }
+
 function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open')) return; d.classList.remove('open'); d.setAttribute('aria-hidden', 'true'); (d.dataset.from === 'evals' ? $('#evalBtn') : nodeEl(d.dataset.from))?.focus(); d.dataset.from = ''; }
 
 /* ── operator actions ── */

@@ -116,7 +116,9 @@ def build_code(stage: str) -> dict[str, Any]:
     n = STAGES.index(stage)
     controls = [{"name": k, "on": STAGES.index(v) <= n, "detail": ""} for k, v in CONTROLS.items()]
     engines = json.loads(agent_param("policy_engines", "{}"))
-    engine = engines.get(stage)
+    # V2 shares V1 and V5 shares V4's ENFORCE Gateway/policy engine; the controls
+    # drawer must read the policy attached to the actual Gateway, not a nonexistent V5 engine.
+    engine = engines.get(GATEWAY_OF[stage])
     policies = []
     if engine:
         ctl = boto3.client("bedrock-agentcore-control")
@@ -885,7 +887,8 @@ def run_events(who: dict[str, str], run_id: str, after: str) -> dict[str, Any]:
     }
 
 
-# CloudWatch Logs Insights over what AWS itself recorded for one run (not the app's own events).
+# CloudWatch service records only. Never select @message: model inputs, Gateway arguments and
+# Runtime stdout can contain tokens, ticket text or other tenants' data.
 TRACE_QUERIES = {
     "model": (
         "Amazon Bedrock model invocation logs",
@@ -894,15 +897,75 @@ TRACE_QUERIES = {
         "| filter requestMetadata.sec310_run = '{run}' | sort @timestamp asc | limit 50",
     ),
     "gateway": (
-        "AgentCore Gateway application logs",
-        "fields @timestamp, @message | filter @message like '{run}' | sort @timestamp asc | limit 50",
+        "AgentCore Gateway APPLICATION_LOGS",
+        "fields @timestamp, body.operation as operation, body.toolName as tool, "
+        "body.policy.decision as decision, body.policy.determiningPolicies as policies, "
+        "body.policy.latency as policy_ms, body.latency as latency "
+        "| filter @message like '{run}' | sort @timestamp asc | limit 50",
     ),
     "spans": (
-        "AgentCore Runtime OpenTelemetry spans (Transaction Search)",
-        "fields @timestamp, name, durationNano / 1000000 as ms, status.code as status, traceId "
-        "| filter attributes.`sec310.run_id` = '{run}' | sort @timestamp asc | limit 80",
+        "AgentCore / Strands OpenTelemetry spans (Transaction Search)",
+        "fields @timestamp, name, durationNano / 1000000 as ms, "
+        "status.code as status, scope.name as scope, traceId "
+        "| filter attributes.session.id = '{run}' | sort @timestamp asc | limit 80",
+    ),
+    "runtime": (
+        "AgentCore Runtime log events (session-correlated)",
+        "fields @timestamp, name, status.code as status, scope.name as scope, traceId "
+        "| filter attributes.session.id = '{run}' | sort @timestamp asc | limit 80",
     ),
 }
+# Only these fields may leave the API. A Logs Insights result includes extra implicit fields,
+# notably @ptr and sometimes @message, even when not requested.
+TRACE_FIELDS = {
+    "model": ("@timestamp", "modelId", "operation", "in_tokens", "out_tokens", "stop"),
+    "gateway": ("@timestamp", "operation", "tool", "decision", "policies", "policy_ms", "latency"),
+    "spans": ("@timestamp", "name", "ms", "status", "scope", "traceId"),
+    "runtime": ("@timestamp", "name", "status", "scope", "traceId"),
+}
+TRACE_SAFE = re.compile(r"^[A-Za-z0-9_:.@/+-]{1,180}$")
+TRACE_TIME = re.compile(r"^[0-9TZ: .+-]{1,40}$")
+TRACE_NUMERIC = re.compile(r"^[0-9]{1,12}(?:\.[0-9]{1,6})?$")
+
+
+def trace_policy_ids(value: str) -> str:
+    """Show only identifiers, never raw policy evaluations or statements."""
+    try:
+        items = json.loads(value)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(items, list):
+        return ""
+    names = []
+    for item in items[:10]:
+        ident = (
+            item
+            if isinstance(item, str)
+            else item.get("policyId", "")
+            if isinstance(item, dict)
+            else ""
+        )
+        if isinstance(ident, str) and TRACE_SAFE.fullmatch(ident):
+            names.append(ident)
+    return ", ".join(names)
+
+
+def trace_record(key: str, row: list[dict[str, str]]) -> dict[str, str]:
+    fields = {f["field"]: f["value"] for f in row if f.get("field") in TRACE_FIELDS[key]}
+    out = {}
+    for name in TRACE_FIELDS[key]:
+        value = fields.get(name, "")
+        if name == "policies":
+            value = trace_policy_ids(value)
+        elif name in ("ms", "latency", "policy_ms", "in_tokens", "out_tokens"):
+            value = value if TRACE_NUMERIC.fullmatch(value) else ""
+        elif name == "@timestamp":
+            value = value if TRACE_TIME.fullmatch(value) else ""
+        else:
+            value = value if TRACE_SAFE.fullmatch(value) else ""
+        if value:
+            out[name] = value
+    return out
 
 
 def run_owner(who: dict[str, str], run_id: str) -> None:
@@ -916,74 +979,81 @@ def run_owner(who: dict[str, str], run_id: str) -> None:
 
 
 def run_trace(who: dict[str, str], run_id: str) -> dict[str, Any]:
-    """Runs the three queries in parallel and returns whatever has been ingested so far
-    (model logs take seconds, spans up to a minute or two)."""
+    """Bounded per-run CloudWatch queries; failures are not empty successful results."""
     require(who, "operator")
     run_id = run_id.lower()
-    run_owner(who, run_id)
+    run_owner(who, run_id)  # authorization before SSM or Logs calls
     logs = boto3.client("logs")
     groups = {
         "model": [os.environ["INVOCATION_LOG_GROUP"]],
         "gateway": list(json.loads(agent_param("gateway_logs", "{}")).values()),
-        # newer runtimes write spans to their own log group, older ones to the shared aws/spans
-        "spans": [
-            "aws/spans",
-            f"/aws/bedrock-agentcore/runtimes/{agent_config()['runtime_arn'].rsplit('/', 1)[-1]}-DEFAULT",
+        "spans": ["aws/spans"],
+        "runtime": [
+            f"/aws/bedrock-agentcore/runtimes/{agent_config()['runtime_arn'].rsplit('/', 1)[-1]}-DEFAULT"
         ],
     }
-
-    def exists(name: str) -> bool:
-        found = logs.describe_log_groups(logGroupNamePrefix=name, limit=5)["logGroups"]
-        return any(g["logGroupName"] == name for g in found)
-
-    groups = {
-        k: [g for g in v if exists(g)] for k, v in groups.items()
-    }  # one missing group fails a query
     now = int(time.time())
-    started = {}
-    for key, (_, query) in TRACE_QUERIES.items():
-        if not groups[key]:
+    sources = []
+    for key, (title, query) in TRACE_QUERIES.items():
+        source = {
+            "key": key,
+            "title": title,
+            "log_groups": [],
+            "records": [],
+            "status": "no log group yet",
+        }
+        sources.append(source)
+        for name in dict.fromkeys(groups[key]):
+            try:
+                found = logs.describe_log_groups(logGroupNamePrefix=name, limit=5)["logGroups"]
+                if any(g["logGroupName"] == name for g in found):
+                    source["log_groups"].append(name)
+            except Exception as exc:  # noqa: BLE001 - report bounded service error, not its message
+                source["status"] = "error"
+                source["error"] = f"DescribeLogGroups: {type(exc).__name__}"
+                break
+        if source["status"] == "error" or not source["log_groups"]:
             continue
         try:
-            started[key] = logs.start_query(
-                logGroupNames=groups[key],
+            source["query_id"] = logs.start_query(
+                logGroupNames=source["log_groups"],
                 startTime=now - 6 * 3600,
                 endTime=now + 60,
                 queryString=query.format(run=run_id),
             )["queryId"]
-        except logs.exceptions.ResourceNotFoundException:
-            pass  # e.g. aws/spans before the first span arrives
-    out: dict[str, Any] = {}
+            source["status"] = "running"
+        except Exception as exc:  # noqa: BLE001 - group can disappear after describe
+            source["status"] = "error"
+            source["error"] = f"StartQuery: {type(exc).__name__}"
     deadline = time.time() + 20
-    pending = dict(started)
+    pending = [s for s in sources if s["status"] == "running"]
     while pending and time.time() < deadline:
-        for key, qid in list(pending.items()):
-            r = logs.get_query_results(queryId=qid)
-            if r["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
-                out[key] = [
-                    {f["field"]: f["value"] for f in row if not f["field"].startswith("@ptr")}
-                    for row in r["results"]
-                ]
-                del pending[key]
+        for source in pending[:]:
+            try:
+                result = logs.get_query_results(queryId=source["query_id"])
+                status = result["status"]
+                if status == "Complete":
+                    source["matched"] = len(result["results"])
+                    source["records"] = [
+                        record
+                        for row in result["results"]
+                        if (record := trace_record(source["key"], row))
+                    ]
+                    source["status"] = "done"
+                elif status in ("Failed", "Cancelled", "Timeout"):
+                    source["status"] = "error"
+                    source["error"] = f"Logs Insights: {status}"
+                else:
+                    continue
+            except Exception as exc:  # noqa: BLE001 - no log record/error message in response
+                source["status"] = "error"
+                source["error"] = f"GetQueryResults: {type(exc).__name__}"
+            pending.remove(source)
         if pending:
             time.sleep(0.7)
-    return {
-        "run_id": run_id,
-        "region": os.environ.get("AWS_REGION"),
-        "sources": [
-            {
-                "key": key,
-                "title": title,
-                "log_groups": groups[key],
-                "query": query.format(run=run_id),
-                "records": out.get(key, []),
-                "status": "done"
-                if key in out
-                else ("running" if key in started else "no log group yet"),
-            }
-            for key, (title, query) in TRACE_QUERIES.items()
-        ],
-    }
+    for source in sources:
+        source.pop("query_id", None)
+    return {"run_id": run_id, "region": os.environ.get("AWS_REGION"), "sources": sources}
 
 
 def reset_demo(who: dict[str, str]) -> dict[str, Any]:

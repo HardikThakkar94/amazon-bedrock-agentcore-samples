@@ -668,3 +668,121 @@ def test_invoke_runs_the_payload_build(app, monkeypatch):
     seen.clear()
     assert app.invoke({"stage": "v9"}, context)["error"] == "explicit valid build required"
     assert seen == {}  # no silent downgrade at Runtime ingress
+
+
+# ── V5: cumulative enforcement at the deployed Runtime entrypoint ─────────
+def test_v5_entrypoint_clean_denial_retains_identity_guardrail_policy_and_breaker(app, monkeypatch):
+    """Invoke the real app.invoke → run → Recorder replay path, without AWS/model calls."""
+    import sec310_agent.events as event_module
+
+    seen = []
+    original = event_module.Events.emit
+
+    def capture(self, *args, **kwargs):
+        item = original(self, *args, **kwargs)
+        seen.append(item)
+        return item
+
+    monkeypatch.setattr(event_module.Events, "emit", capture)
+    table = StateTable({"busy_stage": "v5"})
+    monkeypatch.setattr(
+        sys.modules["boto3"], "resource", lambda name: SimpleNamespace(Table=lambda t: table)
+    )
+    guard = Guardrail("NONE")
+    monkeypatch.setattr(app, "Screen", lambda identifier, version: screen(guard))
+    FakeGateway.replies = {
+        "list_tickets": {"status": "success", "content": [{"text": TICKETS}]},
+        "close_ticket": {"status": "error", "content": [{"text": DENIED}]},
+    }
+    context = SimpleNamespace(request_headers={"Authorization": f"Bearer {TOKEN}"}, session_id="s")
+    payload = {
+        "stage": "v5",
+        "mode": "replay",
+        "calls": CAPTURE,
+        "run_id": "r1",
+        "policy_session": "ps-1",
+    }
+    result = app.invoke(payload, context)
+    gw = FakeGateway.instances[0]
+    assert gw.url == "https://v4"  # V5 uses the cumulative V4 ENFORCE Gateway
+    assert gw.headers["x-amzn-bedrock-agentcore-policy-session-id"] == "ps-1"
+    assert [name for name, _ in gw.sent] == [
+        "TicketTools___list_tickets",
+        "TicketTools___close_ticket",
+    ]
+    assert guard.seen == [TICKETS]
+    assert [call["decision"] for call in result["tool_calls"]] == ["ALLOW", "DENY", "NOT_EVALUATED"]
+    assert result["halted"] and table.item["breaker_open"]
+    kinds = [e["kind"] for e in seen]
+    for kind in (
+        "identity.validated",
+        "runtime.entered",
+        "guardrail.checked",
+        "policy.decision",
+        "run.halted",
+    ):
+        assert kind in kinds
+    assert [(e["tool"], e["decision"]) for e in seen if e["kind"] == "policy.decision"] == [
+        ("list_tickets", "ALLOW"),
+        ("close_ticket", "DENY"),
+    ]
+
+
+def test_v5_entrypoint_open_breaker_preserves_read_allow_and_never_dispatches_writes(
+    app, monkeypatch
+):
+    table = StateTable({"busy_stage": "v5", "breaker_open": True})
+    monkeypatch.setattr(
+        sys.modules["boto3"], "resource", lambda name: SimpleNamespace(Table=lambda t: table)
+    )
+    guard = Guardrail("NONE")
+    monkeypatch.setattr(app, "Screen", lambda identifier, version: screen(guard))
+    FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
+    context = SimpleNamespace(request_headers={"Authorization": f"Bearer {TOKEN}"}, session_id="s")
+    result = app.invoke(
+        {
+            "stage": "v5",
+            "mode": "replay",
+            "calls": CAPTURE,
+            "run_id": "r1",
+            "policy_session": "ps-1",
+        },
+        context,
+    )
+    assert [name for name, _ in FakeGateway.instances[0].sent] == ["TicketTools___list_tickets"]
+    assert [c["decision"] for c in result["tool_calls"]] == ["ALLOW", "READ_ONLY", "READ_ONLY"]
+    assert result["read_only"] and not result["halted"] and not table.updates
+    assert guard.seen == [TICKETS]
+
+
+def test_v5_entrypoint_live_close_is_held_before_gateway(app, monkeypatch):
+    """Stub the model turn only; real entrypoint/Recorder must hold an unapproved close."""
+    import sec310_agent.agent as agent_module
+
+    table = StateTable({"busy_stage": "v5"})
+    monkeypatch.setattr(
+        sys.modules["boto3"], "resource", lambda name: SimpleNamespace(Table=lambda t: table)
+    )
+    monkeypatch.setattr(app, "Screen", lambda identifier, version: screen(Guardrail()))
+    held = []
+
+    def fake_live(payload, actor, gateway, recorder, model_id, run_id):
+        event = agent_module.ReplayToolEvent(
+            {
+                "toolUseId": "hold-1",
+                "name": "TicketTools___close_ticket",
+                "input": {"customer_id": "customer-a", "ticket_id": "A-41"},
+            }
+        )
+        recorder.before(event)
+        held.append(event.cancel_tool)
+        return "", "model stubbed"
+
+    monkeypatch.setattr(agent_module, "live", fake_live)
+    context = SimpleNamespace(request_headers={"Authorization": f"Bearer {TOKEN}"}, session_id="s")
+    result = app.invoke(
+        {"stage": "v5", "mode": "live", "run_id": "r1", "policy_session": "ps-1"}, context
+    )
+    assert "held for the operator's approval" in held[0]
+    assert [c["status"] for c in result["tool_calls"]] == ["PENDING_APPROVAL"]
+    assert not FakeGateway.instances[0].sent
