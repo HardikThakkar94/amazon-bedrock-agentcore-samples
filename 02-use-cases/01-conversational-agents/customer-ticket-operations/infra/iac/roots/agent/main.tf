@@ -247,7 +247,7 @@ resource "aws_bedrockagentcore_gateway" "build" {
     }
   }
 
-  depends_on = [aws_iam_role_policy.gateway]
+  depends_on = [time_sleep.gateway_role]
 }
 
 moved {
@@ -632,4 +632,10 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
   }
 
   depends_on = [time_sleep.runtime_role]
+}
+
+# The policy-engine check at create time fails until the role policy has propagated.
+resource "time_sleep" "gateway_role" {
+  depends_on      = [aws_iam_role_policy.gateway]
+  create_duration = "15s"
 }

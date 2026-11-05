@@ -8,8 +8,9 @@ WORKDIR /app
 COPY sec310_agent/requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
+# Read-only for the runtime user, whatever modes the checkout had (a synced folder can leave 0700).
 COPY sec310_agent ./sec310_agent
-RUN useradd --uid 10001 --create-home agent
+RUN chmod -R a+rX,go-w sec310_agent && useradd --uid 10001 --create-home agent
 USER agent
 
 EXPOSE 8080
