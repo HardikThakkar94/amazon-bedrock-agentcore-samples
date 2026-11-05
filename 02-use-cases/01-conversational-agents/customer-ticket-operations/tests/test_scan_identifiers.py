@@ -64,6 +64,17 @@ def test_public_aws_docs_hosts_are_allowed(scanner, tmp_path, capsys):
     assert "no denylist" in capsys.readouterr().out
 
 
+def test_public_federation_and_region_console_hosts_only(scanner, tmp_path):
+    doc = tmp_path / "safe.py"
+    doc.write_text(
+        "https://signin.aws.amazon.com/federation\n"
+        "https://us-east-1.console.aws.amazon.com/bedrock-agentcore/home\n"
+    )
+    assert scanner.scan([doc], [], SCRIPT) == []
+    doc.write_text("https://private.console." + "aws.amazon.com/\n")
+    assert [hit[2] for hit in scanner.scan([doc], [], SCRIPT)] == ["internal-host"]
+
+
 def test_account_free_and_templated_arns_are_allowed_but_real_ones_are_not(
     scanner, tmp_path, capsys
 ):

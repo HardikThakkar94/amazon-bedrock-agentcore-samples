@@ -60,4 +60,7 @@ def test_federation_payload_and_clipboard_are_mocked(monkeypatch, capsys):
     assert login["Destination"] == [
         "https://us-east-1.console.aws.amazon.com/bedrock-agentcore/home?region=us-east-1"
     ]
-    assert all(s not in capsys.readouterr().out for s in ("example-key", "example-secret", "example-token", "example-signin"))
+    assert all(
+        s not in capsys.readouterr().out
+        for s in ("example-key", "example-secret", "example-token", "example-signin")
+    )

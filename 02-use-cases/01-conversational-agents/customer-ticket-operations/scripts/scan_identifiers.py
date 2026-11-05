@@ -27,7 +27,15 @@ BUILTIN_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "jwt-like": re.compile(r"\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}\b"),
 }
-ALLOWED_HOSTS = {"docs.aws.amazon.com", "aws.amazon.com", "github.com"}
+ALLOWED_HOSTS = {
+    "docs.aws.amazon.com",
+    "aws.amazon.com",
+    "github.com",
+    "signin.aws.amazon.com",
+    "console.aws.amazon.com",
+}
+# Only an AWS region-prefixed console host is also public; arbitrary subdomains remain findings.
+REGIONAL_CONSOLE_HOST = re.compile(r"^[a-z]{2}-[a-z]+-\d+\.console\.aws\.amazon\.com$")
 # ARNs that disclose nothing: AWS-managed policies carry no account, and a template whose
 # region slot is a placeholder is filled in at runtime from the caller's own account.
 ALLOWED_ARN_PREFIXES = ("arn:aws:iam::aws:policy/",)
@@ -99,7 +107,10 @@ def scan(
         for lineno, line in enumerate(lines, 1):
             for name, pattern in BUILTIN_PATTERNS.items():
                 for match in pattern.finditer(line):
-                    if name == "internal-host" and match.group(0).lower() in ALLOWED_HOSTS:
+                    if name == "internal-host" and (
+                        match.group(0).lower() in ALLOWED_HOSTS
+                        or REGIONAL_CONSOLE_HOST.fullmatch(match.group(0).lower())
+                    ):
                         continue
                     if name == "arn" and _harmless_arn(line, match.start()):
                         continue
