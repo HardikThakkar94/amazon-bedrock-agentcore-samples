@@ -273,3 +273,191 @@ def test_legacy_high_water_write_failure_keeps_owner_and_no_duplicate(api, monke
     assert api.app.demo_state("customer-a")["busy_owner"]
     assert api.app.demo_state("customer-a")["exclusion_disposition"] == "UNKNOWN"
     assert_http(api, lambda: submit(api, monkeypatch), 409)
+
+
+def post_as(api, monkeypatch, path, body, who):
+    monkeypatch.setattr(api.app, "persona", lambda event: dict(who))
+    return status(
+        api.app.lambda_handler(
+            {
+                "requestContext": {"http": {"method": "POST"}},
+                "rawPath": path,
+                "body": json.dumps(body),
+                "headers": {"x-sec310-access-token": "offline"},
+            },
+            None,
+        )
+    )
+
+
+def test_reset_first_legacy_rows_preserve_identity_before_removal(api, monkeypatch):
+    """Real reset/submit HTTP handlers: old A-90/A-98 events cannot become a new ticket."""
+    for ticket in ("A-90", "A-98"):
+        api.tables["tickets"].put_item(
+            Item={
+                "customer_id": "customer-a",
+                "ticket_id": ticket,
+                "origin": "form",
+                "submitted_by": "customer",
+                "status": "OPEN",
+                "subject": "Legacy",
+                "body": "Old",
+            }
+        )
+    old_run = "019a2900-0000-7000-8000-000000000001"
+    event = {
+        "run_id": old_run,
+        "sk": "1#tool",
+        "kind": "tool.called",
+        "effect": {"ticket_id": "A-98"},
+    }
+    api.tables["events"].put_item(Item=event)
+    st = api.app.demo_state("customer-a")
+    assert "portal_ticket_seq" not in st
+    st.update(
+        {
+            "active_stage": "v5",
+            "stop_requested": True,
+            "breaker_open": True,
+            "policy_session": "old-session",
+            "last_run": json.dumps({"status": "NO_EFFECT"}),
+            "approvals": json.dumps([{"status": "REJECTED", "ticket_id": "A-98"}]),
+        }
+    )
+    api.tables["state"].put_item(Item=st)
+    # Customer B is locked while seeds are restored, but its portal rows/sequence are not reset.
+    api.tables["tickets"].put_item(
+        Item={
+            "customer_id": "customer-b",
+            "ticket_id": "B-90",
+            "origin": "form",
+            "submitted_by": "customer",
+            "status": "OPEN",
+        }
+    )
+    api.tables["state"].put_item(Item={"customer_id": "customer-b", "portal_ticket_seq": 250})
+    assert post_as(api, monkeypatch, "/api/reset", {}, ALICE) == (200, {"reset": True})
+    after = api.app.demo_state("customer-a")
+    assert after["portal_ticket_seq"] == 98 and after["active_stage"] == "v0"
+    assert after["stop_requested"] is False and after["breaker_open"] is False
+    assert after["policy_session"] != "old-session"
+    assert "last_run" not in after and "approvals" not in after
+    assert not any(x["ticket_id"] in ("A-90", "A-98") for x in api.app.tickets_for("customer-a"))
+    assert api.tables["events"].get_item(Key={"run_id": old_run, "sk": "1#tool"})["Item"] == event
+    customer = {**ALICE, "role": "customer", "username": "visitor"}
+    created = post_as(
+        api, monkeypatch, "/api/portal/tickets", {"subject": "New", "body": "New"}, customer
+    )
+    assert created == (200, {"ticket": {"ticket_id": "A-99"}})
+    assert post_as(api, monkeypatch, "/api/tickets/delete", {"ticket_id": "A-99"}, ALICE) == (
+        200,
+        {"deleted": "A-99", "source": "operator"},
+    )
+    assert post_as(api, monkeypatch, "/api/reset", {}, ALICE) == (200, {"reset": True})
+    assert api.app.demo_state("customer-a")["portal_ticket_seq"] == 99
+    assert post_as(
+        api, monkeypatch, "/api/portal/tickets", {"subject": "Again", "body": "Again"}, customer
+    ) == (200, {"ticket": {"ticket_id": "A-100"}})
+    assert api.app.demo_state("customer-b")["portal_ticket_seq"] == 250
+    assert api.tables["tickets"].get_item(Key={"customer_id": "customer-b", "ticket_id": "B-90"})
+    other = {**customer, "customer_id": "customer-b"}
+    assert post_as(
+        api, monkeypatch, "/api/portal/tickets", {"subject": "B", "body": "B"}, other
+    ) == (200, {"ticket": {"ticket_id": "B-251"}})
+
+
+def test_reset_preserves_greater_sequence_and_reads_all_pages(api, monkeypatch):
+    for ticket in ("A-90", "A-98"):
+        api.tables["tickets"].put_item(
+            Item={
+                "customer_id": "customer-a",
+                "ticket_id": ticket,
+                "origin": "form",
+                "submitted_by": "customer",
+                "status": "OPEN",
+            }
+        )
+    state = api.app.demo_state("customer-a")
+    state["portal_ticket_seq"] = 200
+    api.tables["state"].put_item(Item=state)
+    original = api.tables["tickets"].query
+    seen = []
+
+    def paged(**kw):
+        if kw.get("ConsistentRead"):
+            seen.append(kw)
+            rows = original(**kw)["Items"]
+            forms = [x for x in rows if x["ticket_id"] in ("A-90", "A-98")]
+            if "ExclusiveStartKey" not in kw:
+                return {"Items": forms[:1], "LastEvaluatedKey": {"ticket_id": "A-90"}}
+            return {"Items": forms[1:]}
+        return original(**kw)
+
+    monkeypatch.setattr(api.tables["tickets"], "query", paged)
+    assert post_as(api, monkeypatch, "/api/reset", {}, ALICE) == (200, {"reset": True})
+    assert len(seen) == 2 and all(c["ConsistentRead"] for c in seen)
+    assert api.app.demo_state("customer-a")["portal_ticket_seq"] == 200
+    customer = {**ALICE, "role": "customer", "username": "visitor"}
+    assert post_as(
+        api, monkeypatch, "/api/portal/tickets", {"subject": "New", "body": "New"}, customer
+    ) == (200, {"ticket": {"ticket_id": "A-201"}})
+
+
+@pytest.mark.parametrize("fault", [Conflict, TimeoutError])
+def test_reset_sequence_conditional_or_transport_failure_precedes_any_delete(
+    api, monkeypatch, fault
+):
+    api.tables["tickets"].put_item(
+        Item={
+            "customer_id": "customer-a",
+            "ticket_id": "A-98",
+            "origin": "form",
+            "submitted_by": "customer",
+            "status": "OPEN",
+        }
+    )
+    state_table = api.tables["state"]
+    update = state_table.update_item
+
+    def fail(**kw):
+        if kw["UpdateExpression"] == "SET portal_ticket_seq = :next":
+            assert kw["ConditionExpression"] == "busy_owner = :owner"
+            raise fault("sequence persistence unknown")
+        return update(**kw)
+
+    monkeypatch.setattr(state_table, "update_item", fail)
+    code, body = post_as(api, monkeypatch, "/api/reset", {}, ALICE)
+    assert code == 503 and "sequence persistence unknown" not in str(body)
+    assert api.tables["tickets"].get_item(Key={"customer_id": "customer-a", "ticket_id": "A-98"})
+    assert api.app.demo_state("customer-a")["busy_owner"]  # uncertain reset holds exclusion
+    assert api.app.demo_state("customer-b")["busy_owner"]
+    customer = {**ALICE, "role": "customer", "username": "visitor"}
+    assert (
+        post_as(api, monkeypatch, "/api/portal/tickets", {"subject": "N", "body": "N"}, customer)[0]
+        == 409
+    )
+
+
+def test_reset_delete_failure_keeps_saved_sequence_and_owner(api, monkeypatch):
+    api.tables["tickets"].put_item(
+        Item={
+            "customer_id": "customer-a",
+            "ticket_id": "A-98",
+            "origin": "form",
+            "submitted_by": "customer",
+            "status": "OPEN",
+        }
+    )
+    original = api.tables["tickets"].delete_item
+
+    def uncertain(**kw):
+        if kw["Key"]["ticket_id"] == "A-98":
+            raise TimeoutError("delete may have happened")
+        return original(**kw)
+
+    monkeypatch.setattr(api.tables["tickets"], "delete_item", uncertain)
+    code, body = post_as(api, monkeypatch, "/api/reset", {}, ALICE)
+    assert code == 503 and "delete may have happened" not in str(body)
+    st = api.app.demo_state("customer-a")
+    assert st["portal_ticket_seq"] == 98 and st["busy_owner"]
+    assert api.app.demo_state("customer-b")["busy_owner"]

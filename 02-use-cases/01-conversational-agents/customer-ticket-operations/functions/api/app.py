@@ -1164,7 +1164,36 @@ def reset_demo(who: dict[str, str]) -> dict[str, Any]:
     owner = runs.uuid7()
     claimed = claim_seed_scope(owner)
     try:
-        for t in tickets_for(cid):
+        # Pre-upgrade portal rows may have no portal_ticket_seq. Read all of this tenant's
+        # rows consistently while the exclusion is held, and persist the highest identity
+        # *before* reset removes those rows. Never rewind a larger existing marker.
+        tickets = []
+        page = {}
+        while True:
+            found = _tickets.query(
+                KeyConditionExpression="customer_id = :c",
+                ExpressionAttributeValues={":c": cid},
+                ConsistentRead=True,
+                **page,
+            )
+            tickets.extend(found["Items"])
+            if "LastEvaluatedKey" not in found:
+                break
+            page = {"ExclusiveStartKey": found["LastEvaluatedKey"]}
+        prefix = cid.split("-")[-1].upper() + "-"
+        numbers = [
+            int(t["ticket_id"][len(prefix) :])
+            for t in tickets
+            if t["ticket_id"].startswith(prefix) and t["ticket_id"][len(prefix) :].isdigit()
+        ]
+        high_water = max(89, int(demo_state(cid).get("portal_ticket_seq", 89)), *numbers)
+        _state.update_item(
+            Key={"customer_id": cid},
+            UpdateExpression="SET portal_ticket_seq = :next",
+            ConditionExpression="busy_owner = :owner",
+            ExpressionAttributeValues={":next": high_water, ":owner": owner},
+        )
+        for t in tickets:
             if t["ticket_id"] not in SEED.get(cid, {}):
                 _tickets.delete_item(Key={"customer_id": cid, "ticket_id": t["ticket_id"]})
         reseed()
