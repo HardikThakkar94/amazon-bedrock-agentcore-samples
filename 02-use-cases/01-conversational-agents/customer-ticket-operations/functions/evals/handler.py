@@ -404,7 +404,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             )
             raise RuntimeError("suite cleanup not proven; release cannot pass")
     save(**common, status="DONE", finished=int(time.time()), gate=verdict, cases=results)
-    print(json.dumps(metrics(build, verdict)))
+    # The Build-only release metric represents the complete default suite. A one-case k10
+    # variance trial has no cross-case release verdict (even when its local gate is green).
+    # Keep its result in the dataset/case-scoped state row, not in the release metric series.
+    if name == "default":
+        print(json.dumps(metrics(build, verdict)))
     return {"suite_id": suite_id, "status": "DONE", "passed": verdict["passed"]}
 
 

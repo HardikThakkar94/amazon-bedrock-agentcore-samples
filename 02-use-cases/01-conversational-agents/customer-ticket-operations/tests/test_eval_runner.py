@@ -469,6 +469,85 @@ def test_k10_one_case_and_matrix_isolation(runner):
     assert ("evals#v5",) not in runner.state.items
 
 
+def release_emf(capsys):
+    """Capture the real handler's stdout, excluding non-EMF run progress."""
+    return [
+        row
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("{")
+        for row in [json.loads(line)]
+        if "CloudWatchMetrics" in row.get("_aws", {})
+    ]
+
+
+def test_k10_benign_only_cannot_publish_default_release_pass(runner, capsys):
+    result = runner.h.lambda_handler(
+        {"build": "v5", "suite_id": "k-benign", "dataset": "k10", "case": "benign_summary"}, None
+    )
+    assert result == {"suite_id": "k-benign", "status": "DONE", "passed": True}
+    record = json.loads(runner.state.items[("evals#v5#k10#benign_summary",)]["suite"])
+    assert record["gate"]["passed"] is True and len(record["cases"][0]["samples"]) == 1
+    assert ("evals#v5",) not in runner.state.items
+    assert release_emf(capsys) == []  # no Build-only SEC310Demo/EvalGatePassed=1
+
+
+def test_k10_safe_attack_only_cannot_publish_default_release_fail(runner, capsys):
+    result = runner.h.lambda_handler(
+        {"build": "v5", "suite_id": "k-attack", "dataset": "k10", "case": "same_customer"}, None
+    )
+    assert result == {"suite_id": "k-attack", "status": "DONE", "passed": False}
+    record = json.loads(runner.state.items[("evals#v5#k10#same_customer",)]["suite"])
+    assert record["gate"]["safety"] == "PASS"
+    assert len(record["cases"][0]["samples"]) == 10
+    assert ("evals#v5",) not in runner.state.items
+    assert release_emf(capsys) == []  # no partial-study Build-only release FAIL
+
+
+def test_complete_default_pass_publishes_compatible_release_emf(runner, capsys):
+    good = runner.h.lambda_handler({"build": "v5", "suite_id": "default-good"}, None)
+    assert good["passed"] and len(suite_of(runner, "v5")["cases"]) == 7
+    metrics = release_emf(capsys)
+    assert len(metrics) == 1
+    passed = metrics[0]
+    assert passed["_aws"]["CloudWatchMetrics"] == [
+        {
+            "Namespace": "SEC310Demo",
+            "Dimensions": [["Build"]],
+            "Metrics": [
+                {"Name": "EvalGatePassed", "Unit": "Count"},
+                {"Name": "EvalForbiddenEffectSamples", "Unit": "Count"},
+            ],
+        }
+    ]
+    assert {k: passed[k] for k in ("Build", "EvalGatePassed", "EvalForbiddenEffectSamples")} == {
+        "Build": "V5",
+        "EvalGatePassed": 1,
+        "EvalForbiddenEffectSamples": 0,
+    }
+
+
+def test_complete_default_failure_keeps_same_build_only_metric_series(runner, monkeypatch, capsys):
+    # Losing all spans leaves safety local but benign quality unscored: never publish PASS.
+    monkeypatch.setattr(runner.h, "spans_for", lambda sample, deadline: [])
+    failed = runner.h.lambda_handler({"build": "v5", "suite_id": "default-failed"}, None)
+    assert failed["status"] == "DONE" and failed["passed"] is False
+    assert len(suite_of(runner, "v5")["cases"]) == 7
+    metrics = release_emf(capsys)
+    assert len(metrics) == 1
+    assert metrics[0]["_aws"]["CloudWatchMetrics"] == [
+        {
+            "Namespace": "SEC310Demo",
+            "Dimensions": [["Build"]],
+            "Metrics": [
+                {"Name": "EvalGatePassed", "Unit": "Count"},
+                {"Name": "EvalForbiddenEffectSamples", "Unit": "Count"},
+            ],
+        }
+    ]
+    assert metrics[0]["Build"] == "V5" and metrics[0]["EvalGatePassed"] == 0
+    assert metrics[0]["EvalForbiddenEffectSamples"] == 0
+
+
 def test_k10_dataset_preserves_recorded_inputs_and_gate():
     base = json.loads((ROOT / "evals/dataset.json").read_text())
     k10 = json.loads((ROOT / "evals/dataset-k10.json").read_text())
