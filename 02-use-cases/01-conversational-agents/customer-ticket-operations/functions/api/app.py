@@ -77,16 +77,16 @@ _persona_cache: dict[str, tuple[float, dict[str, str]]] = {}
 STAGES = ["v0", "v1", "v2", "v3", "v4", "v5"]
 TITLES = {
     "v0": "Unsafe: model output executes",
-    "v1": "Identity: bind operator and customer",
-    "v2": "Validation: treat records as data",
+    "v1": "Guardrails: screen untrusted ticket text",
+    "v2": "Identity: enforce caller and Region scope",
     "v3": "Policy: authorize every effect; a human approves closes",
     "v4": "Contain: a circuit breaker trips on the first denial",
     "v5": "Evidence: gate release on behavior",
 }
 LESSONS = {
     "v0": "VULNERABLE — no independent boundary; the ticket can close.",
-    "v1": "STILL VULNERABLE — identity passes because this attack stays inside Customer A.",
-    "v2": "STILL VULNERABLE — valid, screened JSON is still not permission to act.",
+    "v1": "STILL VULNERABLE — screening may pass a plausible workflow note; no Region fence yet.",
+    "v2": "STILL VULNERABLE — Region A is in scope, but scope is not permission to close.",
     "v3": "PROTECTED — every close waits for the operator's approval; one nobody approved is denied.",
     "v4": "CONTAINED — a denial trips the circuit breaker: the run ends, the agent stays read-only until reset.",
     "v5": "EVIDENCE — the halt and the unchanged ticket are recorded; the release invariant passes.",
@@ -96,8 +96,8 @@ LESSONS = {
 # Which controls each build turns on (mirrors src/sec310_agent/controls.py and the agent root).
 CONTROLS = {
     "Inbound JWT authorizer (AgentCore Identity on Runtime and Gateway)": "v0",
-    "AgentCore Policy: caller and tenant fence (Cedar)": "v1",
-    "Amazon Bedrock Guardrails: prompt-attack screen on ticket text": "v2",
+    "Amazon Bedrock Guardrails: prompt-attack screen on ticket text": "v1",
+    "AgentCore Policy: caller and Region scope fence (Cedar)": "v2",
     "Human approval: the harness holds every close the model proposes (agent hook)": "v3",
     "AgentCore Policy: close_ticket only once per operator approval (temporal)": "v3",
     "AgentCore Policy: the agent can never approve, i.e. call confirm_close (Cedar)": "v3",
@@ -108,7 +108,7 @@ CONTROLS = {
 }
 
 
-GATEWAY_OF = {"v0": "v0", "v1": "v1", "v2": "v1", "v3": "v3", "v4": "v4", "v5": "v4"}
+GATEWAY_OF = {"v0": "v0", "v1": "v0", "v2": "v1", "v3": "v3", "v4": "v4", "v5": "v4"}
 SESSION_HEADER = "x-amzn-bedrock-agentcore-policy-session-id"
 
 
@@ -117,7 +117,8 @@ def build_code(stage: str) -> dict[str, Any]:
     n = STAGES.index(stage)
     controls = [{"name": k, "on": STAGES.index(v) <= n, "detail": ""} for k, v in CONTROLS.items()]
     engines = json.loads(agent_param("policy_engines", "{}"))
-    # V2 shares V1 and V5 shares V4's ENFORCE Gateway/policy engine; the controls
+    # V1 shares V0's broad Gateway, V2 uses V1's fenced Gateway, V5 uses V4's ENFORCE
+    # Gateway/policy engine; the controls
     # drawer must read the policy attached to the actual Gateway, not a nonexistent V5 engine.
     engine = engines.get(GATEWAY_OF[stage])
     policies = []
@@ -899,10 +900,12 @@ TRACE_QUERIES = {
     ),
     "gateway": (
         "AgentCore Gateway APPLICATION_LOGS",
-        "fields @timestamp, trace_id, traceId, body.operation as operation, "
-        "body.toolName as tool, body.policy.decision as decision, "
-        "body.policy.determiningPolicies as policies, body.policy.latency as policy_ms, "
-        "body.latency as latency "
+        "fields @timestamp, trace_id, traceId, jsonParse(@message) as event "
+        "| fields @timestamp, trace_id, traceId, event.body.operation as operation, "
+        "event.body.toolName as tool, event.body.policy.decision as decision, "
+        "jsonStringify(event.body.policy.determiningPolicies) as policies, "
+        "event.body.policy.latencyMs as policy_ms, "
+        "event.body.latency as latency "
         "| filter {trace_filter} | sort @timestamp asc | limit 50",
     ),
     "spans": (
@@ -927,10 +930,17 @@ TRACE_FIELDS = {
     "runtime": ("@timestamp", "name", "status", "scope", "traceId"),
 }
 TRACE_SAFE = re.compile(r"^[A-Za-z0-9_:.@/+-]{1,180}$")
+# Only known service-generated operation shapes may contain spaces. Arbitrary model output,
+# log text or tool arguments must not be admitted as span labels.
+TRACE_SPAN_NAME = re.compile(
+    r"^(?:invoke_agent Strands Agents|execute_tool TicketTools___[a-z_]{1,64}|"
+    r"MCP send tools/call TicketTools___[a-z_]{1,64}|"
+    r"chat [a-z]{2,12}\.[a-z0-9_.:+-]{1,100}|POST /invocations)$"
+)
 TRACE_TIME = re.compile(r"^[0-9TZ: .+-]{1,40}$")
 TRACE_NUMERIC = re.compile(r"^[0-9]{1,12}(?:\.[0-9]{1,6})?$")
 TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
-MAX_GATEWAY_TRACES = 12  # at most 12 exact IDs in one bounded Logs Insights query
+MAX_GATEWAY_TRACES = 10  # at most 10 exact IDs in one bounded Logs Insights query
 
 
 def trace_policy_ids(value: str) -> str:
@@ -966,6 +976,8 @@ def trace_record(key: str, row: list[dict[str, str]]) -> dict[str, str]:
             value = value if TRACE_NUMERIC.fullmatch(value) else ""
         elif name == "@timestamp":
             value = value if TRACE_TIME.fullmatch(value) else ""
+        elif key in ("spans", "runtime") and name == "name":
+            value = value if TRACE_SAFE.fullmatch(value) or TRACE_SPAN_NAME.fullmatch(value) else ""
         else:
             value = value if TRACE_SAFE.fullmatch(value) else ""
         if value:
@@ -1527,7 +1539,7 @@ def run_eval_suite(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     require(who, "operator")
     st = demo_state(who["customer_id"])
     if who["customer_id"] != "customer-a":
-        raise HttpError(403, "the eval suite runs as Customer A's operator")
+        raise HttpError(403, "the eval suite runs as Region A's operator")
     if int(st.get("busy_until", 0)) > time.time():
         raise HttpError(409, "the demo is busy (an agent run or an eval suite)")
     stage = str(body.get("stage") or st.get("active_stage", "v0"))

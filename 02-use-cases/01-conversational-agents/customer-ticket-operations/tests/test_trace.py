@@ -114,9 +114,11 @@ def test_queries_use_observed_flattened_session_field_and_project_safe_columns(a
     assert f"filter requestMetadata.sec310_run = '{RUN}'" in logs.calls[0]["queryString"]
     gateway_query = logs.calls[3]["queryString"]
     assert "body.policy.decision as decision" in gateway_query
-    assert "body.policy.determiningPolicies as policies" in gateway_query
+    assert "jsonParse(@message) as event" in gateway_query
+    assert "jsonStringify(event.body.policy.determiningPolicies) as policies" in gateway_query
+    assert "event.body.policy.latencyMs as policy_ms" in gateway_query
     assert f"trace_id = '{TRACE}' and traceId = '{TRACE}'" in gateway_query
-    assert "@message" not in gateway_query and RUN not in gateway_query
+    assert gateway_query.count("@message") == 1 and RUN not in gateway_query
     assert all(c["startTime"] < c["endTime"] for c in logs.calls)
     assert all("| limit " in c["queryString"] for c in logs.calls)
     gateway = result["sources"][1]
@@ -131,6 +133,64 @@ def test_queries_use_observed_flattened_session_field_and_project_safe_columns(a
     ]
     assert "ticket text" not in str(result) and "secret" not in str(result)
     assert result["sources"][2]["records"][0]["name"] == "strands.agent.invoke"
+
+
+def test_actual_live_schema_preserves_known_span_names_and_policy_latency(api, monkeypatch):
+    names = [
+        "invoke_agent Strands Agents",
+        "execute_tool TicketTools___list_tickets",
+        "chat us.meta.llama4-maverick-17b-instruct-v1:0",
+        "MCP send tools/call TicketTools___list_tickets",
+        "POST /invocations",
+    ]
+    logs = Logs(
+        span_rows=[
+            row(
+                **{
+                    "session_id": RUN,
+                    "traceId": TRACE,
+                    "name": name,
+                    "@timestamp": "2026-11-05 18:14:07.051",
+                    "@message": "secret",
+                }
+            )
+            for name in names
+        ]
+        + [
+            row(
+                **{
+                    "session_id": RUN,
+                    "traceId": TRACE,
+                    "name": "execute_tool TicketTools___list_tickets secret bearer token",
+                }
+            )
+        ],
+        gateway_rows=[
+            row(
+                **{
+                    "@timestamp": "2026-11-05 18:14:07.051",
+                    "trace_id": TRACE,
+                    "traceId": TRACE,
+                    "decision": "ALLOW",
+                    "policies": '["sec310_max3_v4_tenant_fence-de8s4zcraq"]',
+                    "policy_ms": "101",
+                    "@message": "secret",
+                }
+            )
+        ],
+    )
+    response = setup(api, monkeypatch, logs)
+    spans, gateway = response["sources"][2], response["sources"][1]
+    assert [r["name"] for r in spans["records"][:5]] == names
+    assert gateway["records"] == [
+        {
+            "@timestamp": "2026-11-05 18:14:07.051",
+            "decision": "ALLOW",
+            "policies": "sec310_max3_v4_tenant_fence-de8s4zcraq",
+            "policy_ms": "101",
+        }
+    ]
+    assert "secret" not in str(response)
 
 
 def test_gateway_rejects_other_run_and_tenant_even_when_request_quotes_owned_uuid(api, monkeypatch):
@@ -339,6 +399,85 @@ def test_real_handler_never_returns_foreign_gateway_policy_from_quoted_run(api, 
     assert api.app.lambda_handler(event, None)["statusCode"] == 404
 
 
+def test_http_loopback_real_handler_to_shipped_browser_live_schema(api, monkeypatch):
+    """Actual HTTP GET → lambda_handler → Logs mock → shipped DOM-VM CloudWatch drawer."""
+    import shutil
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from pathlib import Path
+
+    logs = Logs(
+        span_rows=[
+            row(
+                **{
+                    "session_id": RUN,
+                    "traceId": TRACE,
+                    "name": "execute_tool TicketTools___list_tickets",
+                }
+            )
+        ],
+        gateway_rows=[
+            row(
+                **{
+                    "trace_id": TRACE,
+                    "traceId": TRACE,
+                    "decision": "ALLOW",
+                    "policies": '["sec310_max3_v4_tenant_fence-de8s4zcraq"]',
+                    "policy_ms": "101",
+                    "@message": "secret request",
+                }
+            )
+        ],
+    )
+    setup(api, monkeypatch, logs)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            from urllib.parse import parse_qs, urlsplit
+
+            parts = urlsplit(self.path)
+            result = api.app.lambda_handler(
+                {
+                    "requestContext": {"http": {"method": "GET"}},
+                    "rawPath": parts.path,
+                    "queryStringParameters": {k: v[0] for k, v in parse_qs(parts.query).items()},
+                },
+                None,
+            )
+            body = result["body"].encode()
+            self.send_response(result["statusCode"])
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):
+            pass
+
+    if not (node := shutil.which("node")):
+        pytest.skip("node unavailable for offline browser renderer")
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        rendered = subprocess.run(
+            [node, "tests/trace_http.mjs", str(server.server_port), RUN],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=Path(__file__).resolve().parents[1],
+            check=False,
+        )
+        assert rendered.returncode == 0, rendered.stderr
+        assert "live-schema projection passed" in rendered.stdout
+        assert len(logs.calls) == 8  # four for setup, four for actual HTTP GET
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_real_handler_mixed_gateway_records_render_safe_in_browser(api, monkeypatch):
     """Handler → real drawer JS; a Java-map requestBody quoting the run is not authority."""
     import shutil
@@ -346,6 +485,15 @@ def test_real_handler_mixed_gateway_records_render_safe_in_browser(api, monkeypa
     from pathlib import Path
 
     logs = Logs(
+        span_rows=[
+            row(
+                **{
+                    "session_id": RUN,
+                    "traceId": TRACE,
+                    "name": "execute_tool TicketTools___list_tickets",
+                }
+            )
+        ],
         gateway_rows=[
             row(
                 **{
@@ -361,11 +509,12 @@ def test_real_handler_mixed_gateway_records_render_safe_in_browser(api, monkeypa
                     "trace_id": TRACE,
                     "traceId": TRACE,
                     "decision": "ALLOW",
-                    "policies": '["own-policy"]',
+                    "policies": '["sec310_max3_v4_tenant_fence-de8s4zcraq"]',
+                    "policy_ms": "101",
                     "@message": "secret request",
                 }
             ),
-        ]
+        ],
     )
     setup(api, monkeypatch, logs)
     response = api.app.lambda_handler(

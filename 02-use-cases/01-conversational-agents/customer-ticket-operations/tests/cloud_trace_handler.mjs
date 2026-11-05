@@ -19,7 +19,11 @@ const ctx = vm.createContext({
 });
 vm.runInContext(`${esc} const POLICY_TEXT = ${reach} const TRACE_COLS = ${drawer}\nthis.cloudTrace = cloudTrace`, ctx);
 await ctx.cloudTrace(response.run_id);
-assert.match(body.innerHTML, /own-policy/);
+const owned = response.sources.find(s => s.key === 'gateway')?.records?.[0];
+assert.ok(owned?.policies && body.innerHTML.includes(owned.policies));
+if (owned.policy_ms) assert.ok(body.innerHTML.includes(owned.policy_ms));
+const names = response.sources.find(s => s.key === 'spans')?.records?.map(r => r.name).filter(Boolean) || [];
+for (const name of names) assert.ok(body.innerHTML.includes(name));
 assert.match(body.innerHTML, /ALLOW/);
 assert.match(body.innerHTML, /partial/);
 assert.match(body.innerHTML, /unverified Gateway row\(s\) omitted/);

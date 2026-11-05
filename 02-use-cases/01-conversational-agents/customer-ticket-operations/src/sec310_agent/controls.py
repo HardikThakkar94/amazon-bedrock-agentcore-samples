@@ -2,8 +2,9 @@
 the Gateway it calls and that Gateway's AgentCore Policy (Cedar), defined in Terraform.
 
     V0 unsafe    V0 gateway, no policy engine: whatever the model calls goes through
-    V1 identity  V1 gateway: Cedar fence ties every call to the caller and their tenant
-    V2 validate  + ticket text screened by Amazon Bedrock Guardrails, wrapped in nonce tags
+    V1 guardrails  V0 gateway + screen ticket text with Amazon Bedrock Guardrails
+    V2 identity    V1 gateway: Cedar fence ties every call to the verified caller and their region;
+                   Guardrails remains active. Cognito/JWT admission applies to every build.
     V3 policy    + the harness holds every close_ticket the model proposes for the operator's
                  approval; V3 gateway: close_ticket only after that approval (an operator's
                  confirm_close on the same ticket, used once: AgentCore Policy temporal permit over
@@ -24,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 BUILDS = ("v0", "v1", "v2", "v3", "v4", "v5")
-GATEWAY = {"v0": "v0", "v1": "v1", "v2": "v1", "v3": "v3", "v4": "v4", "v5": "v4"}
+GATEWAY = {"v0": "v0", "v1": "v0", "v2": "v1", "v3": "v3", "v4": "v4", "v5": "v4"}
 SESSION_HEADER = "x-amzn-bedrock-agentcore-policy-session-id"  # V3+: temporal policies
 MAX_TURNS = 12
 
@@ -43,7 +44,7 @@ def denied_by_policy(text: str) -> bool:
     return "policy" in t and ("denied" in t or "deny" in t or "not authorized" in t)
 
 
-# ── V2: screen untrusted ticket text before the model reads it ─────────────
+# ── V1: screen untrusted ticket text before the model reads it ─────────────
 class Screen:
     """ApplyGuardrail (prompt attack, HIGH) on every list_tickets result. A hit replaces the
     result, so the injected text never reaches the model. Fails closed: if the guardrail cannot
@@ -210,7 +211,7 @@ def summary(stage: str) -> dict[str, Any]:
     return {
         "build": stage,
         "gateway": GATEWAY[stage],
-        "screen": at_least(stage, "v2"),
+        "screen": at_least(stage, "v1"),
         "confirm": at_least(stage, "v3"),
         "breaker": at_least(stage, "v4"),
         "max_turns": MAX_TURNS,

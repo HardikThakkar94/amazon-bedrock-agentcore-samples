@@ -766,10 +766,10 @@ def test_pre_dispatch_invalid_request_and_holds_do_not_create_unknown_effect(api
 
 def test_authoritative_policy_denial_is_completed_not_unknown(api, monkeypatch):
     state = api.tables["state"].rows[("customer-a",)]
-    state["active_stage"] = "v1"
+    state["active_stage"] = "v2"
     state["capture"] = json.dumps(
         {
-            "stage": "v1",
+            "stage": "v2",
             "run_id": "captured",
             "fingerprint": api.app.runs.fingerprint(api.app.tickets_for("customer-a")),
             "calls": [

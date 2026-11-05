@@ -5,8 +5,8 @@
 #   Gateway (JWT authorizer) ─▶ TicketTools Lambda ─▶ DynamoDB tickets
 #
 # One gateway per distinct policy set (src/sec310_agent/controls.py maps builds to them):
-#   v0  no policy engine: every tool call goes through                      (V0)
-#   v1  AgentCore Policy: a call must be for the caller and the caller's tenant (V1, V2)
+#   v0  no policy engine: every tool call goes through (V0, V1 Guardrails)
+#   v1  AgentCore Policy: a call must be for the caller and their scope (V2 Identity)
 #   v3  v1's fence; close_ticket only after the operator's confirm_close     (V3)
 #   v4  v3's policies + a cap on writes per policy session                  (V4, V5)
 
@@ -23,8 +23,8 @@ locals {
   state_arn    = data.aws_ssm_parameter.in["app/state_table_arn"].value
 
   gateways = {
-    v0 = { policy = false, description = "V0 build: the agent's tools with no policy engine" }
-    v1 = { policy = true, description = "V1-V2 builds: AgentCore Policy fences every call to the caller's tenant" }
+    v0 = { policy = false, description = "V0-V1 builds: tools without a policy engine; V1 screens tool results" }
+    v1 = { policy = true, description = "V2 build: AgentCore Policy fences every call to the caller's scope" }
     v3 = { policy = true, description = "V3 build: tenant fence; close_ticket only after an operator confirm_close" }
     v4 = { policy = true, description = "V4-V5 builds: V3's policies plus a cap on writes per session" }
   }
@@ -190,7 +190,7 @@ data "aws_iam_policy_document" "gateway" {
     resources = [aws_lambda_function.ticket_tools.arn]
   }
   statement {
-    sid = "PolicyEngine" # V1+ gateways ask AgentCore Policy before every tools/call
+    sid = "PolicyEngine" # V2+ builds use policy-enabled gateways; V0 and V1 use the broad v0 gateway
     actions = [
       "bedrock-agentcore:GetPolicyEngine",
       "bedrock-agentcore:AuthorizeAction",
@@ -560,7 +560,7 @@ data "aws_iam_policy_document" "runtime" {
     resources = [local.state_arn]
   }
   statement {
-    sid       = "ScreenTicketText" # V2+: prompt-attack screen on list_tickets results
+    sid       = "ScreenTicketText" # V1+: prompt-attack screen on list_tickets results
     actions   = ["bedrock:ApplyGuardrail"]
     resources = ["arn:aws:bedrock:${var.region}:${var.account_id}:guardrail/${data.aws_ssm_parameter.in["guardrails/prompt_attack_id"].value}"]
   }

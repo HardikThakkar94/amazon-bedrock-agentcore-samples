@@ -26,7 +26,7 @@ def build_controls(stage: str) -> dict[str, Any]:
     controls: dict[str, Any] = {
         "gateway_url": json.loads(os.environ["GATEWAY_URLS"])[GATEWAY[stage]]
     }
-    if at_least(stage, "v2"):
+    if at_least(stage, "v1"):
         controls["screen"] = Screen(os.environ["GUARDRAIL_ID"], os.environ["GUARDRAIL_VERSION"])
     import boto3
 

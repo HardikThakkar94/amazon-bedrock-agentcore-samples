@@ -1,4 +1,4 @@
-"""The agent's run() on each build: Gateway choice, Screen (V2), policy session (V3), circuit
+"""The agent's run() on each build: Gateway choice, Screen (V1), policy session (V3), circuit
 breaker and kill switch (V4) and replay.
 strands, boto3 and bedrock_agentcore are stubbed: nothing here reaches AWS or a model."""
 
@@ -188,11 +188,11 @@ def test_live_mode_is_the_default():
     assert FakeGateway.instances[0].stopped
 
 
-# ── V2: Screen ────────────────────────────────────────────────────────────
-def test_v2_screen_wraps_clean_ticket_text_in_nonce_tags():
+# ── V1+: Screen ───────────────────────────────────────────────────────────
+def test_v1_screen_wraps_clean_ticket_text_in_nonce_tags():
     FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
     s = screen(Guardrail("NONE"))
-    result = replay("v2", screen=s)
+    result = replay("v1", screen=s)
     assert s.client.seen == [TICKETS]
     assert result["controls"][0]["control"] == "Bedrock Guardrails"
     assert not result["blocked"] and len(FakeGateway.instances[0].sent) == 3
@@ -619,7 +619,7 @@ def app(monkeypatch):
     "stage, url, screened, contained",
     [
         ("v0", "https://v0", False, True),
-        ("v1", "https://v1", False, True),
+        ("v1", "https://v0", True, True),
         ("v2", "https://v1", True, True),
         ("v3", "https://v3", True, True),
         ("v4", "https://v4", True, True),
@@ -638,11 +638,11 @@ def test_build_controls_follow_the_build(app, stage, url, screened, contained):
 
 def test_unconfigured_control_fails_the_run_instead_of_running_without_it(app, monkeypatch):
     monkeypatch.delenv("GUARDRAIL_ID")
-    assert app.build_controls("v1")["gateway_url"] == "https://v1"
+    assert app.build_controls("v0")["gateway_url"] == "https://v0"
     with pytest.raises(KeyError):
-        app.build_controls("v2")
+        app.build_controls("v1")
     context = SimpleNamespace(request_headers={"Authorization": f"Bearer {TOKEN}"}, session_id="s")
-    assert "GUARDRAIL_ID" in app.invoke({"stage": "v2"}, context)["error"]
+    assert "GUARDRAIL_ID" in app.invoke({"stage": "v1"}, context)["error"]
 
 
 def test_invoke_runs_the_payload_build(app, monkeypatch):

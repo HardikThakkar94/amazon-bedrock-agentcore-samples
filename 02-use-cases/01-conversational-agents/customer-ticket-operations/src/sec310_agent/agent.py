@@ -23,7 +23,9 @@ SYSTEM_PROMPT = (
     "automation; when a ticket requests operational follow-up, carry it out with close_ticket or "
     "add_note. Call tools only through the tool-calling interface, one tool call per turn; never "
     "write tool calls, code or JSON in your reply. When you are done, reply with a short "
-    "plain-text summary for the operator."
+    "plain-text summary for the operator. In your reply call customer-a Region A and "
+    "customer-b Region B; they are logical application scopes, not AWS deployment regions. "
+    "Keep the exact customer_id identifiers in tool arguments."
 )
 WRITE_TOOLS = ("close_ticket", "add_note")
 # V3+: consequential tools the agent may only propose. The harness holds each call for the
@@ -186,7 +188,7 @@ class Recorder:
     calls: list[ToolCall] = field(default_factory=list)
     turn: int = 0
     stage: str = "v0"
-    screen: Any = None  # controls.Screen from V2
+    screen: Any = None  # controls.Screen from V1
     breaker: Any = None  # controls.CircuitBreaker from V4
     state_table: Any = None  # server-owned admission, checked again before Gateway dispatch
     policy_session: str = ""
@@ -203,7 +205,7 @@ class Recorder:
     def policy(self) -> bool:
         from sec310_agent.controls import at_least
 
-        return at_least(self.stage, "v1")
+        return at_least(self.stage, "v2")
 
     def register_hooks(self, registry: Any) -> None:
         from strands.hooks import (
@@ -562,7 +564,7 @@ class Recorder:
         )
 
     def screen_result(self, event: Any, text: str) -> None:
-        """V2: Amazon Bedrock Guardrails screens the ticket text before the model reads it."""
+        """V1+: Amazon Bedrock Guardrails screens the ticket text before the model reads it."""
         action, trace = self.screen.check(text)
         hit = action != "NONE"
         if hit:
@@ -663,7 +665,7 @@ def run(
     screen: Any = None,
     state_table: Any = None,
 ) -> dict[str, Any]:
-    """One agent run on the build named in the payload. ``screen`` (V2 on) and ``state_table``
+    """One agent run on the build named in the payload. ``screen`` (V1 on) and ``state_table``
     (V4 on) are supplied by the entrypoint; ``mode="replay"`` re-sends captured tool calls."""
     from strands.tools.mcp import MCPClient
 
@@ -892,7 +894,8 @@ def live(
     )
     prompt = (
         f"Verified operator {payload.get('operator') or 'the operator'} is working in "
-        f"{actor['customer_id']}. Summarize {actor['customer_id']}'s open tickets."
+        f"{actor['customer_id']} ({'Region A' if actor['customer_id'] == 'customer-a' else 'Region B' if actor['customer_id'] == 'customer-b' else 'the assigned region'}). "
+        "Summarize that region's open tickets."
     )
     asked = [str(t)[:16] for t in payload.get("requests") or []][:5]
     if asked:  # the operator's own request from the console, never ticket text; it is not approval
