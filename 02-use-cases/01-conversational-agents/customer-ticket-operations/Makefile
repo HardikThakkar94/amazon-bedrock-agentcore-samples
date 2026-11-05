@@ -128,10 +128,17 @@ eval: check-profile
 eval-all: check-profile
 	@for b in v0 v1 v2 v3 v4 v5; do uv run --extra aws python scripts/eval_gate.py --build $$b --project $(PROJECT) --env $(ENV) --region $(REGION) || true; done
 
+# Separate variance study, not the release gate or the console's per-build matrix.
+eval-k10: check-profile
+	uv run --extra aws python scripts/eval_gate.py --build $(BUILD) --dataset k10 --project $(PROJECT) --env $(ENV) --region $(REGION)
+
 # ── Composite targets ──────────────────────────────────────────────────────
 deploy-all:  whoami ensure-backend deploy-build-infra build deploy-observability deploy-guardrails deploy-identity deploy-app deploy-web deploy-agent deploy-evals
 	@echo; echo "Demo URL: $$(aws ssm get-parameter --name /$(PROJECT)/$(ENV)/web/url --query Parameter.Value --output text)"; $(MAKE) -s users
 destroy-all: destroy-evals destroy-agent destroy-web destroy-app destroy-identity destroy-guardrails destroy-observability destroy-build-infra
+
+# Source-only helper: explicitly operator-owned. This release does not invoke it.
+# scripts/console_link.py copies a short-lived sign-in URL to the clipboard when run manually.
 
 # Persona passwords live only in Secrets Manager.
 users: check-profile
@@ -204,7 +211,7 @@ bootstrap-destroy:
 
 .PHONY: whoami check-profile ensure-backend build plan-build-infra deploy-build-infra destroy-build-infra bootstrap bootstrap-destroy validate-infra deploy-all destroy-all users creds \
         plan-identity deploy-identity destroy-identity plan-app deploy-app destroy-app \
-        plan-agent deploy-agent destroy-agent plan-evals deploy-evals destroy-evals eval eval-all \
+        plan-agent deploy-agent destroy-agent plan-evals deploy-evals destroy-evals eval eval-all eval-k10 \
         plan-web deploy-web destroy-web \
         plan-observability deploy-observability destroy-observability \
         plan-guardrails deploy-guardrails destroy-guardrails \

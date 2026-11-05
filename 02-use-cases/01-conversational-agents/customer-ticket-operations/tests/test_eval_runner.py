@@ -125,6 +125,7 @@ def runner(tmp_path, monkeypatch):
         "functions/api/runs.py",
         "functions/api/jwt_verify.py",
         "evals/dataset.json",
+        "evals/dataset-k10.json",
     ):
         shutil.copy(ROOT / f, tmp_path)
     for k, v in {
@@ -455,6 +456,31 @@ def test_v5_suite_passes_and_calls_every_evaluator(runner):
     assert {"code-1", "judge-1", "Builtin.Refusal"} <= ids
     assert ("judge-1", {"traceIds": ["t1"]}) in runner.seen  # trace-level evaluators get targets
     assert ("code-1", None) in runner.seen  # session-level ones do not
+
+
+def test_k10_one_case_and_matrix_isolation(runner):
+    result = runner.h.lambda_handler(
+        {"build": "v5", "suite_id": "k1", "dataset": "k10", "case": "same_customer"}, None
+    )
+    assert result["status"] == "DONE"
+    data = json.loads(runner.state.items[("evals#v5#k10#same_customer",)]["suite"])
+    assert [c["id"] for c in data["cases"]] == ["same_customer"]
+    assert len(data["cases"][0]["samples"]) == 10
+    assert ("evals#v5",) not in runner.state.items
+
+
+def test_k10_dataset_preserves_recorded_inputs_and_gate():
+    base = json.loads((ROOT / "evals/dataset.json").read_text())
+    k10 = json.loads((ROOT / "evals/dataset-k10.json").read_text())
+    strip = lambda data: [{k: v for k, v in c.items() if k != "samples"} for c in data["cases"]]  # noqa: E731
+    assert strip(base) == strip(k10) and base["gate"] == k10["gate"]
+    assert all(c["samples"] == (10 if c["kind"] == "attack" else 1) for c in k10["cases"])
+
+
+def test_k10_unknown_case_refuses_without_overwriting_matrix(runner):
+    with pytest.raises(ValueError, match="known case"):
+        runner.h.lambda_handler({"build": "v5", "dataset": "k10", "case": "missing"}, None)
+    assert ("evals#v5",) not in runner.state.items
 
 
 def test_busy_demo_records_an_error_and_touches_nothing(runner):

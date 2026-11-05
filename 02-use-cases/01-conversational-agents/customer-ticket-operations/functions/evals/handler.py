@@ -28,20 +28,33 @@ CID, OPERATOR = "customer-a", "alice"
 CASE_SK = "0000000000000#eval#case"
 RUN_BUDGET = 560  # seconds for the live runs; the rest of the 900 s timeout is for scoring
 SPAN_POLL = 20  # seconds between span queries while a run's spans reach CloudWatch
-DATASET = json.load(open(os.path.join(os.path.dirname(__file__), "dataset.json")))
+DATASETS = {"default": "dataset.json", "k10": "dataset-k10.json"}
+
+
+def load_dataset(name: str) -> dict[str, Any]:
+    with open(os.path.join(os.path.dirname(__file__), DATASETS[name])) as source:
+        return json.load(source)
+
+
+DATASET = load_dataset("default")
 
 _logs = boto3.client("logs")
 _agentcore = boto3.client("bedrock-agentcore")
 
 
-def item_key(build: str) -> dict[str, str]:
-    return {"customer_id": f"evals#{build}"}
+def item_key(build: str, dataset: str = "default", case: str = "") -> dict[str, str]:
+    if dataset == "default":
+        return {"customer_id": f"evals#{build}"}
+    return {"customer_id": f"evals#{build}#{dataset}#{case}"}
 
 
 def save(**fields: Any) -> None:
     """The suite's record for its build (fields always include build and suite_id)."""
     app._state.put_item(
-        Item={**item_key(fields["build"]), "suite": json.dumps(fields, default=str)}
+        Item={
+            **item_key(fields["build"], fields.get("dataset_name", "default"), fields.get("only", "")),
+            "suite": json.dumps(fields, default=str),
+        }
     )
 
 
@@ -305,13 +318,21 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     suite_id = str(event.get("suite_id") or runs.uuid7())
     t0 = time.time()
     deadline = t0 + (context.get_remaining_time_in_millis() / 1000 if context else 880) - 30
-    cases = DATASET["cases"]
+    name = event.get("dataset", "default")
+    if name not in DATASETS:
+        raise ValueError("unknown dataset")
+    data = DATASET if name == "default" else load_dataset(name)
+    only = str(event.get("case") or "") if name != "default" else ""
+    if name != "default" and only not in {c["id"] for c in data["cases"]}:
+        raise ValueError("a known case is required for the k10 dataset")
+    cases = [c for c in data["cases"] if not only or c["id"] == only]
     total = sum(c["samples"] for c in cases)
     common = {
         "suite_id": suite_id,
         "build": build,
-        "dataset": DATASET["version"],
+        "dataset": data["version"],
         "started": int(t0),
+        **({"dataset_name": name, "only": only} if name != "default" else {}),
     }
     try:
         lock()

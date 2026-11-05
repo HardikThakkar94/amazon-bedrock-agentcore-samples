@@ -1,6 +1,8 @@
 """Release gate: run the eval suite on one build and exit non-zero unless it passes.
 
     make eval BUILD=v5 PROFILE=<aws-profile>
+    make eval-k10 BUILD=v5 PROFILE=<aws-profile>   # variance check: 10 samples per attack
+
 
 Starts the suite runner Lambda (deployed by the evals root) and follows its progress in the state
 table, then prints the per-case matrix. The suite resets the demo when it finishes.
@@ -13,8 +15,13 @@ import json
 import sys
 import time
 import uuid
+from pathlib import Path
 
 import boto3
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "functions/evals"))
+import suite as gate_rules  # noqa: E402  (the same gate the runner computes)
 
 GREEN, PINK, DIM, RESET = "\033[38;2;110;231;80m", "\033[38;2;255;77;139m", "\033[2m", "\033[0m"
 
@@ -26,23 +33,44 @@ def main() -> int:
     ap.add_argument("--env", default="burner")
     ap.add_argument("--region", default="us-east-1")
     ap.add_argument("--timeout", type=int, default=1200)
+    ap.add_argument("--dataset", default="default", choices=["default", "k10"])
     a = ap.parse_args()
     ssm = boto3.client("ssm", region_name=a.region)
     param = lambda k: ssm.get_parameter(Name=f"/{a.project}/{a.env}/{k}")["Parameter"]["Value"]  # noqa: E731
     function, table = param("evals/runner_function"), param("app/state_table")
     state = boto3.resource("dynamodb", region_name=a.region).Table(table)
+    lam = boto3.client("lambda", region_name=a.region)
+    if a.dataset == "default":
+        suite = run_one(lam, state, function, f"evals#{a.build}", {"build": a.build}, a.timeout)
+        return report(suite) if suite else 2
+    # k10 is 52 live runs, more than one Lambda invocation allows: one case per invocation,
+    # stored apart from the console's matrix, then the same gate over all of them
+    cases = json.loads((ROOT / "evals/dataset-k10.json").read_text())["cases"]
+    done = []
+    for case in cases:
+        key = f"evals#{a.build}#k10#{case['id']}"
+        payload = {"build": a.build, "dataset": "k10", "case": case["id"]}
+        suite = run_one(lam, state, function, key, payload, a.timeout)
+        if not suite:
+            return 2
+        done += suite["cases"]
+    combined = {"build": a.build, "cases": done, "gate": gate_rules.gate(done)}
+    return report(combined)
+
+
+def run_one(lam, state, function: str, key: str, payload: dict, timeout: int) -> dict | None:
+    """Start one suite invocation and follow it in the state table until it's DONE."""
     suite_id = str(uuid.uuid4())
-    boto3.client("lambda", region_name=a.region).invoke(
+    lam.invoke(
         FunctionName=function,
         InvocationType="Event",
-        Payload=json.dumps({"build": a.build, "suite_id": suite_id}).encode(),
+        Payload=json.dumps({**payload, "suite_id": suite_id}).encode(),
     )
-    print(f"eval suite {suite_id} on {a.build.upper()} started ({function})")
-    deadline, last = time.time() + a.timeout, ""
+    what = payload.get("case") or "all cases"
+    print(f"eval suite {suite_id} on {payload['build'].upper()} ({what}) started ({function})")
+    deadline, last = time.time() + timeout, ""
     while time.time() < deadline:
-        item = state.get_item(Key={"customer_id": f"evals#{a.build}"}, ConsistentRead=True).get(
-            "Item"
-        )
+        item = state.get_item(Key={"customer_id": key}, ConsistentRead=True).get("Item")
         suite = json.loads(item["suite"]) if item else {}
         if suite.get("suite_id") == suite_id:
             line = f"{suite.get('status')} {suite.get('progress', '')}".strip()
@@ -51,12 +79,12 @@ def main() -> int:
                 last = line
             if suite.get("status") == "ERROR":
                 print(f"{PINK}suite error: {suite.get('error')}{RESET}")
-                return 2
+                return None
             if suite.get("status") == "DONE":
-                return report(suite)
+                return suite
         time.sleep(10)
     print(f"{PINK}timed out waiting for the suite{RESET}")
-    return 2
+    return None
 
 
 def report(suite: dict) -> int:
