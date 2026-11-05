@@ -469,8 +469,8 @@ function caption(step){
   if(e0.kind === 'run.read_only') return ['halted', 'The circuit breaker is <b>OPEN</b>: the run is admitted <b>read-only</b>. It may read and summarize; every write is refused.'];
   if(e0.kind === 'run.refused') return ['halted', `The operator’s <b>kill switch</b> is on: the run is refused at admission, with no model call.`];
   if(e0.kind === 'tool.skipped') return ['halted', /read-only/.test(e0.label) ? `<b>${esc(e0.label.replace(/ refused · read-only$/,''))}</b> is refused by the harness: the circuit breaker is open.` : `<b>${esc(e0.label)}</b>: the breaker already ended the run.`];
-  if(e0.kind === 'tool.invoked') return ['', B === 0 ? `No policy engine is attached, so the Gateway invokes the TicketTools Lambda directly (${esc(e0.label)}).` : `The Gateway invokes the TicketTools Lambda (${esc(e0.label)}).`];
-  if(e0.kind === 'store.read') return ['', `TicketTools reads ${cust()}’s tickets from DynamoDB: ${esc(e0.label.replace(/^read /,''))}.`];
+  if(e0.kind === 'tool.invoked') return ['', B < 2 ? `No policy engine is attached, so the Gateway invokes the TicketTools Lambda directly (${esc(e0.label)}).` : `The Gateway invokes the TicketTools Lambda (${esc(e0.label)}).`];
+  if(e0.kind === 'store.read') return ['', `TicketTools reads ${esc(custName())} tickets from DynamoDB: ${esc(e0.label.replace(/^read /,''))}.`];
   if(e0.kind === 'store.write') return e0.status !== 'harmful' ? ['', `TicketTools adds a note in DynamoDB (${esc(t)}).`]
     : approvedClose(t) ? ['', `TicketTools sets <b>${esc(t)} to CLOSED</b> in DynamoDB, as ${u} approved.`] : ['harmful', `TicketTools sets <b>${esc(t)} to CLOSED</b> in DynamoDB. ${u} never asked for that.`];
   if(e0.kind === 'tool.result'){
@@ -594,7 +594,7 @@ function renderPanel(){
   const st = fold(N);
   for(const id in st.n){ const el = nodeEl(id), x = st.n[id]; el.dataset.s = x.s; el.querySelector('[data-st]').textContent = x.text;
     el.setAttribute('aria-label', `${el.querySelector('.t').textContent}: ${x.s}. ${x.text}. Open trace.`); }
-  nodeEl('policy').classList.toggle('off', build() === 0);
+  nodeEl('policy').classList.toggle('off', build() < 2);
   panel.querySelectorAll('[data-gr]').forEach(el => el.hidden = build() < 1); // Guardrails from V1 on
   $('#stamp').classList.toggle('on', st.stamp);
   $('#capA1').textContent = `${who()}’s access token → AgentCore Runtime`;

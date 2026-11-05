@@ -1,9 +1,10 @@
 """Copy a one-time AWS console sign-in link to the clipboard, for the console tab next to the demo.
 
-    make console PROFILE=<aws-profile> [CONSOLE_PAGE=<console URL>]
+    python3 scripts/console_link.py --account <authorized-account> [--page <console URL>]
 
-When explicitly run by an authorized operator, fetches fresh credentials from ada (not the profile's cache), so
-the console session lasts as long as the role allows: one hour for the Conduit admin role. The link
+Source-only optional helper; run manually only with separate operator authorization. When invoked,
+fetches fresh credentials from ada (not the profile's cache), so the console session lasts as
+long as the role allows: one hour for the Conduit admin role. The link
 itself must be used within 15 minutes. It is a credential: it goes to the clipboard, never stdout.
 """
 
