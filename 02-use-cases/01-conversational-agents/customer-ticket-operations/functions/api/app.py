@@ -62,6 +62,7 @@ _tickets = _ddb.Table(TICKETS)
 _state = _ddb.Table(STATE)
 _events = _ddb.Table(os.environ["EVENTS_TABLE"])
 RUN_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+TICKET_ID = re.compile(r"^[A-Z]-[0-9]{1,12}$")
 OWNER_SK = "0000000000000#api#owner"
 # Seed tickets per customer: what Reset restores (mirrors infra/iac/roots/app/main.tf).
 SEED = {
@@ -1425,35 +1426,147 @@ def run_eval_suite(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     return {"suite_id": suite_id, "build": stage}
 
 
+def mark_ticket_mutation_uncertain(customer_id: str, owner: str) -> None:
+    """A possibly committed write keeps the exclusion until operator reconciliation."""
+    try:
+        _state.update_item(
+            Key={"customer_id": customer_id},
+            UpdateExpression="SET exclusion_disposition = :status, exclusion_reason = :reason",
+            ConditionExpression="busy_owner = :owner",
+            ExpressionAttributeValues={
+                ":status": "UNKNOWN",
+                ":reason": "portal ticket mutation outcome uncertain",
+                ":owner": owner,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - the owner itself still excludes new operations
+        print(f"portal exclusion reason not written: {type(exc).__name__}")
+
+
+def delete_portal_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+    """Operator-only removal of a tenant's portal submission, not an agent tool or run effect."""
+    require(who, "operator")
+    ticket_id = body.get("ticket_id") if isinstance(body, dict) else None
+    if not isinstance(ticket_id, str) or not TICKET_ID.fullmatch(ticket_id):
+        raise HttpError(400, "bad ticket id")
+    cid = who["customer_id"]
+    owner = runs.uuid7()
+    claim_run(cid, owner)
+    uncertain = False
+    try:
+        st = demo_state(cid)
+        if (
+            st.get("approval_uncertain")
+            or st.get("approval_dispatch")
+            or st.get("exclusion_disposition") == "UNKNOWN"
+            or st.get("breaker_pending")
+        ):
+            raise HttpError(409, "operator recovery required before deleting a ticket")
+        ticket = _tickets.get_item(
+            Key={"customer_id": cid, "ticket_id": ticket_id}, ConsistentRead=True
+        ).get("Item")
+        if not ticket:
+            raise HttpError(404, "no such ticket")
+        if (
+            ticket_id in SEED.get(cid, {})
+            or ticket.get("origin") != "form"
+            or ticket.get("submitted_by") != "customer"
+        ):
+            raise HttpError(403, "only customer-submitted portal tickets can be deleted")
+        if any(
+            a.get("ticket_id") == ticket_id and a.get("status") == "PENDING"
+            for a in current_approvals(st)
+        ):
+            raise HttpError(409, "a pending approval references this ticket")
+        # A conditional delete rechecks provenance, even if another writer changed the item.
+        uncertain = True
+        try:
+            _tickets.delete_item(
+                Key={"customer_id": cid, "ticket_id": ticket_id},
+                ConditionExpression="attribute_exists(ticket_id) AND #origin = :form AND submitted_by = :customer",
+                ExpressionAttributeNames={"#origin": "origin"},
+                ExpressionAttributeValues={":form": "form", ":customer": "customer"},
+            )
+        except _tickets.meta.client.exceptions.ConditionalCheckFailedException as exc:
+            uncertain = False  # a definite conditional refusal did not delete anything
+            raise HttpError(409, "ticket changed before deletion") from exc
+        # Retain the prior run/effect/approval history, stage, breaker and policy session.
+        # Removing capture prevents replay against a now different ticket set even on ID reuse.
+        _state.update_item(
+            Key={"customer_id": cid},
+            UpdateExpression="SET store_change_source = :source REMOVE capture",
+            ConditionExpression="busy_owner = :owner",
+            ExpressionAttributeValues={
+                ":owner": owner,
+                ":source": f"Operator deleted portal ticket {ticket_id}",
+            },
+        )
+        uncertain = False
+        return {"deleted": ticket_id, "source": "operator"}
+    finally:
+        if uncertain:
+            mark_ticket_mutation_uncertain(cid, owner)
+        else:
+            release_run(cid, owner)
+
+
 def submit_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     require(who, "customer")
     subject = str(body.get("subject", "")).strip()
     text = str(body.get("body", "")).strip()
     if not 0 < len(subject) <= MAX_SUBJECT or not 0 < len(text) <= MAX_BODY:
         raise HttpError(400, f"subject 1–{MAX_SUBJECT} and body 1–{MAX_BODY} characters")
-    existing = tickets_for(who["customer_id"])
-    prefix = who["customer_id"].split("-")[-1].upper()
-    numbers = [
-        int(t["ticket_id"].split("-")[1])
-        for t in existing
-        if t["ticket_id"].split("-")[1].isdigit()
-    ]
-    ticket_id = f"{prefix}-{max([89, *numbers]) + 1}"
-    _tickets.put_item(
-        Item={
-            "customer_id": who["customer_id"],
-            "ticket_id": ticket_id,
-            "subject": subject,
-            "body": text,
-            "status": "OPEN",
-            "submitted_by": "customer",
-            "untrusted": True,
-            "origin": "form",
-            "created_by": who["username"],
-        },
-        ConditionExpression="attribute_not_exists(ticket_id)",
-    )
-    return {"ticket": {"ticket_id": ticket_id}}
+    cid = who["customer_id"]
+    owner = runs.uuid7()
+    claim_run(cid, owner)
+    uncertain = False
+    try:
+        st = demo_state(cid)
+        if (
+            st.get("approval_uncertain")
+            or st.get("approval_dispatch")
+            or st.get("exclusion_disposition") == "UNKNOWN"
+            or st.get("breaker_pending")
+        ):
+            raise HttpError(409, "operator recovery required before submitting a ticket")
+        existing = tickets_for(cid)
+        prefix = cid.split("-")[-1].upper()
+        numbers = [
+            int(t["ticket_id"].split("-")[1])
+            for t in existing
+            if t["ticket_id"].split("-")[1].isdigit()
+        ]
+        # Never reuse an ID after a deletion: old run/approval history retains its ticket ID.
+        next_number = max(89, int(st.get("portal_ticket_seq", 89)), *numbers) + 1
+        ticket_id = f"{prefix}-{next_number}"
+        _state.update_item(
+            Key={"customer_id": cid},
+            UpdateExpression="SET portal_ticket_seq = :next",
+            ConditionExpression="busy_owner = :owner",
+            ExpressionAttributeValues={":next": next_number, ":owner": owner},
+        )
+        uncertain = True
+        _tickets.put_item(
+            Item={
+                "customer_id": cid,
+                "ticket_id": ticket_id,
+                "subject": subject,
+                "body": text,
+                "status": "OPEN",
+                "submitted_by": "customer",
+                "untrusted": True,
+                "origin": "form",
+                "created_by": who["username"],
+            },
+            ConditionExpression="attribute_not_exists(ticket_id)",
+        )
+        uncertain = False
+        return {"ticket": {"ticket_id": ticket_id}}
+    finally:
+        if uncertain:
+            mark_ticket_mutation_uncertain(cid, owner)
+        else:
+            release_run(cid, owner)
 
 
 def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
@@ -1476,6 +1589,8 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             return reply(200, build_code(demo_state(who["customer_id"]).get("active_stage", "v0")))
         if method == "POST" and path == "/api/portal/tickets":
             return reply(200, submit_ticket(who, body))
+        if method == "POST" and path == "/api/tickets/delete":
+            return reply(200, delete_portal_ticket(who, body))
         if method == "GET" and path.startswith("/api/runs/") and path.endswith("/events"):
             q = event.get("queryStringParameters") or {}
             return reply(200, run_events(who, path.split("/")[3], str(q.get("after", ""))[:40]))

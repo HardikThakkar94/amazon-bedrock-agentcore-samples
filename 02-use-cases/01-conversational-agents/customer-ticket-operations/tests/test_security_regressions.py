@@ -42,8 +42,21 @@ class Table:
                 raise Conflict()
             self.rows[key] = dict(Item)
 
-    def delete_item(self, Key):
+    def delete_item(
+        self,
+        Key,
+        ConditionExpression=None,
+        ExpressionAttributeNames=None,
+        ExpressionAttributeValues=None,
+    ):
         with self.lock:
+            item = self.rows.get(self.key(Key))
+            if ConditionExpression and (
+                item is None
+                or item.get("origin") != ExpressionAttributeValues[":form"]
+                or item.get("submitted_by") != ExpressionAttributeValues[":customer"]
+            ):
+                raise Conflict()
             self.rows.pop(self.key(Key), None)
 
     def query(self, ExpressionAttributeValues, **kw):
@@ -116,6 +129,13 @@ class Table:
                 )
             if "confirmed = :confirmed" in UpdateExpression:
                 item["confirmed"] = v[":confirmed"]
+            if "portal_ticket_seq = :next" in UpdateExpression:
+                item["portal_ticket_seq"] = v[":next"]
+            if "store_change_source = :source" in UpdateExpression:
+                item["store_change_source"] = v[":source"]
+            if "exclusion_disposition = :status" in UpdateExpression:
+                item["exclusion_disposition"] = v[":status"]
+                item["exclusion_reason"] = v[":reason"]
             if "last_run = :run" in UpdateExpression:
                 item.update(
                     last_run=v[":run"],

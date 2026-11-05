@@ -83,7 +83,9 @@ header .sp{flex:1}
 /* V3+: the operator asks the agent to close a ticket (a request, not an approval) */
 .ticket .ask{grid-column:2/3;justify-self:start;height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--ink-2);font:650 14px var(--sans)}
 .ticket .ask[aria-pressed=true]{border-color:var(--blue);color:var(--blue);background:rgba(104,173,255,.1)}
-.ticket .ask:disabled{opacity:.45;cursor:not-allowed}
+.ticket .ask:disabled,.ticket .remove-ticket:disabled{opacity:.45;cursor:not-allowed}
+.ticket .remove-ticket{grid-column:3;grid-row:2;justify-self:end;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink-2);width:34px;height:34px;font:700 19px var(--sans)}
+.ticket .remove-ticket:hover,.ticket .remove-ticket:focus-visible{border-color:var(--pink);color:var(--pink)}
 /* V3+: closes the harness held for the operator's decision */
 .appr{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
 .appr>h3{font:650 15px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px}
@@ -620,8 +622,10 @@ function renderTickets(st){
     // V3+: the operator can ask the agent to close a ticket. A request, not an approval: the close still waits for one.
     const asked = ASKS.has(t.ticket_id);
     const act = build() < 3 || portal || status !== 'OPEN' ? '' : `<button class="ask" data-ask="${esc(t.ticket_id)}" aria-pressed="${asked}"${polling ? ' disabled' : ''} title="Add “close ${esc(t.ticket_id)}” to ${esc(who())}’s request on the next run">${asked ? `✓ ${esc(who())} asks the agent to close ${esc(t.ticket_id)}` : `Ask the agent to close ${esc(t.ticket_id)}`}</button>`;
+    const remove = t.origin === 'form' && t.submitted_by === 'customer'
+      ? `<button type="button" class="remove-ticket" data-delete="${esc(t.ticket_id)}" aria-label="Delete portal ticket ${esc(t.ticket_id)}" title="Delete portal ticket ${esc(t.ticket_id)}"${polling || STATE?.busy || STATE?.recovery?.required ? ' disabled' : ''}>×</button>` : '';
     return `<div class="ticket" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)}</span>
-      <span class="status ${esc(status)}${(run?.effects || []).some(e => e.target === t.ticket_id && e.confirmed) ? ' ok' : ''}">${esc(status)}</span>${portal ? `<span class="attack">${esc(t.body)}</span><span class="from">submitted through the Ticket Portal</span>` : ''}${act}</div>`;
+      <span class="status ${esc(status)}${(run?.effects || []).some(e => e.target === t.ticket_id && e.confirmed) ? ' ok' : ''}">${esc(status)}</span>${portal ? `<span class="attack">${esc(t.body)}</span><span class="from">submitted through the Ticket Portal</span>` : ''}${act}${remove}</div>`;
   }).join('') || '<p class="empty" style="padding:14px 4px">No tickets.</p>';
   // another tenant's ticket the run went after: the operator would never see it otherwise
   const others = STATE?.other_tickets || [];
@@ -822,6 +826,16 @@ async function cloudTrace(run){
 function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open')) return; d.classList.remove('open'); d.setAttribute('aria-hidden', 'true'); (d.dataset.from === 'evals' ? $('#evalBtn') : nodeEl(d.dataset.from))?.focus(); d.dataset.from = ''; }
 
 /* ── operator actions ── */
+async function deleteTicket(ticketId){
+  if(polling || STATE?.busy || STATE?.recovery?.required) return;
+  if(!confirm(`Delete portal ticket ${ticketId}? This cannot be undone.`)) return;
+  try {
+    const result = await api('/api/tickets/delete', {ticket_id: ticketId});
+    ASKS.delete(ticketId);
+    await refresh(false);
+    toast(`Operator deleted portal ticket ${result.deleted}. Prior agent-run history is unchanged.`);
+  } catch(e){ toast(e.message, true); await refresh(false).catch(() => {}); }
+}
 async function resetDemo(){ if(polling) return; if(!confirm('Reset to a clean V0? Portal tickets are removed and seed tickets reopened.')) return;
   try { await api('/api/reset', {}); RUN = null; STEPS = []; N = 0; await refresh(false); toast('Demo reset to a clean V0.'); } catch(e){ toast(e.message, true); } }
 async function patch(stage){
@@ -847,8 +861,9 @@ async function rejectApproval(id){
   catch(e){ toast(e.message, true); }
 }
 $('#tickets').addEventListener('click', e => {
-  const ask = e.target.closest('[data-ask]'), yes = e.target.closest('[data-approve]'), no = e.target.closest('[data-reject]');
+  const ask = e.target.closest('[data-ask]'), remove = e.target.closest('[data-delete]'), yes = e.target.closest('[data-approve]'), no = e.target.closest('[data-reject]');
   if(ask){ const t = ask.dataset.ask; ASKS.has(t) ? ASKS.delete(t) : ASKS.add(t); renderPanel(); }
+  else if(remove){ deleteTicket(remove.dataset.delete); }
   else if(yes){ APPROVING = (STATE?.approvals || []).find(a => a.id === yes.dataset.approve)?.ticket_id || ''; runAgent('approve', {approval: yes.dataset.approve}); }
   else if(no) rejectApproval(no.dataset.reject);
 });
