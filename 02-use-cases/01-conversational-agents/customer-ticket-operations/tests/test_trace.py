@@ -11,11 +11,55 @@ pytest_plugins = ["tests.test_security_regressions"]
 RUN = "019a2900-0000-7000-8000-000000000001"
 
 
+TRACE = "6aecc7654ba8bf9b61853379033bb2b9"
+FOREIGN_TRACE = "0" * 32
+
+
+def row(**fields):
+    return [{"field": key, "value": value} for key, value in fields.items()]
+
+
 class Logs:
-    def __init__(self, status="Complete", failure=None):
+    def __init__(self, status="Complete", failure=None, span_rows=None, gateway_rows=None):
         self.calls = []
         self.status = status
         self.failure = failure
+        self.span_rows = (
+            span_rows
+            if span_rows is not None
+            else [
+                row(
+                    **{
+                        "@timestamp": "2026-10-29 12:00:00.000",
+                        "session_id": RUN,
+                        "traceId": TRACE,
+                        "name": "strands.agent.invoke",
+                        "scope": "strands.telemetry.tracer",
+                        "ms": "2.51",
+                        "@message": "ticket text and bearer token",
+                    }
+                )
+            ]
+        )
+        self.gateway_rows = (
+            gateway_rows
+            if gateway_rows is not None
+            else [
+                row(
+                    **{
+                        "@timestamp": "2026-10-29 12:00:00.000",
+                        "trace_id": TRACE,
+                        "traceId": TRACE,
+                        "decision": "DENY",
+                        "policies": '[{"policyId":"tenant_fence","statement":"secret"}, {"policyId":"unsafe <script>"}]',
+                        "latency": "31",
+                        "@message": "ticket text and bearer token",
+                        "@ptr": "raw log pointer",
+                        "tool": "<img src=x onerror=alert(1)>",
+                    }
+                )
+            ]
+        )
 
     def describe_log_groups(self, logGroupNamePrefix, limit):
         if self.failure == "describe":
@@ -31,27 +75,15 @@ class Logs:
     def get_query_results(self, queryId):
         if self.failure == "results":
             raise RuntimeError("secret failure details")
-        return {
-            "status": self.status,
-            "results": [
-                [
-                    {"field": "@timestamp", "value": "2026-10-29 12:00:00.000"},
-                    {"field": "body.policy.decision", "value": "DENY"},
-                    {"field": "decision", "value": "DENY"},
-                    {
-                        "field": "policies",
-                        "value": '[{"policyId":"tenant_fence","statement":"secret"}, {"policyId":"unsafe <script>"}]',
-                    },
-                    {"field": "latency", "value": "31"},
-                    {"field": "name", "value": "strands.agent.invoke"},
-                    {"field": "scope", "value": "strands.telemetry.tracer"},
-                    {"field": "ms", "value": "2.51"},
-                    {"field": "@message", "value": "ticket text and bearer token"},
-                    {"field": "@ptr", "value": "raw log pointer"},
-                    {"field": "tool", "value": "<img src=x onerror=alert(1)>"},
-                ]
-            ],
-        }
+        group = self.calls[int(queryId) - 1]["logGroupNames"][0]
+        rows = (
+            self.span_rows
+            if group == "aws/spans"
+            else self.gateway_rows
+            if "gateway" in group
+            else []
+        )
+        return {"status": self.status, "results": rows}
 
 
 def setup(api, monkeypatch, logs):
@@ -59,6 +91,9 @@ def setup(api, monkeypatch, logs):
         Item={"run_id": RUN, "sk": api.app.OWNER_SK, "customer_id": "customer-a"}
     )
     monkeypatch.setenv("INVOCATION_LOG_GROUP", "model")
+    monkeypatch.setattr(
+        api.app, "agent_param", lambda key, default: json.dumps({"v4": "gateway-logs"})
+    )
     monkeypatch.setattr(api.app, "agent_config", lambda: {"runtime_arn": "arn:runtime/test"})
     monkeypatch.setattr(
         api.app.boto3, "client", lambda service: logs if service == "logs" else None
@@ -70,18 +105,22 @@ def test_queries_use_observed_flattened_session_field_and_project_safe_columns(a
     logs = Logs()
     result = setup(api, monkeypatch, logs)
     assert len(logs.calls) == 4
-    spans = logs.calls[2]
+    spans = logs.calls[1]
     assert spans["logGroupNames"] == ["aws/spans"]
     assert f"filter attributes.session.id = '{RUN}'" in spans["queryString"]
+    assert "attributes.session.id as session_id" in spans["queryString"]
     assert "attributes.`sec310.run_id`" not in spans["queryString"]
     assert "@message" not in spans["queryString"].split("| filter")[0]
     assert f"filter requestMetadata.sec310_run = '{RUN}'" in logs.calls[0]["queryString"]
-    assert "body.policy.decision as decision" in logs.calls[1]["queryString"]
-    assert "body.policy.determiningPolicies as policies" in logs.calls[1]["queryString"]
+    gateway_query = logs.calls[3]["queryString"]
+    assert "body.policy.decision as decision" in gateway_query
+    assert "body.policy.determiningPolicies as policies" in gateway_query
+    assert f"trace_id = '{TRACE}' and traceId = '{TRACE}'" in gateway_query
+    assert "@message" not in gateway_query and RUN not in gateway_query
     assert all(c["startTime"] < c["endTime"] for c in logs.calls)
-    assert all("| limit " in c["queryString"] and RUN in c["queryString"] for c in logs.calls)
+    assert all("| limit " in c["queryString"] for c in logs.calls)
     gateway = result["sources"][1]
-    assert gateway["status"] == "done"
+    assert gateway["status"] == "done" and gateway["matched"] == 1
     assert gateway["records"] == [
         {
             "@timestamp": "2026-10-29 12:00:00.000",
@@ -92,6 +131,73 @@ def test_queries_use_observed_flattened_session_field_and_project_safe_columns(a
     ]
     assert "ticket text" not in str(result) and "secret" not in str(result)
     assert result["sources"][2]["records"][0]["name"] == "strands.agent.invoke"
+
+
+def test_gateway_rejects_other_run_and_tenant_even_when_request_quotes_owned_uuid(api, monkeypatch):
+    logs = Logs(
+        gateway_rows=[
+            row(
+                **{
+                    "trace_id": FOREIGN_TRACE,
+                    "traceId": FOREIGN_TRACE,
+                    "decision": "DENY",
+                    "policies": '["policy-other"]',
+                    "@message": f"foreign tenant payload quotes {RUN}",
+                }
+            ),
+            row(
+                **{
+                    "trace_id": TRACE,
+                    "traceId": FOREIGN_TRACE,
+                    "decision": "DENY",
+                    "policies": '["spoofed-policy"]',
+                    "@message": f"quotes {RUN}",
+                }
+            ),
+            row(
+                **{
+                    "trace_id": TRACE,
+                    "traceId": TRACE,
+                    "decision": "ALLOW",
+                    "policies": '["own-policy"]',
+                    "@message": "own run",
+                }
+            ),
+        ]
+    )
+    result = setup(api, monkeypatch, logs)
+    gateway = result["sources"][1]
+    assert gateway["status"] == "partial" and gateway["discarded"] == 2
+    assert gateway["matched"] == 1 and gateway["records"] == [
+        {"decision": "ALLOW", "policies": "own-policy"}
+    ]
+    assert "policy-other" not in str(result) and "spoofed-policy" not in str(result)
+
+
+def test_gateway_unavailable_without_verified_owned_spans(api, monkeypatch):
+    for span_rows in (
+        [],
+        [row(**{"session_id": "foreign-run", "traceId": TRACE})],
+        [row(**{"session_id": RUN, "traceId": "malformed"})],
+        [row(**{"@timestamp": "2026-10-29 12:00:00.000", "traceId": TRACE})],
+    ):
+        logs = Logs(span_rows=span_rows)
+        result = setup(api, monkeypatch, logs)
+        gateway = result["sources"][1]
+        assert gateway["status"] == "unavailable" and gateway["records"] == []
+        assert not any("gateway" in c["logGroupNames"][0] for c in logs.calls)
+
+
+def test_gateway_trace_id_cap_is_explicit_partial(api, monkeypatch):
+    ids = [f"{i:032x}" for i in range(api.app.MAX_GATEWAY_TRACES + 1)]
+    logs = Logs(
+        span_rows=[row(**{"session_id": RUN, "traceId": t}) for t in ids],
+        gateway_rows=[row(**{"trace_id": ids[0], "traceId": ids[0], "decision": "ALLOW"})],
+    )
+    result = setup(api, monkeypatch, logs)
+    assert result["sources"][1]["status"] == "partial"
+    assert result["sources"][2]["traces_omitted"] == 1
+    assert len(logs.calls[3]["queryString"]) < 1500
 
 
 def test_owner_fence_before_any_logs_or_ssm(api, monkeypatch):
@@ -128,10 +234,11 @@ def test_owner_fence_before_any_logs_or_ssm(api, monkeypatch):
 def test_query_failures_not_empty_success(api, monkeypatch, failure, status, error):
     logs = Logs(status="Failed" if failure is None else "Complete", failure=failure)
     result = setup(api, monkeypatch, logs)
-    assert all(
-        s["status"] == status and s["error"] == error and not s["records"]
-        for s in result["sources"]
-    )
+    for s in result["sources"]:
+        if s["key"] == "gateway" and failure in ("start", "results", None):
+            assert s["status"] == "unavailable" and not s["records"]
+        else:
+            assert s["status"] == status and s["error"] == error and not s["records"]
     assert "secret failure details" not in str(result)
 
 
@@ -139,7 +246,11 @@ def test_query_failures_not_empty_success(api, monkeypatch, failure, status, err
 def test_terminal_query_state_is_an_error(api, monkeypatch, state):
     result = setup(api, monkeypatch, Logs(status=state))
     assert all(
-        s["status"] == "error" and s["error"] == f"Logs Insights: {state}"
+        (
+            s["status"] == "unavailable"
+            if s["key"] == "gateway"
+            else s["status"] == "error" and s["error"] == f"Logs Insights: {state}"
+        )
         for s in result["sources"]
     )
 
@@ -150,7 +261,10 @@ def test_unfinished_query_is_reported_as_running(api, monkeypatch):
     monkeypatch.setattr(api.app.time, "time", lambda: next(clock, 121.0))
     monkeypatch.setattr(api.app.time, "sleep", lambda _: None)
     result = setup(api, monkeypatch, logs)
-    assert all(s["status"] == "running" and not s["records"] for s in result["sources"])
+    assert all(
+        s["status"] == ("unavailable" if s["key"] == "gateway" else "running") and not s["records"]
+        for s in result["sources"]
+    )
 
 
 def test_missing_log_group_is_not_success(api, monkeypatch):
@@ -191,3 +305,137 @@ def test_v5_code_reads_v4_enforce_gateway_policy_not_missing_v5_engine(api, monk
         {"name": "tenant fence", "status": "ACTIVE", "statement": "permit(...)"}
     ]
     assert all(control["on"] for control in code["controls"])
+
+
+def test_real_handler_never_returns_foreign_gateway_policy_from_quoted_run(api, monkeypatch):
+    logs = Logs(
+        gateway_rows=[
+            row(
+                **{
+                    "trace_id": FOREIGN_TRACE,
+                    "traceId": FOREIGN_TRACE,
+                    "decision": "DENY",
+                    "policies": '["foreign-policy"]',
+                    "@message": f"requestBody={{reason={RUN}}}",
+                }
+            ),
+        ]
+    )
+    setup(api, monkeypatch, logs)
+    event = {
+        "requestContext": {"http": {"method": "GET"}},
+        "rawPath": "/api/trace",
+        "queryStringParameters": {"run": RUN},
+        "headers": {"x-sec310-access-token": "offline"},
+    }
+    response = api.app.lambda_handler(event, None)
+    assert response["statusCode"] == 200
+    data = json.loads(response["body"])
+    gateway = next(s for s in data["sources"] if s["key"] == "gateway")
+    assert gateway["status"] == "partial" and gateway["discarded"] == 1
+    assert not gateway["records"] and "foreign-policy" not in str(data)
+    assert "@message" not in str(data)
+    api.tables["events"].rows[(RUN, api.app.OWNER_SK)]["customer_id"] = "customer-b"
+    assert api.app.lambda_handler(event, None)["statusCode"] == 404
+
+
+def test_real_handler_mixed_gateway_records_render_safe_in_browser(api, monkeypatch):
+    """Handler → real drawer JS; a Java-map requestBody quoting the run is not authority."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    logs = Logs(
+        gateway_rows=[
+            row(
+                **{
+                    "trace_id": FOREIGN_TRACE,
+                    "traceId": FOREIGN_TRACE,
+                    "decision": "DENY",
+                    "policies": '["foreign-policy"]',
+                    "requestBody": f"{{reason=secret request {RUN}}}",
+                }
+            ),
+            row(
+                **{
+                    "trace_id": TRACE,
+                    "traceId": TRACE,
+                    "decision": "ALLOW",
+                    "policies": '["own-policy"]',
+                    "@message": "secret request",
+                }
+            ),
+        ]
+    )
+    setup(api, monkeypatch, logs)
+    response = api.app.lambda_handler(
+        {
+            "requestContext": {"http": {"method": "GET"}},
+            "rawPath": "/api/trace",
+            "queryStringParameters": {"run": RUN},
+        },
+        None,
+    )
+    assert response["statusCode"] == 200
+    data = json.loads(response["body"])
+    gateway = next(s for s in data["sources"] if s["key"] == "gateway")
+    assert gateway["status"] == "partial" and gateway["matched"] == 1
+    assert gateway["records"][0]["decision"] == "ALLOW"
+    assert "foreign-policy" not in response["body"] and "requestBody" not in response["body"]
+    if not (node := shutil.which("node")):
+        pytest.skip("node unavailable for offline browser renderer")
+    root = Path(__file__).resolve().parents[1]
+    rendered = subprocess.run(
+        [node, "tests/cloud_trace_handler.mjs"],
+        input=response["body"],
+        text=True,
+        capture_output=True,
+        cwd=root,
+        timeout=15,
+        check=False,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert "verified partial/owned evidence: passed" in rendered.stdout
+
+
+@pytest.mark.parametrize("stage", ["start", "results", "failed"])
+def test_gateway_failure_after_verified_spans_is_explicit(api, monkeypatch, stage):
+    class GatewayFailure(Logs):
+        def start_query(self, **kw):
+            if stage == "start" and "gateway" in kw["logGroupNames"][0]:
+                raise RuntimeError("secret Gateway exception")
+            return super().start_query(**kw)
+
+        def get_query_results(self, queryId):
+            group = self.calls[int(queryId) - 1]["logGroupNames"][0]
+            if "gateway" in group:
+                if stage == "results":
+                    raise RuntimeError("secret Gateway exception")
+                if stage == "failed":
+                    return {"status": "Failed", "results": []}
+            return super().get_query_results(queryId)
+
+    result = setup(api, monkeypatch, GatewayFailure())
+    source = result["sources"][1]
+    assert source["status"] == "error" and not source["records"]
+    assert (
+        source["error"]
+        == {
+            "start": "StartQuery: RuntimeError",
+            "results": "GetQueryResults: RuntimeError",
+            "failed": "Logs Insights: Failed",
+        }[stage]
+    )
+    assert "secret Gateway exception" not in str(result)
+
+
+def test_trace_result_row_caps_announce_partial_gateway_coverage(api, monkeypatch):
+    logs = Logs(
+        span_rows=[row(**{"session_id": RUN, "traceId": TRACE})] * 80,
+        gateway_rows=[row(**{"trace_id": TRACE, "traceId": TRACE, "decision": "ALLOW"})] * 50,
+    )
+    result = setup(api, monkeypatch, logs)
+    assert result["sources"][2]["limit_reached"] is True
+    gateway = result["sources"][1]
+    assert gateway["status"] == "partial" and gateway["matched"] == 50
+    assert "80-row cap" in gateway["reason"] and "50-row cap" in gateway["reason"]

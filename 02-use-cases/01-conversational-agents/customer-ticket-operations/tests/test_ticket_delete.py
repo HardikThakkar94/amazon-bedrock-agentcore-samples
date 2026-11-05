@@ -177,3 +177,99 @@ def test_state_write_failure_after_delete_keeps_exclusion_for_reconciliation(api
     )
     st = api.app.demo_state("customer-a")
     assert st["busy_owner"] and st["exclusion_disposition"] == "UNKNOWN"
+
+
+def test_legacy_highest_deleted_id_never_reused_and_history_remains(api, monkeypatch):
+    """Reproduce R1: pre-upgrade portal rows lack portal_ticket_seq in tenant state."""
+    ticket = "A-90"
+    api.tables["tickets"].put_item(
+        Item={
+            "customer_id": "customer-a",
+            "ticket_id": ticket,
+            "origin": "form",
+            "submitted_by": "customer",
+            "status": "OPEN",
+            "subject": "old",
+            "body": "old",
+        }
+    )
+    state = api.app.demo_state("customer-a")
+    assert "portal_ticket_seq" not in state
+    state.update(
+        {
+            "last_run": json.dumps(
+                {"proposals": [{"ticket_id": ticket, "operation": "add_note"}], "effects": []}
+            ),
+            "approvals": json.dumps([{"ticket_id": ticket, "status": "REJECTED", "id": "legacy"}]),
+        }
+    )
+    api.tables["state"].put_item(Item=state)
+    assert status(delete(api, ticket)) == (200, {"deleted": ticket, "source": "operator"})
+    assert api.app.demo_state("customer-a")["portal_ticket_seq"] == 90
+    customer = {**ALICE, "role": "customer", "username": "visitor"}
+    new_id = api.app.submit_ticket(customer, {"subject": "New", "body": "after delete"})["ticket"][
+        "ticket_id"
+    ]
+    assert new_id == "A-91"
+    assert status(delete(api, new_id))[0] == 200
+    before_reset = api.app.demo_state("customer-a")
+    assert before_reset["portal_ticket_seq"] == 91
+    assert before_reset["last_run"] == state["last_run"]
+    assert before_reset["approvals"] == state["approvals"]
+    # Local in-memory reset of the demo does not reset this monotonic identity marker.
+    api.app.reset_demo(ALICE)
+    again = api.app.submit_ticket(customer, {"subject": "Newer", "body": "after reset"})["ticket"][
+        "ticket_id"
+    ]
+    assert again == "A-92"
+    st = api.app.demo_state("customer-a")
+    assert st["portal_ticket_seq"] == 92
+    assert "busy_owner" not in st
+    # Reset deliberately clears run history; before it, deletion retained it unchanged.
+
+
+def test_delete_legacy_high_water_includes_other_live_ids_and_existing_seq(api, monkeypatch):
+    for ticket in ("A-90", "A-98"):
+        api.tables["tickets"].put_item(
+            Item={
+                "customer_id": "customer-a",
+                "ticket_id": ticket,
+                "origin": "form",
+                "submitted_by": "customer",
+                "status": "OPEN",
+            }
+        )
+    state = api.app.demo_state("customer-a")
+    state["portal_ticket_seq"] = 96
+    api.tables["state"].put_item(Item=state)
+    assert status(delete(api, "A-90"))[0] == 200
+    assert api.app.demo_state("customer-a")["portal_ticket_seq"] == 98
+    assert status(delete(api, "A-98"))[0] == 200
+    assert api.app.demo_state("customer-a")["portal_ticket_seq"] == 98
+    assert submit(api, monkeypatch) == "A-99"
+
+
+def test_legacy_high_water_write_failure_keeps_owner_and_no_duplicate(api, monkeypatch):
+    api.tables["tickets"].put_item(
+        Item={
+            "customer_id": "customer-a",
+            "ticket_id": "A-90",
+            "origin": "form",
+            "submitted_by": "customer",
+            "status": "OPEN",
+        }
+    )
+    table = api.tables["state"]
+    original = table.update_item
+
+    def fail(**kw):
+        if "store_change_source = :source" in kw["UpdateExpression"]:
+            raise TimeoutError("high-water update uncertain")
+        return original(**kw)
+
+    monkeypatch.setattr(table, "update_item", fail)
+    code, body = status(delete(api, "A-90"))
+    assert code == 503 and "high-water update uncertain" not in str(body)
+    assert api.app.demo_state("customer-a")["busy_owner"]
+    assert api.app.demo_state("customer-a")["exclusion_disposition"] == "UNKNOWN"
+    assert_http(api, lambda: submit(api, monkeypatch), 409)

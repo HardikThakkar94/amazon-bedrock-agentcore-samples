@@ -37,6 +37,13 @@ const running = cloudSource({key: 'spans', title: 'Runtime', status: 'running', 
 assert.match(running, /Query still running/);
 const empty = cloudSource({key: 'model', title: 'Bedrock', status: 'done', records: [], log_groups: ['model']});
 assert.match(empty, /No correlated records ingested yet/);
+const unavailable = cloudSource({key:'gateway', title:'Gateway', status:'unavailable', reason:'No verified owned-run aws/spans trace IDs yet; retry later', records:[], log_groups:['gateway']});
+assert.match(unavailable, /Correlation unavailable: No verified owned-run aws\/spans trace IDs/);
+assert.doesNotMatch(unavailable, /No correlated records ingested yet|Query failed/);
+const partial = cloudSource({key:'gateway', title:'Gateway', status:'partial', reason:'1 unverified Gateway row(s) omitted', matched:1, records:[{decision:'ALLOW',policies:'own-policy'}], log_groups:['gateway']});
+assert.match(partial, /1 projected record\(s\) of 1 verified · partial/);
+assert.match(partial, /1 unverified Gateway row\(s\) omitted/);
+assert.doesNotMatch(partial, /policy-other|<script>/);
 const allowedRead = {kind:'policy.decision', decision:'ALLOW', tool:'list_tickets'};
 assert.match(policyReach([allowedRead, {kind:'tool.skipped', tool:'add_note', label:'add_note refused · read-only'}], 5), /ALLOW list_tickets.*OPEN breaker refused write before Gateway; Policy did not evaluate that write/);
 assert.match(policyReach([{kind:'approval.requested', tool:'close_ticket'}], 5), /held for operator approval before Gateway/);

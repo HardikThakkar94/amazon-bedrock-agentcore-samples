@@ -797,12 +797,14 @@ function appTracePanel(title, note, kinds){
 }
 function cloudSource(src){
   const cols = TRACE_COLS[src.key]; if(!cols) return '';
-  const status = src.status === 'done' ? `${src.records.length} projected record(s) of ${src.matched ?? src.records.length} matched`
+  const status = ['done','partial'].includes(src.status) ? `${src.records.length} projected record(s) of ${src.matched ?? src.records.length} verified${src.status === 'partial' ? ' · partial' : ''}`
     : src.status === 'running' ? 'Query still running; close and reopen to retry'
+    : src.status === 'unavailable' ? `Correlation unavailable: ${src.reason || 'owned run spans not verified'}`
     : src.status === 'no log group yet' ? 'Log group not available yet'
     : `Query failed: ${src.error || 'unknown error'}`;
   return `<div class="ev"><div class="k">${esc(src.title)} · ${esc(status)}</div><p class="empty">Source: ${esc((src.log_groups || []).join(', ') || 'CloudWatch log group not found')}</p>`
-    + (src.status === 'done' ? (src.matched > 0 && !src.records.length
+    + (src.status === 'partial' ? `<p class="empty">${esc(src.reason || 'Some Gateway records could not be verified.')}</p>` : '')
+    + (['done','partial'].includes(src.status) ? (src.matched > 0 && !src.records.length
       ? '<p class="empty">Records matched, but none had safe projected fields.</p>' : traceTable(src.records, cols)) : '') + '</div>';
 }
 async function cloudTrace(run){

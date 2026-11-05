@@ -899,15 +899,17 @@ TRACE_QUERIES = {
     ),
     "gateway": (
         "AgentCore Gateway APPLICATION_LOGS",
-        "fields @timestamp, body.operation as operation, body.toolName as tool, "
-        "body.policy.decision as decision, body.policy.determiningPolicies as policies, "
-        "body.policy.latency as policy_ms, body.latency as latency "
-        "| filter @message like '{run}' | sort @timestamp asc | limit 50",
+        "fields @timestamp, trace_id, traceId, body.operation as operation, "
+        "body.toolName as tool, body.policy.decision as decision, "
+        "body.policy.determiningPolicies as policies, body.policy.latency as policy_ms, "
+        "body.latency as latency "
+        "| filter {trace_filter} | sort @timestamp asc | limit 50",
     ),
     "spans": (
         "AgentCore / Strands OpenTelemetry spans (Transaction Search)",
         "fields @timestamp, name, durationNano / 1000000 as ms, "
-        "status.code as status, scope.name as scope, traceId "
+        "status.code as status, scope.name as scope, traceId, "
+        "attributes.session.id as session_id "
         "| filter attributes.session.id = '{run}' | sort @timestamp asc | limit 80",
     ),
     "runtime": (
@@ -927,6 +929,8 @@ TRACE_FIELDS = {
 TRACE_SAFE = re.compile(r"^[A-Za-z0-9_:.@/+-]{1,180}$")
 TRACE_TIME = re.compile(r"^[0-9TZ: .+-]{1,40}$")
 TRACE_NUMERIC = re.compile(r"^[0-9]{1,12}(?:\.[0-9]{1,6})?$")
+TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
+MAX_GATEWAY_TRACES = 12  # at most 12 exact IDs in one bounded Logs Insights query
 
 
 def trace_policy_ids(value: str) -> str:
@@ -969,6 +973,28 @@ def trace_record(key: str, row: list[dict[str, str]]) -> dict[str, str]:
     return out
 
 
+def gateway_trace_filter(trace_ids: list[str]) -> str:
+    """Exact matches on both service-owned fields observed in Gateway APPLICATION_LOGS."""
+    if (
+        not trace_ids
+        or len(trace_ids) > MAX_GATEWAY_TRACES
+        or any(not TRACE_ID.fullmatch(t) for t in trace_ids)
+    ):
+        raise ValueError("invalid trusted Gateway trace IDs")
+    return " or ".join(f"(trace_id = '{t}' and traceId = '{t}')" for t in trace_ids)
+
+
+def gateway_row_trusted(row: list[dict[str, str]], trace_ids: set[str]) -> bool:
+    fields = {f.get("field"): f.get("value") for f in row}
+    trace_id = fields.get("trace_id")
+    return bool(
+        isinstance(trace_id, str)
+        and TRACE_ID.fullmatch(trace_id)
+        and trace_id == fields.get("traceId")
+        and trace_id in trace_ids
+    )
+
+
 def run_owner(who: dict[str, str], run_id: str) -> None:
     if not RUN_ID.match(run_id):
         raise HttpError(400, "bad run id")
@@ -995,7 +1021,7 @@ def run_trace(who: dict[str, str], run_id: str) -> dict[str, Any]:
     }
     now = int(time.time())
     sources = []
-    for key, (title, query) in TRACE_QUERIES.items():
+    for key, (title, _) in TRACE_QUERIES.items():
         source = {
             "key": key,
             "title": title,
@@ -1015,32 +1041,80 @@ def run_trace(who: dict[str, str], run_id: str) -> dict[str, Any]:
                 break
         if source["status"] == "error" or not source["log_groups"]:
             continue
+        # Gateway logs are shared across runs/tenants. Do not query or attribute their records
+        # until owned aws/spans rows supply exact, verified trace IDs for this run.
+        if key == "gateway":
+            source["status"] = "waiting for run spans"
+            continue
         try:
             source["query_id"] = logs.start_query(
                 logGroupNames=source["log_groups"],
                 startTime=now - 6 * 3600,
                 endTime=now + 60,
-                queryString=query.format(run=run_id),
+                queryString=TRACE_QUERIES[key][1].format(run=run_id),
             )["queryId"]
             source["status"] = "running"
         except Exception as exc:  # noqa: BLE001 - group can disappear after describe
             source["status"] = "error"
             source["error"] = f"StartQuery: {type(exc).__name__}"
     deadline = time.time() + 20
+    gateway = next(s for s in sources if s["key"] == "gateway")
+    spans = next(s for s in sources if s["key"] == "spans")
     pending = [s for s in sources if s["status"] == "running"]
+    trusted: set[str] = set()
     while pending and time.time() < deadline:
         for source in pending[:]:
             try:
                 result = logs.get_query_results(queryId=source["query_id"])
                 status = result["status"]
                 if status == "Complete":
-                    source["matched"] = len(result["results"])
+                    rows = result["results"]
+                    if source["key"] == "spans":
+                        source["limit_reached"] = len(rows) >= 80
+                        # Verify the returned flattened session alias as well as query syntax.
+                        # Never derive Gateway authority from a timestamp-only or foreign span.
+                        rows = [
+                            row
+                            for row in rows
+                            if any(
+                                f.get("field") == "session_id" and f.get("value") == run_id
+                                for f in row
+                            )
+                        ]
+                        trusted = {
+                            f["value"]
+                            for row in rows
+                            for f in row
+                            if f.get("field") == "traceId"
+                            and TRACE_ID.fullmatch(f.get("value", ""))
+                        }
+                    elif source["key"] == "gateway":
+                        source["limit_reached"] = len(rows) >= 50
+                        verified = [row for row in rows if gateway_row_trusted(row, trusted)]
+                        source["discarded"] = len(rows) - len(verified)
+                        rows = verified
+                    source["matched"] = len(rows)
                     source["records"] = [
-                        record
-                        for row in result["results"]
-                        if (record := trace_record(source["key"], row))
+                        record for row in rows if (record := trace_record(source["key"], row))
                     ]
                     source["status"] = "done"
+                    if source["key"] == "gateway":
+                        reasons = []
+                        if source["discarded"]:
+                            reasons.append(
+                                f"{source['discarded']} unverified Gateway row(s) omitted"
+                            )
+                        if spans.get("traces_omitted"):
+                            reasons.append(
+                                f"{spans['traces_omitted']} trace ID(s) beyond the query cap"
+                            )
+                        if spans.get("limit_reached"):
+                            reasons.append("aws/spans reached the 80-row cap")
+                        if source["limit_reached"]:
+                            reasons.append("Gateway query reached the 50-row cap")
+                        if reasons:
+                            source["status"] = "partial"
+                            source["reason"] = "; ".join(reasons)
                 elif status in ("Failed", "Cancelled", "Timeout"):
                     source["status"] = "error"
                     source["error"] = f"Logs Insights: {status}"
@@ -1050,8 +1124,34 @@ def run_trace(who: dict[str, str], run_id: str) -> dict[str, Any]:
                 source["status"] = "error"
                 source["error"] = f"GetQueryResults: {type(exc).__name__}"
             pending.remove(source)
+            if source is spans and gateway["status"] == "waiting for run spans":
+                trace_ids = sorted(trusted)
+                if source["status"] != "done" or not trace_ids:
+                    gateway["status"] = "unavailable"
+                    gateway["reason"] = "No verified owned-run aws/spans trace IDs yet; retry later"
+                else:
+                    selected = trace_ids[:MAX_GATEWAY_TRACES]
+                    spans["traces_omitted"] = len(trace_ids) - len(selected)
+                    try:
+                        gateway["query_id"] = logs.start_query(
+                            logGroupNames=gateway["log_groups"],
+                            startTime=now - 6 * 3600,
+                            endTime=now + 60,
+                            queryString=TRACE_QUERIES["gateway"][1].format(
+                                trace_filter=gateway_trace_filter(selected)
+                            ),
+                        )["queryId"]
+                        trusted = set(selected)
+                        gateway["status"] = "running"
+                        pending.append(gateway)
+                    except Exception as exc:  # noqa: BLE001 - safe error type only
+                        gateway["status"] = "error"
+                        gateway["error"] = f"StartQuery: {type(exc).__name__}"
         if pending:
             time.sleep(0.7)
+    if gateway["status"] == "waiting for run spans":
+        gateway["status"] = "unavailable"
+        gateway["reason"] = "Owned-run span query not complete; retry later"
     for source in sources:
         source.pop("query_id", None)
     return {"run_id": run_id, "region": os.environ.get("AWS_REGION"), "sources": sources}
@@ -1478,6 +1578,17 @@ def delete_portal_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str,
             for a in current_approvals(st)
         ):
             raise HttpError(409, "a pending approval references this ticket")
+        # Legacy submissions predate portal_ticket_seq. Capture their high-water mark before
+        # removing the highest live row; never reuse an ID still referenced in run history.
+        prefix = cid.split("-")[-1].upper() + "-"
+        live_numbers = [
+            int(t["ticket_id"][len(prefix) :])
+            for t in tickets_for(cid)
+            if t["ticket_id"].startswith(prefix) and t["ticket_id"][len(prefix) :].isdigit()
+        ]
+        high_water = max(
+            int(st.get("portal_ticket_seq", 89)), int(ticket_id.split("-")[1]), *live_numbers
+        )
         # A conditional delete rechecks provenance, even if another writer changed the item.
         uncertain = True
         try:
@@ -1491,14 +1602,15 @@ def delete_portal_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str,
             uncertain = False  # a definite conditional refusal did not delete anything
             raise HttpError(409, "ticket changed before deletion") from exc
         # Retain the prior run/effect/approval history, stage, breaker and policy session.
-        # Removing capture prevents replay against a now different ticket set even on ID reuse.
+        # Persist legacy ID high-water and invalidate replay before releasing the owner.
         _state.update_item(
             Key={"customer_id": cid},
-            UpdateExpression="SET store_change_source = :source REMOVE capture",
+            UpdateExpression="SET store_change_source = :source, portal_ticket_seq = :next REMOVE capture",
             ConditionExpression="busy_owner = :owner",
             ExpressionAttributeValues={
                 ":owner": owner,
                 ":source": f"Operator deleted portal ticket {ticket_id}",
+                ":next": high_water,
             },
         )
         uncertain = False
