@@ -52,7 +52,9 @@ def save(**fields: Any) -> None:
     """The suite's record for its build (fields always include build and suite_id)."""
     app._state.put_item(
         Item={
-            **item_key(fields["build"], fields.get("dataset_name", "default"), fields.get("only", "")),
+            **item_key(
+                fields["build"], fields.get("dataset_name", "default"), fields.get("only", "")
+            ),
             "suite": json.dumps(fields, default=str),
         }
     )

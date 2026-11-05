@@ -45,13 +45,21 @@ def main() -> int:
         return report(suite) if suite else 2
     # k10 is 52 live runs, more than one Lambda invocation allows: one case per invocation,
     # stored apart from the console's matrix, then the same gate over all of them
-    cases = json.loads((ROOT / "evals/dataset-k10.json").read_text())["cases"]
+    study = json.loads((ROOT / "evals/dataset-k10.json").read_text())
+    cases = study["cases"]
     done = []
     for case in cases:
         key = f"evals#{a.build}#k10#{case['id']}"
         payload = {"build": a.build, "dataset": "k10", "case": case["id"]}
         suite = run_one(lam, state, function, key, payload, a.timeout)
-        if not suite:
+        if (
+            not suite
+            or suite.get("dataset") != study["version"]
+            or len(suite.get("cases", [])) != 1
+            or suite["cases"][0].get("id") != case["id"]
+            or len(suite["cases"][0].get("samples", [])) != case["samples"]
+        ):
+            print(f"{PINK}incomplete or mismatched k10 case: {case['id']}{RESET}")
             return 2
         done += suite["cases"]
     combined = {"build": a.build, "cases": done, "gate": gate_rules.gate(done)}
