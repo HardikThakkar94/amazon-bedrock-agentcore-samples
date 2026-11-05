@@ -268,6 +268,33 @@ Official sources:
 - [AgentCore observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html)
 - [Gateway logs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-gateway-metrics.html)
 
+## AgentCore browser demo: progressive builds and scope labels
+
+This browser/API/Runtime demo is separate from the historical tagged local-demo arc above;
+tags and their source remain unchanged. Its actual build order is V0 unsafe, V1 Guardrails,
+V2 Identity (caller and logical Region scope), V3 Policy/approval, V4 Containment, V5 Evidence.
+Cognito access-token verification and Runtime/Gateway JWT admission apply to **every** build;
+V2 is the first Gateway *region/caller scope* policy, not the first login check. V1 uses the
+broad v0 Gateway with Guardrails screening of tool output; V2 uses the tenant-fenced v1
+Gateway and keeps Guardrails enabled. V3 uses its own approval engine, while V4/V5 use the
+v4 engine. `customer-a` and `customer-b` are the persisted `customer_id` authorization
+keys, displayed as **Region A** and **Region B**; these are application scopes, not the AWS
+deployment region `us-east-1`. The recorded Cedar policy, Cognito identity, eval inputs
+and portal presets keep their original identifiers and bytes.
+
+Approval is a safe application-level hold, **not** a native Strands interrupt: the API
+validates and owns a run before recording a confirmation through the Gateway, then
+replays only the exact approved proposal. Ambiguous grants or Runtime effects retain
+UNKNOWN fencing and rotate the policy session for future dispatch; an expired Runtime
+session is never an excuse to replay a write without reconciliation. The console's
+CloudWatch drawer projects verified run spans and structured Gateway policy decisions,
+while Auth, Guardrails and some Policy milestones are explicitly app-recorded/inferred,
+not native service audit events. `make eval-k10 BUILD=v5` is an optional 10-trial variance
+study kept outside the console release-gate matrix; it is not a replacement for the
+full V5 release gate. `scripts/console_link.py` is a source-only helper for a separately
+authorized operator and is never run by this build or its tests against real credentials.
+See `notes/sec310-speaker-notes.md` for the current presenter route.
+
 ## AgentCore browser demo: unresolved-run recovery
 
 The deployed SEC310 browser/API demo uses `busy_owner` (and `busy_stage`/`busy_sub`) as an
