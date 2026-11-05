@@ -889,8 +889,9 @@ def run_events(who: dict[str, str], run_id: str, after: str) -> dict[str, Any]:
     }
 
 
-# CloudWatch service records only. Never select @message: model inputs, Gateway arguments and
-# Runtime stdout can contain tokens, ticket text or other tenants' data.
+# CloudWatch service records only. Never return raw @message: model inputs, Gateway arguments
+# and Runtime stdout can contain tokens, ticket text or other tenants' data. Gateway parses
+# structured message fields inside Logs Insights, then projects only bounded safe fields.
 TRACE_QUERIES = {
     "model": (
         "Amazon Bedrock model invocation logs",
