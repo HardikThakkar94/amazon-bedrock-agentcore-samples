@@ -316,7 +316,11 @@ def score_sample(case: dict[str, Any], sample: dict[str, Any], deadline: float) 
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    build = event.get("build") if event.get("build") in app.STAGES else "v5"
+    # Omission preserves the documented default. An explicitly unsupported build is not V5:
+    # refusing it before the lock prevents a false default matrix row or Build-only release EMF.
+    build = event.get("build", "v5")
+    if not isinstance(build, str) or build not in app.STAGES:
+        raise ValueError("unsupported eval build")
     suite_id = str(event.get("suite_id") or runs.uuid7())
     t0 = time.time()
     deadline = t0 + (context.get_remaining_time_in_millis() / 1000 if context else 880) - 30

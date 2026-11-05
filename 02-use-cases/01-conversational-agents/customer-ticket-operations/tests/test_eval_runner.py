@@ -1,6 +1,7 @@
 """The eval suite runner end to end, with DynamoDB, the Runtime, CloudWatch and Evaluate faked.
 It is packaged with the API's modules and the dataset (infra/codebuild/build.sh); so is this test."""
 
+import copy
 import importlib
 import json
 import shutil
@@ -554,6 +555,64 @@ def test_k10_dataset_preserves_recorded_inputs_and_gate():
     strip = lambda data: [{k: v for k, v in c.items() if k != "samples"} for c in data["cases"]]  # noqa: E731
     assert strip(base) == strip(k10) and base["gate"] == k10["gate"]
     assert all(c["samples"] == (10 if c["kind"] == "attack" else 1) for c in k10["cases"])
+
+
+@pytest.mark.parametrize(
+    "bad_build", ["not-a-build", "", "V5", None, False, 5, ["v5"], {"stage": "v5"}]
+)
+@pytest.mark.parametrize("dataset", ["default", "k10"])
+def test_explicit_invalid_build_cannot_lock_run_or_publish(
+    runner, monkeypatch, capsys, bad_build, dataset
+):
+    """The actual Lambda boundary must not silently relabel malformed events as V5 evidence."""
+    before_state = copy.deepcopy(runner.state.items)
+    before_tickets = copy.deepcopy(runner.tickets.items)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid build must fail before lock, grant, runner or persistence")
+
+    for name in ("lock", "save", "operator_token", "run_case", "restore"):
+        monkeypatch.setattr(runner.h, name, unexpected)
+    event = {"build": bad_build, "suite_id": "invalid-build", "dataset": dataset}
+    if dataset == "k10":
+        event["case"] = "same_customer"
+    with pytest.raises(ValueError, match="unsupported eval build"):
+        runner.h.lambda_handler(event, None)
+    assert runner.state.items == before_state and runner.tickets.items == before_tickets
+    assert ("evals#v5",) not in runner.state.items
+    assert release_emf(capsys) == []
+
+
+@pytest.mark.parametrize("stage", [f"v{i}" for i in range(6)])
+@pytest.mark.parametrize("dataset", ["default", "k10"])
+def test_valid_builds_keep_exact_dataset_and_release_evidence(runner, capsys, stage, dataset):
+    event = {"build": stage, "suite_id": f"valid-{stage}-{dataset}", "dataset": dataset}
+    if dataset == "k10":
+        event["case"] = "same_customer"
+    out = runner.h.lambda_handler(event, None)
+    assert out["status"] == "DONE"
+    key = (f"evals#{stage}" if dataset == "default" else f"evals#{stage}#k10#same_customer",)
+    stored = json.loads(runner.state.items[key]["suite"])
+    assert stored["build"] == stage and stored["status"] == "DONE"
+    assert len(stored["cases"]) == (7 if dataset == "default" else 1)
+    assert sum(len(c["samples"]) for c in stored["cases"]) == (12 if dataset == "default" else 10)
+    emitted = release_emf(capsys)
+    if dataset == "default":
+        assert len(emitted) == 1 and emitted[0]["Build"] == stage.upper()
+        assert emitted[0]["EvalGatePassed"] == int(out["passed"])
+        assert ("evals#v5#k10#same_customer",) not in runner.state.items
+    else:
+        assert emitted == [] and (f"evals#{stage}",) not in runner.state.items
+
+
+def test_missing_build_still_defaults_to_v5(runner, capsys):
+    out = runner.h.lambda_handler({"suite_id": "omitted-default"}, None)
+    assert out["status"] == "DONE" and out["passed"]
+    stored = suite_of(runner, "v5")
+    assert stored["build"] == "v5" and len(stored["cases"]) == 7
+    emitted = release_emf(capsys)
+    assert len(emitted) == 1 and emitted[0]["Build"] == "V5"
+    assert emitted[0]["EvalGatePassed"] == 1
 
 
 def test_k10_unknown_case_refuses_without_overwriting_matrix(runner):
