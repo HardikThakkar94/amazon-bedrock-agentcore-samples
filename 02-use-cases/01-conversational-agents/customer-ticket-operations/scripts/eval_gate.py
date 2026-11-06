@@ -20,6 +20,9 @@ from pathlib import Path
 import boto3
 
 ROOT = Path(__file__).resolve().parents[1]
+# Standalone `python /path/to/scripts/eval_gate.py` has only scripts/ on sys.path;
+# bootstrap both source directories before importing the shared pure release contract.
+sys.path.insert(0, str(ROOT / "functions/api"))
 sys.path.insert(0, str(ROOT / "functions/evals"))
 import suite as gate_rules  # noqa: E402  (the same gate the runner computes)
 

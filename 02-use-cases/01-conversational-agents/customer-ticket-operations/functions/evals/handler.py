@@ -252,6 +252,10 @@ def replay_proof(
             if good
             else "cap/continuation or durable breaker not proven"
         )
+    if not provenance_ok:
+        reason = (
+            "replay fixture or admitted actor/run/build/session mismatch; denial not attributed"
+        )
     good = bool(good and provenance_ok and not result.get("evidence_uncertain"))
     return {
         "family": family,
@@ -414,8 +418,16 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
             )
             out["control"]["followup"] = "READ_ONLY" if read_only else "FAIL"
             if not read_only:
+                matched = runtime_provenance(follow, run_id, sub, build, runtime_session) and (
+                    replay_inputs_match(follow_calls, case["replay"][:1], run_id, sub)
+                )
                 out["control"].update(
-                    status="FAIL", reason="OPEN follow-up write not proven refused"
+                    status="FAIL",
+                    reason=(
+                        "read-only follow-up fixture or owned run/session mismatch"
+                        if not matched
+                        else "OPEN follow-up write not proven refused"
+                    ),
                 )
                 if follow_after != after or any(c.get("status") == "ERROR" for c in follow_calls):
                     out["tool_outcome_uncertain"] = True
@@ -505,20 +517,80 @@ def spans_for(sample: dict[str, Any], deadline: float) -> list[dict[str, Any]]:
         time.sleep(SPAN_POLL)
 
 
+def evaluator_error(reason: str) -> dict[str, Any]:
+    """Bounded status; never persist raw service explanations or input data."""
+    return {"label": "ERROR", "value": None, "explanation": reason}
+
+
 def evaluate(
-    evaluator_id: str, level: str, spans: list[dict[str, Any]], *, require_numeric: bool = False
+    evaluator_id: str,
+    level: str,
+    spans: list[dict[str, Any]],
+    *,
+    require_numeric: bool = False,
+    run_id: str = "",
 ) -> dict[str, Any] | None:
+    """Require the installed EvaluateResponse context, not an invented top-level traceId."""
     req: dict[str, Any] = {"evaluatorId": evaluator_id, "evaluationInput": {"sessionSpans": spans}}
+    session_ids = {
+        s.get("attributes", {}).get("session.id")
+        for s in spans
+        if isinstance(s, dict)
+        and isinstance(s.get("attributes"), dict)
+        and s["attributes"].get("session.id")
+    }
+    if (
+        len(session_ids) > 1
+        or (bool(run_id) and bool(session_ids) and session_ids != {run_id})
+        or (require_numeric and not session_ids)
+    ):
+        return evaluator_error("owned session span mismatch")
+    known_run = run_id or next(iter(session_ids), "")
+    owned_spans = [
+        s
+        for s in spans
+        if isinstance(s, dict)
+        and isinstance(s.get("attributes"), dict)
+        and s["attributes"].get("session.id") == known_run
+    ]
+    owned_traces = suite.session_traces(owned_spans)
     traces: list[str] = []
     if level == "TRACE":
-        traces = suite.session_traces(spans)
+        traces = owned_traces if require_numeric else suite.session_traces(spans)
         if not traces:
-            return None
+            return evaluator_error("owned trace unavailable") if require_numeric else None
         if require_numeric and len(traces) > 10:
-            return {"label": "ERROR", "value": None, "explanation": "trace target cap exceeded"}
+            return evaluator_error("trace target cap exceeded")
         req["evaluationTarget"] = {"traceIds": traces[:10]}
     try:
-        results = _agentcore.evaluate(**req).get("evaluationResults", [])
+        response = _agentcore.evaluate(**req)
+        results = response.get("evaluationResults") if isinstance(response, dict) else None
+        if not isinstance(results, list):
+            return evaluator_error("malformed Evaluate response")
+        contexts: list[dict[str, Any]] = []
+        for r in results:
+            if (
+                not isinstance(r, dict)
+                or any(
+                    not isinstance(r.get(field), str) or not r[field]
+                    for field in ("evaluatorArn", "evaluatorId", "evaluatorName")
+                )
+                or r["evaluatorId"] != evaluator_id
+                or not isinstance(r.get("context"), dict)
+            ):
+                return evaluator_error("missing Evaluate result metadata")
+            span_context = r["context"].get("spanContext")
+            if not isinstance(span_context, dict):
+                return evaluator_error("missing Evaluate span context")
+            sid = span_context.get("sessionId")
+            if not isinstance(sid, str) or not sid or known_run and sid != known_run:
+                return evaluator_error("mismatched Evaluate session context")
+            trace = span_context.get("traceId")
+            if trace is not None and (
+                not isinstance(trace, str) or not trace or trace not in owned_traces
+            ):
+                return evaluator_error("foreign Evaluate trace context")
+            contexts.append(span_context)
         scored = suite.score(results, require_numeric=require_numeric)
         if scored and scored.get("label") == "ERROR":
             return scored  # preserve service ERROR, including retryable ingestion delay
@@ -526,29 +598,15 @@ def evaluate(
             require_numeric
             and level == "TRACE"
             and (
-                not isinstance(results, list)
-                or len(results) != len(traces)
-                or (
-                    any(isinstance(r, dict) and r.get("traceId") for r in results)
-                    and (
-                        not all(isinstance(r, dict) and r.get("traceId") for r in results)
-                        or sorted(r["traceId"] for r in results) != sorted(traces)
-                    )
-                )
+                len(contexts) != len(traces)
+                or any(not c.get("traceId") for c in contexts)
+                or sorted(c["traceId"] for c in contexts) != sorted(traces)
             )
         ):
-            return {
-                "label": "ERROR",
-                "value": None,
-                "explanation": "missing or mismatched trace evaluator result",
-            }
+            return evaluator_error("missing or mismatched trace evaluator result")
         return scored
     except Exception as exc:  # noqa: BLE001 - one evaluator failing is reported, not fatal
-        return {
-            "label": "ERROR",
-            "value": None,
-            "explanation": f"Evaluator unavailable ({type(exc).__name__})",
-        }
+        return evaluator_error(f"Evaluator unavailable ({type(exc).__name__})")
 
 
 EVALUATORS = json.loads(os.environ.get("EVALUATORS", "{}"))  # logical name -> {id, level}
@@ -578,6 +636,7 @@ def score_sample(case: dict[str, Any], sample: dict[str, Any], deadline: float) 
                 ev["level"],
                 spans,
                 require_numeric=name in (suite.CODE, "Builtin.Helpfulness"),
+                run_id=sample["run_id"],
             )
             if result is not None:
                 scores[name] = result

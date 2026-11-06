@@ -267,6 +267,9 @@ def test_replay_proof_rejects_substituted_fixture_or_provenance(
             else "substituted fixture value"
         )
         assert proof(changed) == "FAIL", (stage, family, key)
+        detail = r.h.replay_proof(case, changed, result, before, after, "alice-sub", **context)
+        assert "fixture or admitted actor/run/build/session mismatch" in detail["reason"]
+        assert "denial not attributed" in detail["reason"]
     substitutions = [
         ("tool_calls", 0, "input", "unexpected"),
         ("tool_calls", 0, "input", "run_id"),
@@ -320,6 +323,11 @@ def test_read_only_followup_must_match_same_fixture_and_session(
     assert invoked == 2 and sample["local"] == "PASS"
     assert sample["control"]["status"] == "FAIL"
     assert sample["control"]["followup"] == "FAIL"
+    assert (
+        "fixture or owned run/session mismatch"
+        if field != "decision"
+        else "OPEN follow-up write not proven refused"
+    ) in sample["control"]["reason"]
 
 
 def test_missing_gateway_call_and_block_all_cannot_pass(measured, monkeypatch):

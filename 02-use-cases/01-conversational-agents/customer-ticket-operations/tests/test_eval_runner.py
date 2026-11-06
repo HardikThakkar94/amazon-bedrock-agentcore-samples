@@ -9,9 +9,54 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from botocore.session import Session
+from botocore.validate import ParamValidator
 
 from sec310_agent.controls import CircuitBreaker
 from tests.test_evals import ROOT
+
+EVALUATE_OUTPUT = (
+    Session().get_service_model("bedrock-agentcore").operation_model("Evaluate").output_shape
+)
+
+
+def sdk_reply(evaluator_id, evaluation_input, evaluation_target, raw, *, contexts=None):
+    """Every fake EvaluateResponse is validated against the installed botocore output model."""
+    spans = evaluation_input["sessionSpans"]
+    session = next(
+        (
+            s.get("attributes", {}).get("session.id")
+            for s in spans
+            if s.get("attributes", {}).get("session.id")
+        ),
+        "r",
+    )
+    traces = (evaluation_target or {}).get("traceIds") or []
+    results = []
+    for i, result in enumerate(raw):
+        context = (
+            contexts[i]
+            if contexts is not None
+            else {
+                "spanContext": {
+                    "sessionId": session,
+                    **({"traceId": traces[min(i, len(traces) - 1)]} if traces else {}),
+                }
+            }
+        )
+        results.append(
+            {
+                "evaluatorArn": "offline-evaluator",
+                "evaluatorId": evaluator_id,
+                "evaluatorName": "offline-evaluator",
+                "context": context,
+                **result,
+            }
+        )
+    reply = {"evaluationResults": results}
+    errors = ParamValidator().validate(reply, EVALUATE_OUTPUT)
+    assert not errors.has_errors(), errors.generate_report()
+    return reply
 
 
 class Table:
@@ -236,12 +281,15 @@ def runner(tmp_path, monkeypatch):
             evaluatorId == "code-1"
         ):  # the real evaluator reads TicketTools' records; here, the table
             closed = tickets.items[("customer-a", "A-42")]["status"] == "CLOSED"
-            return {
-                "evaluationResults": [
-                    {"label": "FAIL" if closed else "PASS", "value": 0.0 if closed else 1.0}
-                ]
-            }
-        return {"evaluationResults": [{"label": "PASS", "value": 0.9}]}
+            return sdk_reply(
+                evaluatorId,
+                evaluationInput,
+                evaluationTarget,
+                [{"label": "FAIL" if closed else "PASS", "value": 0.0 if closed else 1.0}],
+            )
+        return sdk_reply(
+            evaluatorId, evaluationInput, evaluationTarget, [{"label": "PASS", "value": 0.9}]
+        )
 
     monkeypatch.setattr(h, "_agentcore", SimpleNamespace(evaluate=evaluate))
     state.items[("customer-a",)] = {"customer_id": "customer-a", "active_stage": "v3"}
@@ -651,7 +699,7 @@ def test_raw_service_results_through_score_sample_and_complete_gate(
             results = helpfulness
         else:
             results = [{"label": "PASS"}]  # advisory label-only scores are valid
-        return {"evaluationResults": results}
+        return sdk_reply(evaluatorId, evaluationInput, evaluationTarget, results)
 
     monkeypatch.setattr(runner.h, "run_case", synthetic_case)
     monkeypatch.setattr(
@@ -683,11 +731,141 @@ def test_raw_service_results_through_score_sample_and_complete_gate(
                 assert scores["Builtin.Refusal"]["value"] is None
 
 
+@pytest.mark.parametrize(
+    "context_case,release",
+    [
+        ("matched", True),
+        ("duplicate", False),
+        ("foreign", False),
+        ("missing", False),
+        ("mixed", False),
+        ("wrong_session", False),
+        ("wrong_evaluator", False),
+    ],
+)
+def test_sdk_contexts_through_complete_default_release_gate(
+    runner, monkeypatch, context_case, release
+):
+    """Real EvaluateResponse shape, raw service → score_sample → full 12/17 gate."""
+
+    def synthetic_case(token, build, case, sample):
+        return {
+            "run_id": f"sample-{case['id']}-{sample}",
+            "sample": sample,
+            "started": 0,
+            "local": "PASS",
+            "verdict": "NO_EFFECT",
+            "screen": {"status": "PASS"},
+            "useful_evidence": True,
+            **(
+                {"control": {"family": case["family"], "status": "PASS"}}
+                if case.get("family")
+                else {}
+            ),
+        }
+
+    def service(evaluatorId, evaluationInput, evaluationTarget=None):
+        traces = (evaluationTarget or {}).get("traceIds") or []
+        session = evaluationInput["sessionSpans"][0]["attributes"]["session.id"]
+        if evaluatorId == "Builtin.Helpfulness":
+            results = [{"label": "fine", "value": 0.9} for _ in traces]
+            ids = list(traces)
+            if context_case == "duplicate":
+                ids = [traces[0], traces[0]]
+            elif context_case == "foreign":
+                ids = ["foreign-a", "foreign-b"]
+            elif context_case == "mixed":
+                ids = [traces[0], None]
+            elif context_case == "missing":
+                ids = [None, None]
+            contexts = [
+                {
+                    "spanContext": {
+                        "sessionId": "other-session"
+                        if context_case == "wrong_session"
+                        else session,
+                        **({"traceId": ident} if ident else {}),
+                    }
+                }
+                for ident in ids
+            ]
+            if context_case == "wrong_evaluator":
+                results[0]["evaluatorId"] = "different-evaluator"
+            return sdk_reply(
+                evaluatorId, evaluationInput, evaluationTarget, results, contexts=contexts
+            )
+        if evaluatorId == "code-1":
+            results = [{"label": "PASS", "value": 1.0}]
+        elif traces:
+            results = [{"label": "PASS"} for _ in traces]  # advisory only
+        else:
+            results = [{"label": "PASS"}]
+        return sdk_reply(evaluatorId, evaluationInput, evaluationTarget, results)
+
+    monkeypatch.setattr(runner.h, "run_case", synthetic_case)
+    monkeypatch.setattr(
+        runner.h,
+        "spans_for",
+        lambda sample, deadline: [
+            {"traceId": trace, "attributes": {"session.id": sample["run_id"]}}
+            for trace in ("t1", "t2")
+        ],
+    )
+    monkeypatch.setattr(runner.h, "_agentcore", SimpleNamespace(evaluate=service))
+    answer = runner.h.lambda_handler({"build": "v5", "suite_id": f"sdk-{context_case}"}, None)
+    stored = suite_of(runner, "v5")
+    assert answer["passed"] is release
+    assert stored["gate"]["safety"] == "PASS"
+    assert stored["gate"]["controls"]["status"] == "PASS"
+    assert stored["gate"]["quality"]["passed"] is release
+    assert stored["gate"]["quality"]["scored"] == (3 if release else 0)
+    assert runner.h.suite.classify_default(stored, runner.h.DATASET, "v5") == "current"
+    for case in stored["cases"]:
+        if case["kind"] == "benign":
+            assert all(
+                s["scores"]["Builtin.Helpfulness"]["label"] == ("SCORED" if release else "ERROR")
+                for s in case["samples"]
+            )
+
+
+def test_explicit_foreign_input_session_cannot_be_scored_as_owned_run(runner, monkeypatch):
+    attempts = []
+    monkeypatch.setattr(
+        runner.h,
+        "spans_for",
+        lambda sample, deadline: [
+            {"traceId": "t1", "attributes": {"session.id": sample["run_id"]}},
+            {"traceId": "t2", "attributes": {"session.id": "foreign-run"}},
+        ],
+    )
+    monkeypatch.setattr(
+        runner.h, "_agentcore", SimpleNamespace(evaluate=lambda **kwargs: attempts.append(kwargs))
+    )
+    sample = {
+        "run_id": "r",
+        "started": 0,
+        "local": "PASS",
+        "screen": {"status": "PASS"},
+        "useful_evidence": True,
+        "verdict": "NO_EFFECT",
+    }
+    runner.h.score_sample({"kind": "benign"}, sample, deadline=1e12)
+    assert not attempts  # no unowned span was sent to on-demand Evaluate
+    assert sample["scores"]["no_forbidden_effect"]["label"] == "ERROR"
+    assert sample["scores"]["Builtin.Helpfulness"]["label"] == "ERROR"
+    verdict = runner.h.suite.gate([{"id": "benign", "kind": "benign", "samples": [sample]}])
+    assert verdict["safety"] == "FAIL" and not verdict["quality"]["passed"]
+
+
 def test_raw_code_error_with_numeric_value_does_not_fall_back_to_diff(runner, monkeypatch):
     def service(evaluatorId, evaluationInput, evaluationTarget=None):
         if evaluatorId == "code-1":
-            return {"evaluationResults": [{"label": "ERROR", "value": 1.0}]}
-        return {"evaluationResults": [{"label": "fine", "value": 0.9}]}
+            return sdk_reply(
+                evaluatorId, evaluationInput, evaluationTarget, [{"label": "ERROR", "value": 1.0}]
+            )
+        return sdk_reply(
+            evaluatorId, evaluationInput, evaluationTarget, [{"label": "fine", "value": 0.9}]
+        )
 
     monkeypatch.setattr(runner.h, "_agentcore", SimpleNamespace(evaluate=service))
     sample = {
@@ -713,7 +891,9 @@ def test_required_trace_result_cannot_hide_an_unscored_second_trace(runner, monk
 
     def partial(evaluatorId, evaluationInput, evaluationTarget=None):
         assert evaluationTarget is None or evaluationTarget == {"traceIds": ["t1", "t2"]}
-        return {"evaluationResults": [{"label": "PASS", "value": 1.0}]}
+        return sdk_reply(
+            evaluatorId, evaluationInput, evaluationTarget, [{"label": "PASS", "value": 1.0}]
+        )
 
     monkeypatch.setattr(runner.h, "spans_for", two_traces)
     monkeypatch.setattr(runner.h, "_agentcore", SimpleNamespace(evaluate=partial))
@@ -865,12 +1045,15 @@ def test_incomplete_span_data_is_fetched_again_and_retried(runner, monkeypatch):
     def evaluate(evaluatorId, evaluationInput, evaluationTarget=None):
         calls.append(evaluatorId)
         if calls.count(evaluatorId) == 1:
-            return {
-                "evaluationResults": [
-                    {"errorCode": "LogEventMissingException", "errorMessage": "x"}
-                ]
-            }
-        return {"evaluationResults": [{"label": "PASS", "value": 1.0}]}
+            return sdk_reply(
+                evaluatorId,
+                evaluationInput,
+                evaluationTarget,
+                [{"errorCode": "LogEventMissingException", "errorMessage": "x"}],
+            )
+        return sdk_reply(
+            evaluatorId, evaluationInput, evaluationTarget, [{"label": "PASS", "value": 1.0}]
+        )
 
     monkeypatch.setattr(runner.h, "_agentcore", type("C", (), {"evaluate": staticmethod(evaluate)}))
     sample = {"run_id": "r", "started": 0}

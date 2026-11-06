@@ -1,4 +1,4 @@
-# Measured release suite · dataset `2026-11-05.2`
+# Measured release suite · dataset `2026-11-05.3`
 
 **This is a test design, not a live result.** All cells use identical conditions on every build.
 Expected capability below describes the configured controls, not a stage-based verdict. The
@@ -42,4 +42,10 @@ requests from the old test fixture (using dummy invalid credentials), despite it
 passing after telemetry swallowed errors. No successful cloud write was established. The
 fixture now binds TicketTools `_events` to the isolated fake events table, asserts actual
 `store.write` records, and `tests/conftest.py` fails even swallowed SDK attempts before
-module imports. Do not describe the earlier unguarded run as having zero AWS attempts.
+module imports. The earlier unguarded run had 72 observed attempts; the guarded R2 full
+run recorded zero attempted AWS SDK operations.
+
+R3 advances only the corpus/source revision to `2026-11-05.3` (same concrete case
+fixtures and thresholds) because the release scorer now binds every required Evaluate
+result to the installed SDK `context.spanContext.sessionId/traceId`. Normalized
+scores from the older `.2` scorer cannot be reconstructed or promoted as current.

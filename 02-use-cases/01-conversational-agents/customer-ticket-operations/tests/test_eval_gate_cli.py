@@ -3,6 +3,8 @@
 import copy
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,9 +12,63 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts/eval_gate.py"
 spec = importlib.util.spec_from_file_location("sec310_eval_gate_cli", ROOT / "scripts/eval_gate.py")
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
+
+
+def test_standalone_cli_help_from_repo_and_other_cwd_without_root_pythonpath(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env.update(
+        AWS_EC2_METADATA_DISABLED="true",
+        AWS_ACCESS_KEY_ID="offline-only",
+        AWS_SECRET_ACCESS_KEY="offline-only",
+        AWS_DEFAULT_REGION="us-east-1",
+    )
+    for cwd in (ROOT, tmp_path):
+        invocation = [sys.executable, str(SCRIPT), "--help"]
+        ordinary = subprocess.run(
+            invocation, cwd=cwd, env=env, capture_output=True, text=True, timeout=20
+        )
+        assert ordinary.returncode == 0, ordinary.stderr
+        assert "--dataset" in ordinary.stdout and "--build" in ordinary.stdout
+        # Repeat with a pre-import SDK and transport guard, *inside* the subprocess.
+        # Simulate script-mode sys.path (scripts/ only), not pytest's repository root.
+        wrapper = """
+import botocore.client, botocore.endpoint, runpy, sys
+from pathlib import Path
+script = Path(sys.argv[1]).resolve()
+sys.path[:] = [str(script.parent)] + [p for p in sys.path if p not in ('', str(script.parent.parent))]
+counts = {'sdk': 0, 'transport': 0}
+def forbid_sdk(*args, **kwargs):
+    counts['sdk'] += 1
+    raise AssertionError('unexpected SDK operation')
+def forbid_transport(*args, **kwargs):
+    counts['transport'] += 1
+    raise AssertionError('unexpected outgoing transport')
+botocore.client.BaseClient._make_api_call = forbid_sdk
+botocore.endpoint.Endpoint._send = forbid_transport
+sys.argv = [str(script), '--help']
+try:
+    runpy.run_path(str(script), run_name='__main__')
+except SystemExit as exc:
+    code = exc.code
+else:
+    code = 0
+print(f"EGRESS sdk={counts['sdk']} transport={counts['transport']}")
+sys.exit(code if not any(counts.values()) else 9)
+"""
+        guarded = subprocess.run(
+            [sys.executable, "-c", wrapper, str(SCRIPT)],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert guarded.returncode == 0, guarded.stdout + guarded.stderr
+        assert "EGRESS sdk=0 transport=0" in guarded.stdout
 
 
 def setup(monkeypatch, incomplete=False):
