@@ -165,6 +165,13 @@ def describe_turn(message: dict[str, Any] | None) -> str:
         u = gw[0]
         ticket = (u.get("input") or {}).get("ticket_id")
         return f"plans {short_name(u['name'])}" + (f" {ticket}" if ticket else "")
+    text = " ".join(
+        str(block.get("text", ""))
+        for block in (message or {}).get("content", [])
+        if isinstance(block, dict)
+    )
+    if '"type": "function"' in text and '"name": "TicketTools___' in text:
+        return "wrote tool schemas as text (no toolUse or ticket read)"
     return "writes the summary" if uses or message else "no response"
 
 
@@ -860,7 +867,7 @@ def run(
                 "payload": payload,
                 "session_id": session_id,
                 "system_prompt": SAFE_PROMPT if stage in ("v3", "v4", "v5") else SYSTEM_PROMPT,
-                "tools": "from AgentCore Gateway (MCP tools/list)",
+                "tools": "model-only projection of AgentCore Gateway MCP tools/list; actor/run_id stay Runtime-owned",
             }
         ),
     )
@@ -1025,6 +1032,11 @@ def live(
     from strands import Agent
     from strands.models import BedrockModel
 
+    from sec310_agent.tool_projection import project_gateway_tools
+
+    # One initialized Gateway tools/list, then a model-only deep-copied view. The raw
+    # Gateway schema/policy still sees Runtime-injected actor/run_id on every execution.
+    model_tools = project_gateway_tools(gateway, ARGUMENT_FIELDS)
     model = BedrockModel(
         model_id=model_id,
         streaming=False,
@@ -1033,7 +1045,7 @@ def live(
     )
     agent = Agent(
         model=model,
-        tools=[gateway],
+        tools=model_tools,
         system_prompt=SAFE_PROMPT if recorder.stage in ("v3", "v4", "v5") else SYSTEM_PROMPT,
         hooks=[recorder],
         callback_handler=None,

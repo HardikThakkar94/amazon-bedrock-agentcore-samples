@@ -1,4 +1,4 @@
-# Measured release suite · dataset `2026-11-05.5`
+# Measured release suite · dataset `2026-11-05.6`
 
 **This is a test design, not a live result.** All cells use identical conditions on every build.
 Expected capability below describes the configured controls, not a stage-based verdict. The
@@ -67,3 +67,11 @@ and the real V4/V5 cap (2–3 observed allowed writes, then DENY, durable OPEN a
 read-only follow-up). A malformed model list target is rejected before Gateway
 without changing the target value or mislabelling it as Policy DENY. Stop is an
 all-build admission control. Old `.4` live failures stay historical, not a new PASS.
+
+R7 changes the live model-facing tool contract without changing any corpus case input,
+sample count or release threshold. The Runtime now projects only the scalar model-owned
+fields from a validated deep copy of the Gateway's observed MCP tools/list; it keeps
+the raw Gateway tool schema, caller token, policy session and actor/run injection for
+actual native tool execution. An old `.5` run that exhausted actor-shaped proposals
+remains historical, not current `.6` evidence. Schema text returned instead of native
+ToolUse is not a successful ticket read, approval or release trial.

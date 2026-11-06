@@ -98,6 +98,7 @@ LESSONS = {
 # Which controls each build turns on (mirrors src/sec310_agent/controls.py and the agent root).
 CONTROLS = {
     "Inbound JWT authorizer (AgentCore Identity on Runtime and Gateway)": "v0",
+    "Model tool specs: projected plain-string fields; Runtime injects actor/run_id": "v0",
     "Amazon Bedrock Guardrails: prompt-attack screen on ticket text": "v1",
     "AgentCore Policy: caller and Region scope fence (Cedar)": "v2",
     "Human approval: the harness holds every close the model proposes (agent hook)": "v3",

@@ -71,16 +71,13 @@ class FakeGateway:
 
 @pytest.fixture(autouse=True)
 def fake_strands(monkeypatch):
-    """Only strands.tools.mcp exists: a replay that built a model or an Agent would fail."""
+    """Keep installed SDK module identity stable across tests; replay must never build a model."""
+    from strands.tools import mcp
+
     FakeGateway.instances, FakeGateway.replies = [], {}
-    mcp = ModuleType("strands.tools.mcp")
-    mcp.MCPClient = FakeGateway
-    for name, module in {
-        "strands": ModuleType("strands"),
-        "strands.tools": ModuleType("strands.tools"),
-        "strands.tools.mcp": mcp,
-    }.items():
-        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(mcp, "MCPClient", FakeGateway)
+    # Live-mode routing is asserted with a projection sentinel below; changing the
+    # installed Agent/BedrockModel modules here would leak across SDK integration tests.
     monkeypatch.delenv("EVENTS_TABLE", raising=False)
 
 
@@ -178,8 +175,14 @@ def test_replay_records_a_gateway_failure_and_carries_on():
     assert "ConnectionError" in result["tool_calls"][1]["result"]
 
 
-def test_live_mode_is_the_default():
-    with pytest.raises(ImportError):  # live needs strands.Agent: replay is never implied
+def test_live_mode_is_the_default(monkeypatch):
+    from sec310_agent import tool_projection
+
+    def live_only(gateway, fields):
+        raise RuntimeError("live tool registration requested")
+
+    monkeypatch.setattr(tool_projection, "project_gateway_tools", live_only)
+    with pytest.raises(RuntimeError, match="live tool registration requested"):
         run(
             {"stage": "v0", "run_id": "r1"},
             TOKEN,

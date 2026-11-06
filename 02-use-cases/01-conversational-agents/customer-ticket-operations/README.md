@@ -280,7 +280,13 @@ Gateway and keeps Guardrails enabled. V3 uses its own approval engine, while V4/
 v4 engine. On V3+, model-supplied ticket text cannot authorize notes: the Runtime refuses
 unrequested live/captured notes before Gateway. Only the isolated, owner/session/actor/fixture-
 bound eval runner can grant its direct note policy/cap probes; Region and write-cap decisions
-still come from the real Gateway. Malformed tool arguments are repairable local errors, not
+still come from the real Gateway. The installed Strands agent advertises a validated,
+deep-copied model-only projection of the raw Gateway tools/list: plain-string ticket
+fields, no actor or run_id. Native MCP execution still goes through the same Gateway
+client after Runtime injects the verified caller and owned run. The console-only
+confirm_close is not model-advertised. A model response containing schema JSON text
+is not a native ToolUse, a ticket read or an approval card. Malformed tool arguments
+are repairable local errors, not
 native policy denials. The operator Stop is checked at API and Runtime admission on every build.
 Stop is admission-only: an already-admitted run can finish; its pill is not evidence of
 cancellation or quiescence. Future runs refuse until cleared, without bypassing an owner/
