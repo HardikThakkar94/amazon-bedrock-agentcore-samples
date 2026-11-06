@@ -7,6 +7,7 @@ UI_SCREENSHOTS optionally keeps desktop/small-viewport evidence outside the repo
 from __future__ import annotations
 
 import copy
+import json
 import os
 import threading
 from functools import partial
@@ -17,6 +18,8 @@ from urllib.parse import parse_qs, urlsplit
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+DATASET = json.loads((ROOT / "evals/dataset.json").read_text())
+VERSION = DATASET["version"]
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
@@ -52,7 +55,13 @@ def exercise(browser, origin, screenshots):
         "last_run": None,
     }
     calls, errors, unexpected, pending = [], [], [], {}
-    fixture = {"evals": {}, "hold_state": True, "hold_evals": False, "hold_trace": False}
+    fixture = {
+        "evals": {},
+        "hold_state": True,
+        "hold_evals": False,
+        "hold_trace": False,
+        "fail_delete": False,
+    }
     context = browser.new_context(viewport={"width": 1920, "height": 1080}, reduced_motion="reduce")
     page = context.new_page()
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -80,7 +89,7 @@ def exercise(browser, origin, screenshots):
             if fixture["hold_evals"]:
                 pending.setdefault("evals", []).append(route)
                 return
-            result = {"builds": fixture["evals"]}
+            result = {"builds": fixture["evals"], "dataset": VERSION}
         elif path == "/api/patch":
             assert request.method == "POST"
             assert body == {} or body.get("stage") in [f"v{i}" for i in range(6)]
@@ -89,6 +98,9 @@ def exercise(browser, origin, screenshots):
             result = {"active_stage": state["active_stage"], "title": "Mock build"}
         elif path == "/api/tickets/delete":
             assert request.method == "POST" and body == {"ticket_id": "A-90"}
+            if fixture["fail_delete"]:
+                route.fulfill(status=503, json={"error": "simulated transient"})
+                return
             state["tickets"] = [
                 ticket for ticket in state["tickets"] if ticket["ticket_id"] != "A-90"
             ]
@@ -96,6 +108,46 @@ def exercise(browser, origin, screenshots):
         elif path == "/api/evals/run":
             assert request.method == "POST" and body == {}
             result = {"status": "QUEUED"}
+        elif path == "/api/run":
+            assert request.method == "POST" and body["mode"] in ("live", "replay", "approve")
+            if body["mode"] == "approve":
+                for approval in state["approvals"]:
+                    if approval["id"] == body["approval"]:
+                        approval["status"] = "APPROVED"
+            state["run_id"] = body["run_id"]
+            state["last_run"] = {
+                "status": "NO_EFFECT",
+                "answer": "Mock tickets summarized.",
+                "effects": [],
+                "proposals": [],
+                "controls": [],
+            }
+            result = {"result": state["last_run"]}
+        elif path == "/api/stop":
+            assert request.method == "POST" and isinstance(body["stop"], bool)
+            state["stop_requested"] = body["stop"]
+            result = {"stop_requested": body["stop"]}
+        elif path == "/api/breaker/reset":
+            assert request.method == "POST" and state.get("breaker_open")
+            state["breaker_open"] = False
+            result = {"breaker_open": False}
+        elif path == "/api/reset":
+            assert request.method == "POST" and body == {}
+            state.update(
+                active_stage="v0",
+                stop_requested=False,
+                breaker_open=False,
+                capture_available=False,
+                last_run=None,
+            )
+            state.pop("run_id", None)
+            result = {"reset": True}
+        elif path == "/api/approvals/reject":
+            assert request.method == "POST" and body["id"]
+            for a in state["approvals"]:
+                if a["id"] == body["id"]:
+                    a["status"] = "REJECTED"
+            result = {"approvals": state["approvals"]}
         elif path == "/api/trace":
             if fixture["hold_trace"]:
                 pending.setdefault("trace", []).append(route)
@@ -112,6 +164,19 @@ def exercise(browser, origin, screenshots):
                     }
                 ]
             }
+        elif path.startswith("/api/runs/") and path.endswith("/events"):
+            result = {
+                "events": [
+                    {
+                        "sk": "000#api#run",
+                        "kind": "run.completed",
+                        "node": "agent",
+                        "status": "ok",
+                        "label": "mock completion",
+                        "verdict": "NO_EFFECT",
+                    }
+                ]
+            }
         elif path == "/auth/me":
             result = {
                 "presenter": True,
@@ -122,12 +187,16 @@ def exercise(browser, origin, screenshots):
                 ],
             }
         elif path == "/auth/switch":
-            assert parse_qs(url.query)["u"] == ["bob"]
-            state["persona"] = {"username": "bob", "customer_id": "customer-b"}
+            user = parse_qs(url.query)["u"][0]
+            assert user in ("alice", "bob")
+            state["persona"] = {
+                "username": user,
+                "customer_id": "customer-a" if user == "alice" else "customer-b",
+            }
             state["tickets"] = [
                 {
-                    "ticket_id": "B-77",
-                    "subject": "Billing question",
+                    "ticket_id": "A-41" if user == "alice" else "B-77",
+                    "subject": "Delivery delayed" if user == "alice" else "Billing question",
                     "status": "OPEN",
                     "origin": "seed",
                 }
@@ -152,6 +221,9 @@ def exercise(browser, origin, screenshots):
     expect(page.locator("#custTitle")).to_have_text("Region A tickets (Operator Alice)")
     assert page.evaluate("typeof openCode") == "function"
     assert not errors, errors
+    assert page.evaluate("mode") == "auto"
+    expect(page.locator("#mAuto")).to_have_attribute("aria-pressed", "true")
+    expect(page.locator("#mStep")).to_have_attribute("aria-pressed", "false")
 
     def mutations():
         return [call for call in calls if call[0] != "GET"]
@@ -165,6 +237,103 @@ def exercise(browser, origin, screenshots):
             page.screenshot(
                 path=str(screenshots / name), full_page=page.viewport_size["width"] > 600
             )
+
+    # Auto plays only recorded events. It never starts a run, patch, reset or eval.
+    page.evaluate("RUN = {run_id:'mock-run',events:[]}; STEPS = []; N = 0")
+    page.evaluate("pollOnce()")
+    page.wait_for_function("STEPS.length > 0")
+    page.clock.run_for(1000)
+    assert page.evaluate("N") == 1
+    assert mutations() == []
+    page.locator("#mStep").click()
+    expect(page.locator("#mStep")).to_have_attribute("aria-pressed", "true")
+    page.evaluate("STEPS.push(STEPS[0]); schedule()")
+    page.clock.run_for(1300)
+    assert page.evaluate("N") == 1
+    page.locator("#mAuto").click()
+    page.wait_for_function("N === 2")
+    page.evaluate(
+        "STEPS.push(STEPS[0]); schedule(); cancelPlayback(); RUN = null; STEPS = []; N = 0"
+    )
+    page.clock.run_for(1300)
+    assert page.evaluate("N") == 0 and mutations() == []
+
+    # Historical FILTERED is not green if its recorded ApplyGuardrail action was UNAVAILABLE.
+    state["active_stage"] = "v1"
+    state["last_run"] = {
+        "status": "FILTERED",
+        "controls": [{"control": "Bedrock Guardrails", "status": "UNAVAILABLE · fails closed"}],
+    }
+    refresh()
+    legacy = [
+        {
+            "kind": "guardrail.intervened",
+            "node": "guardrail",
+            "status": "denied",
+            "label": "unreachable · fails closed",
+            "payload": '{"action":"UNAVAILABLE","error":"ValidationException: internal detail withheld"}',
+        },
+        {
+            "kind": "run.completed",
+            "node": "agent",
+            "status": "denied",
+            "verdict": "FILTERED",
+            "label": "old run",
+            "payload": '{"controls":[{"control":"Bedrock Guardrails","status":"UNAVAILABLE · fails closed"}]}',
+        },
+    ]
+    page.evaluate(
+        "evs => { cancelPlayback(); RUN = {run_id:'mock-run',events:evs}; STEPS=toSteps(evs); N=STEPS.length; renderPanel(); }",
+        legacy,
+    )
+    expect(page.locator("#verdict")).to_have_text("DEPENDENCY ERROR")
+    assert "dependency error" in page.evaluate("caption(STEPS[0])[1]")
+    assert "not a detected prompt attack" in page.evaluate("caption(STEPS[1])[1]")
+    page.locator('.node[data-id="guardrail"]').click()
+    expect(page.locator("#drBody")).to_contain_text("recorded Guardrail action")
+    expect(page.locator("#drBody")).to_contain_text("UNAVAILABLE")
+    expect(page.locator("#drBody")).to_contain_text("ValidationException")
+    assert "internal detail withheld" not in page.locator("#drBody").inner_text()
+    page.keyboard.press("Escape")
+    state["active_stage"] = "v5"
+    state["last_run"] = {
+        "status": "UNAVAILABLE",
+        "guardrail_unavailable": True,
+        "controls": [{"control": "Bedrock Guardrails", "status": "UNAVAILABLE · fails closed"}],
+    }
+    refresh()
+    new_events = [
+        {
+            "kind": "guardrail.unavailable",
+            "node": "guardrail",
+            "status": "error",
+            "label": "dependency unavailable",
+            "payload": '{"action":"UNAVAILABLE","guardrailVersion":"DRAFT","client_region":"us-east-1","request_id":"request-12345"}',
+        },
+        {
+            "kind": "run.completed",
+            "node": "agent",
+            "status": "error",
+            "verdict": "UNAVAILABLE",
+            "label": "dependency error",
+        },
+    ]
+    page.evaluate(
+        "evs => { cancelPlayback(); RUN={run_id:'mock-run',events:evs}; STEPS=toSteps(evs); N=STEPS.length; renderPanel(); }",
+        new_events,
+    )
+    expect(page.locator("#verdict")).to_have_text("DEPENDENCY ERROR")
+    assert "a detected prompt attack" in page.evaluate("caption(STEPS[1])[1]")
+    assert "guardrail unavailable" in page.locator("#said").inner_text().lower()
+    page.locator('.node[data-id="guardrail"]').click()
+    expect(page.locator("#drBody")).to_contain_text("request-12345")
+    expect(page.locator("#drBody")).to_contain_text("DRAFT")
+    page.keyboard.press("Escape")
+    state["active_stage"] = "v0"
+    state["last_run"] = None
+    page.evaluate("cancelPlayback(); RUN = null; STEPS=[]; N=0")
+    refresh()
+    assert mutations() == []
 
     # Rendering and background GET refreshes never apply fixes. Each V0-V4 user click does.
     assert mutations() == []
@@ -211,8 +380,8 @@ def exercise(browser, origin, screenshots):
         expect(arch).to_contain_text("not proof that every session was scored")
         expect(arch).to_contain_text("k10 variance study is separate")
         assert page.locator(".ea img").count() == 8
-        assert page.locator(".ea img").evaluate_all(
-            "imgs => imgs.every(i => i.complete && i.naturalWidth > 0)"
+        page.wait_for_function(
+            "[...document.querySelectorAll('.ea img')].every(i => i.complete && i.naturalWidth > 0)"
         )
         screenshot(f"desktop-v5-architecture-{key.lower()}.png")
         if key == "Enter":
@@ -300,6 +469,107 @@ def exercise(browser, origin, screenshots):
     fixture["hold_trace"] = False
     page.keyboard.press("Escape")
 
+    # A prior green V5 is historical only; current safety-green/control-failing rows
+    # never render as an all-green release gate or merge mismatched case revisions.
+    fixture["evals"] = {
+        "v5": {
+            "status": "DONE",
+            "dataset": "2026-10-26.1",
+            "dataset_status": "historical",
+            "suite_id": "old",
+            "gate": {
+                "passed": True,
+                "cases": [{"id": "benign_summary", "safety": "PASS", "passed": 1, "k": 1}],
+            },
+            "cases": [
+                {"id": "benign_summary", "title": "Old summary", "kind": "benign", "samples": []}
+            ],
+        }
+    }
+    page.locator("#evalBtn").click()
+    page.wait_for_function("EVALS?.v5?.suite_id === 'old'")
+    page.evaluate("renderEvals(); renderGate()")
+    expect(page.locator("#drBody")).to_contain_text("historical · not current")
+    expect(page.locator("#gatePill")).to_contain_text("not current")
+    page.keyboard.press("Escape")
+    current_cases = [
+        {
+            "id": c["id"],
+            "title": c["title"],
+            "kind": c["kind"],
+            "samples": [
+                {
+                    "verdict": "NO_EFFECT",
+                    **(
+                        {
+                            "control": {
+                                "family": c["family"],
+                                "status": "FAIL",
+                                "reason": "no Gateway denial",
+                                "tool_outcomes": [],
+                            }
+                        }
+                        if c.get("family")
+                        else {}
+                    ),
+                }
+                for _ in range(c["samples"])
+            ],
+        }
+        for c in DATASET["cases"]
+    ]
+    current_rows = [
+        {
+            "id": c["id"],
+            "safety": "PASS",
+            "passed": c["samples"],
+            "k": c["samples"],
+            **(
+                {"control": "FAIL", "control_passed": 0, "control_reason": "no Gateway denial"}
+                if c.get("family")
+                else {}
+            ),
+        }
+        for c in DATASET["cases"]
+    ]
+    fixture["evals"] = {
+        "v2": fixture["evals"]["v5"],
+        "v5": {
+            "status": "DONE",
+            "dataset": VERSION,
+            "dataset_name": "default",
+            "dataset_status": "current",
+            "suite_id": "new",
+            "gate": {
+                "passed": False,
+                "safety": "PASS",
+                "controls": {"status": "FAIL", "passed": 0, "total": 1},
+                "quality": {"helpfulness_mean": 0.0, "scored": 1, "total": 1, "floor": 0.5},
+                "cases": current_rows,
+            },
+            "cases": current_cases,
+        },
+    }
+    fixture["hold_evals"] = True
+    page.locator("#evalBtn").click()
+    proof = page.evaluate(
+        "rows => { EVALS = rows; renderEvals(); renderGate(); return {body: document.querySelector('#drBody').textContent, pill: document.querySelector('#gatePill').textContent, red: [...document.querySelectorAll('#drBody .c.FAIL')].some(e => e.textContent.includes('control FAIL'))}; }",
+        fixture["evals"],
+    )
+    assert "other revision" in proof["body"] and "control FAIL" in proof["body"]
+    assert proof["red"] and "safety PASS" in proof["pill"]
+    assert "helpfulness 0" in proof["pill"] and "controls FAIL" in proof["pill"]
+    case_cell = page.locator('tr:has-text("Repeated notes") td').last
+    case_cell.hover()
+    assert "Runtime replay / Gateway probe" in case_cell.locator("span[title]").get_attribute(
+        "title"
+    )
+    assert "no Gateway denial" in case_cell.locator("span[title]").get_attribute("title")
+    page.keyboard.press("Escape")
+    fixture["hold_evals"] = False
+    for route in pending.pop("evals", []):
+        route.fulfill(json={"builds": fixture["evals"], "dataset": VERSION})
+
     # The existing eval execution button still requires its own explicit click and confirmation.
     fixture["evals"] = {}
     page.locator("#evalBtn").click()
@@ -383,6 +653,168 @@ def exercise(browser, origin, screenshots):
         "/api/evals/run",
         "/api/tickets/delete",
     ]
+
+    # Every visible architecture node opens its own read-only trace and restores focus.
+    page.keyboard.press("Escape")  # nested Architecture close returns to Evals first
+    expect(page.locator("#drawer")).to_have_attribute("aria-hidden", "true")
+    page.locator("#gearBtn").click()
+    page.locator('#personas a:has-text("alice")').click()
+    expect(page.locator("#custTitle")).to_have_text("Region A tickets (Operator Alice)")
+    before_clicks = len(mutations())
+    state["active_stage"] = "v5"
+    refresh()
+    for node in page.locator(".node:visible").all():
+        label = node.get_attribute("data-id")
+        node.click()
+        expect(page.locator("#drawer")).to_have_attribute("data-from", label)
+        page.locator("#drClose").click()
+        expect(node).to_be_focused()
+    assert len(mutations()) == before_clicks
+    # Stage selector buttons each require a click; merely looking at V0–V5 is read-only.
+    for version in range(6):
+        page.locator(f'#steps [data-stage="v{version}"]').click()
+        expect(page.locator(f'#steps [data-stage="v{version}"]')).to_have_attribute(
+            "aria-current", "true"
+        )
+        assert mutations()[-1] == ("POST", "/api/patch", {"stage": f"v{version}"})
+    # Payload details and keyboard player never invoke a mutating endpoint.
+    page.evaluate(
+        "cancelPlayback(); RUN={run_id:'mock-run',events:[]}; STEPS=[{events:[{kind:'auth.verified',node:'ingress',status:'ok',sk:'long',payload:JSON.stringify({text:'x'.repeat(6000)})}]}]; N=1; renderPanel()"
+    )
+    expect(page.locator("#payloads .x")).to_be_visible()
+    page.locator("#payloads .x").click()
+    expect(page.locator("#payloads .x")).to_have_attribute("aria-expanded", "true")
+    page.locator("#payloads .x").click()
+    expect(page.locator("#payloads .x")).to_have_attribute("aria-expanded", "false")
+    page.locator("#mStep").click()
+    page.evaluate("N=0; renderPanel()")
+    expect(page.locator("#back")).to_be_disabled()
+    page.locator("#next").click()
+    assert page.evaluate("N") == 1
+    expect(page.locator("#next")).to_be_disabled()
+    page.locator("#back").click()
+    assert page.evaluate("N") == 0
+    page.keyboard.press("ArrowRight")  # Back button retains focus; global player arrow still works
+    assert page.evaluate("N") == 1
+    page.keyboard.press("ArrowLeft")  # focus is still Back; does not move the page caret
+    assert page.evaluate("N") == 0
+    page.locator("#next").click()
+    page.keyboard.press("ArrowLeft")  # Next button retains focus too
+    assert page.evaluate("N") == 0
+    page.locator("h1").first.click()
+    page.keyboard.press("ArrowRight")
+    assert page.evaluate("N") == 1
+    page.keyboard.press("ArrowLeft")
+    assert page.evaluate("N") == 0
+    page.locator("#mAuto").click()
+    page.wait_for_function("N === 1")
+    assert len(mutations()) == before_clicks + 6
+    # Operator menu actions: stop/clear and breaker recovery have distinct POSTs.
+    page.locator("#gearBtn").click()
+    page.locator("#mStop").click()
+    expect(page.locator("#stopPill")).to_be_visible()
+    assert mutations()[-1] == ("POST", "/api/stop", {"stop": True})
+    page.locator("#gearBtn").click()
+    page.locator("#mStop").click()
+    expect(page.locator("#stopPill")).to_be_hidden()
+    assert mutations()[-1] == ("POST", "/api/stop", {"stop": False})
+    state["breaker_open"] = True
+    refresh()
+    page.locator("#gearBtn").click()
+    page.locator("#mBreaker").click()
+    expect(page.locator("#breakerPill")).to_be_hidden()
+    assert mutations()[-1] == ("POST", "/api/breaker/reset", {})
+    page.locator("#gearBtn").click()
+    before_reset = len(mutations())
+    page.once("dialog", lambda dialog: dialog.dismiss())
+    page.locator("#mReset").click()
+    assert len(mutations()) == before_reset
+    page.locator("#gearBtn").click()
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator("#mReset").click()
+    expect(page.locator('#steps [data-stage="v0"]')).to_have_attribute("aria-current", "true")
+    assert mutations()[-1] == ("POST", "/api/reset", {})
+    assert page.evaluate("N") == 0  # pending Auto timer cancelled by reset
+    page.locator('#steps [data-stage="v3"]').click()
+    expect(page.locator('[data-ask="A-41"]')).to_be_visible()
+    before_ask = len(mutations())
+    page.locator('[data-ask="A-41"]').click()
+    expect(page.locator('[data-ask="A-41"]')).to_have_attribute("aria-pressed", "true")
+    assert len(mutations()) == before_ask  # asking is not approval or dispatch
+    page.locator("#runBtn").click()
+    page.wait_for_function("polling === null && RUN?.events?.length > 0")
+    live = mutations()[-1]
+    assert live[1] == "/api/run" and live[2]["mode"] == "live"
+    assert live[2]["requests"] == ["A-41"] and not page.evaluate("ASKS.size")
+    state.update(capture_available=True, capture_stale=True, capture_source="v3")
+    refresh()
+    expect(page.locator("#replayBtn")).to_be_disabled()
+    state["capture_stale"] = False
+    refresh()
+    page.locator("#replayBtn").click()
+    page.wait_for_function("polling === null")
+    replay = mutations()[-1]
+    assert replay[1] == "/api/run" and replay[2]["mode"] == "replay"
+    assert "requests" not in replay[2]
+    state["approvals"] = [
+        {
+            "id": "card-approve",
+            "tool": "close_ticket",
+            "ticket_id": "A-41",
+            "status": "PENDING",
+            "reason": "operator requested",
+            "requested_by": "operator",
+        },
+        {
+            "id": "card-reject",
+            "tool": "close_ticket",
+            "ticket_id": "A-41",
+            "status": "PENDING",
+            "reason": "untrusted ticket text",
+            "requested_by": "ticket",
+        },
+    ]
+    page.evaluate("cancelPlayback(); RUN=null; STEPS=[]; N=0")
+    refresh()
+    page.locator('[data-reject="card-reject"]').click()
+    expect(page.locator("#tickets")).to_contain_text("rejected by")
+    assert mutations()[-1] == ("POST", "/api/approvals/reject", {"id": "card-reject"})
+    page.locator('[data-approve="card-approve"]').click()
+    page.wait_for_function("polling === null")
+    assert mutations()[-1][1] == "/api/run" and mutations()[-1][2]["mode"] == "approve"
+    assert mutations()[-1][2]["approval"] == "card-approve"
+    state["tickets"].append(
+        {
+            "ticket_id": "A-90",
+            "subject": "Mock portal ticket",
+            "body": "Ordinary customer request",
+            "status": "OPEN",
+            "origin": "form",
+            "submitted_by": "customer",
+        }
+    )
+    fixture["fail_delete"] = True
+    refresh()
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator('[data-delete="A-90"]').click()
+    expect(page.locator("#toast")).to_contain_text("simulated transient")
+    expect(page.locator('[data-delete="A-90"]')).to_have_count(1)
+    assert mutations()[-1] == ("POST", "/api/tickets/delete", {"ticket_id": "A-90"})
+    fixture["fail_delete"] = False
+    state["busy"] = True
+    refresh()
+    expect(page.locator('[data-delete="A-90"]')).to_be_disabled()
+    state["busy"] = False
+    refresh()
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator('[data-delete="A-90"]').click()
+    expect(page.locator('[data-delete="A-90"]')).to_have_count(0)
+    # External navigation is intentionally blocked in this local mock; inspect destinations,
+    # while the parent owns real portal/login/logout click-through with an authenticated session.
+    page.locator("#gearBtn").click()
+    expect(page.locator('a[href="/portal/"]')).to_have_attribute("target", "sec310_portal")
+    expect(page.locator('a[href="/auth/logout"]')).to_have_count(1)
+    assert errors == [] and unexpected == []
     print(
         "PASS: shipped full-script boot, five click-only fixes, read-only architecture from both triggers,"
     )

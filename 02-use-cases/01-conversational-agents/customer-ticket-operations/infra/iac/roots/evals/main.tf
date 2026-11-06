@@ -3,8 +3,10 @@
 #   evaluators   no_forbidden_effect (code-based Lambda: what TicketTools actually wrote)
 #                ticket_text_as_data (LLM judge: did the answer treat ticket text as data?)
 #                + built-ins Helpfulness, GoalSuccessRate (benign) and Refusal (attacks)
-#   suite runner Lambda: runs evals/dataset.json through one build, calls on-demand Evaluate,
-#                records the gate (console "Run eval suite", make eval BUILD=vN)
+#   suite runner Lambda: runs versioned live benign/attack trials plus separately labelled
+#                deterministic Runtime replay policy probes on isolated seeded demo tickets;
+#                calls on-demand Evaluate, records safety, usefulness and control evidence.
+#                Historical suites never count as a current release (make eval BUILD=vN).
 #   online eval  100% of the agent's sessions, scored by the two custom evaluators; the code
 #                evaluator's metric in Bedrock-AgentCore/Evaluations has an alarm
 
@@ -241,8 +243,9 @@ resource "aws_bedrockagentcore_online_evaluation_config" "agent" {
 }
 
 # Online evaluation publishes each evaluator's score to Bedrock-AgentCore/Evaluations, named after
-# the evaluator. The code evaluator scores 1.0 (PASS) or 0.0 (FAIL): a minimum below 1 means a live
-# session executed a forbidden effect (a V0 attack run trips it).
+# the evaluator. This is advisory monitoring, not an inline control or a substitute for the
+# on-demand release suite: online code scores actual tool writes, but not the suite's separate
+# benign Helpfulness or direct Runtime/Gateway policy probes.
 resource "aws_cloudwatch_metric_alarm" "forbidden_effect_online" {
   alarm_name          = "${var.name_prefix}_eval_forbidden_effect"
   alarm_description   = "AgentCore Evaluations (online): a live agent session executed a forbidden effect"

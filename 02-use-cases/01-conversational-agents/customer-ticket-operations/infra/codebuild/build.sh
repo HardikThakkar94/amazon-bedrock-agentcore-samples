@@ -19,6 +19,9 @@ for fn in functions/*/; do
     # Lambda@Edge has no environment variables: bake the SSM path in at build time
     sed -i "s|__SSM_PATH__|/${PROJECT}/${ENVIRONMENT}/edge/|" "$stage/index.mjs"
   fi
+  if [ "$name" = "api" ]; then
+    cp evals/dataset.json "$stage/"
+  fi
   if [ "$name" = "evals" ]; then
     # the suite runner reuses the API's modules and reads the versioned dataset
     cp functions/api/app.py functions/api/runs.py functions/api/jwt_verify.py evals/dataset.json evals/dataset-k10.json "$stage/"

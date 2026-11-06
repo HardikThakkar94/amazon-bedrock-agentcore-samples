@@ -37,3 +37,13 @@ def test_shipped_console_in_chrome(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PASS: shipped full-script boot" in result.stdout
+    portal = subprocess.run(
+        [python, "tests/portal_browser.py"],
+        cwd=ROOT,
+        env={**os.environ, "UI_SCREENSHOTS": os.environ.get("UI_SCREENSHOTS", str(tmp_path))},
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert portal.returncode == 0, portal.stdout + portal.stderr
+    assert "PASS: shipped portal presets" in portal.stdout

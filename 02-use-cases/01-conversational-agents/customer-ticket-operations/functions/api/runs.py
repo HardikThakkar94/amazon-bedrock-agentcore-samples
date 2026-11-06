@@ -212,6 +212,8 @@ def verdict(agent: dict[str, Any], executed: list[dict[str, Any]]) -> str:
         return "ERROR"  # external write or admission may remain in flight
     if agent.get("refused"):
         return "STOPPED"  # refused at admission: the operator's kill switch
+    if agent.get("guardrail_unavailable"):
+        return "UNAVAILABLE"  # dependency failed; withholding text is not a prompt-attack block
     if agent.get("halted"):
         return "HALTED"  # V4: a denial tripped the circuit breaker and ended the run
     if any(c.get("status") == "READ_ONLY" for c in agent.get("tool_calls", [])):
@@ -251,6 +253,7 @@ def run_result(
         "mode": mode,
         "source": f"AgentCore Runtime · {agent.get('model_id', '')}",
         "status": verdict(agent, executed),
+        "guardrail_unavailable": bool(agent.get("guardrail_unavailable")),
         "answer": agent.get("answer", "") or agent.get("refused", ""),
         "proposals": proposals(calls),
         "links": list(agent.get("links", [])),
@@ -337,6 +340,7 @@ def metrics(result: dict[str, Any], is_test: bool = False) -> dict[str, Any]:
         "Runs": 1,
         "PolicyDenials": sum(1 for c in calls if c.get("decision") == "DENY"),
         "GuardrailBlocks": int(status == "FILTERED"),
+        "GuardrailUnavailable": int(bool(result.get("guardrail_unavailable"))),
         "Halts": int(status == "HALTED"),
         "BreakerTrips": int(status == "HALTED"),
         "ReadOnlyRefusals": sum(1 for c in calls if c.get("status") == "READ_ONLY"),
@@ -347,7 +351,7 @@ def metrics(result: dict[str, Any], is_test: bool = False) -> dict[str, Any]:
             for e in result.get("effects", [])
             if e.get("status") == "EXECUTED" and not e.get("confirmed")
         ),
-        "Errors": int(status == "ERROR"),
+        "Errors": int(status in ("ERROR", "UNAVAILABLE")),
         "EvidenceUncertain": int(bool(result.get("evidence_uncertain"))),
     }
     return {

@@ -219,17 +219,111 @@ def test_v2_exact_screen_limit_releases_only_fully_scored_text():
 def test_v2_screen_block_ends_the_replay_before_any_write():
     FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
     result = replay("v2", screen=screen(Guardrail("GUARDRAIL_INTERVENED")))
-    assert result["blocked"] is True
+    assert result["blocked"] is True and result["guardrail_unavailable"] is False
     assert [n for n, _ in FakeGateway.instances[0].sent] == ["TicketTools___list_tickets"]
     assert {"control": "Bedrock Guardrails", "status": "BLOCKED prompt attack"} in result[
         "controls"
     ]
 
 
+@pytest.mark.parametrize("stage", ["v4", "v5"])
+def test_dependency_validation_error_is_unavailable_not_a_guardrail_block(stage, monkeypatch):
+    from functions.api import runs as api_runs
+    from sec310_agent.events import Events
+
+    observed = []
+    monkeypatch.setattr(Events, "emit", lambda self, kind, *args, **kw: observed.append((kind, kw)))
+    FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
+
+    class ValidationException(Exception):
+        pass
+
+    class InvalidGuardrail(Guardrail):
+        def __init__(self):
+            super().__init__()
+            self.meta = SimpleNamespace(
+                region_name="us-east-1",
+                endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com/?credential=PRIVATE",
+            )
+
+        def apply_guardrail(self, **kw):
+            exc = ValidationException("guardrail identifier or version does not exist PRIVATE")
+            exc.response = {
+                "Error": {"Code": "ValidationException", "Message": "PRIVATE"},
+                "ResponseMetadata": {"RequestId": "request-12345"},
+            }
+            raise exc
+
+    guard = screen(InvalidGuardrail())
+    result = replay(stage, screen=guard, state_table=StateTable({"busy_stage": stage}))
+    adjudicated = api_runs.run_result(stage, result, {}, {}, "replay")
+    assert result["guardrail_unavailable"] is True
+    assert adjudicated["status"] == "UNAVAILABLE"
+    assert api_runs.metrics(adjudicated)["GuardrailBlocks"] == 0
+    assert api_runs.metrics(adjudicated)["GuardrailUnavailable"] == 1
+    kinds = [kind for kind, _ in observed]
+    assert "guardrail.unavailable" in kinds and "guardrail.intervened" not in kinds
+    recorded = next(kw for kind, kw in observed if kind == "guardrail.unavailable")
+    payload = json.loads(recorded["payload"])
+    assert {
+        k: payload[k]
+        for k in (
+            "guardrailVersion",
+            "client_region",
+            "endpoint_host",
+            "request_id",
+            "error_class",
+            "error_code",
+        )
+    } == {
+        "guardrailVersion": "1",
+        "client_region": "us-east-1",
+        "endpoint_host": "bedrock-runtime.us-east-1.amazonaws.com",
+        "request_id": "request-12345",
+        "error_class": "ValidationException",
+        "error_code": "ValidationException",
+    }
+    assert "PRIVATE" not in recorded["payload"]
+    assert [name for name, _ in FakeGateway.instances[0].sent] == ["TicketTools___list_tickets"]
+
+
+def test_missing_or_unknown_apply_guardrail_action_fails_closed():
+    for action in (None, "UNRECOGNIZED"):
+        client = Guardrail(action)
+        guard = screen(client)
+        result, trace = guard.check(TICKETS)
+        assert result == "UNAVAILABLE" and guard.unavailable
+        assert trace["error_class"] == "InvalidGuardrailResponse"
+        assert client.seen == [TICKETS]
+
+
+def test_available_normal_screen_and_real_intervention_are_distinct():
+    from functions.api import runs as api_runs
+
+    FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
+    call = CAPTURE[:1]
+    normal = replay(
+        "v5",
+        calls=call,
+        screen=screen(Guardrail("NONE")),
+        state_table=StateTable({"busy_stage": "v5"}),
+    )
+    assert normal["guardrail_unavailable"] is False
+    assert api_runs.run_result("v5", normal, {}, {}, "replay")["status"] == "NO_EFFECT"
+    intervened = replay(
+        "v5",
+        calls=call,
+        screen=screen(Guardrail("GUARDRAIL_INTERVENED")),
+        state_table=StateTable({"busy_stage": "v5"}),
+    )
+    assert intervened["guardrail_unavailable"] is False
+    assert api_runs.run_result("v5", intervened, {}, {}, "replay")["status"] == "FILTERED"
+
+
 def test_v2_unreachable_guardrail_withholds_text_and_refuses_writes():
     FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
     result = replay("v2", screen=screen(Guardrail(fail=True)))
-    assert result["blocked"] is True
+    assert result["blocked"] is True and result["guardrail_unavailable"] is True
     assert len(FakeGateway.instances[0].sent) == 1
 
 

@@ -74,7 +74,10 @@ def verdict(
 
 
 def run_record(run_id: str) -> tuple[list[dict[str, str]], list[dict] | None, list[str], bool]:
-    """(writes TicketTools made, forbidden effects or None, confirmed tickets, run known)."""
+    """(tool writes, suite rule or online default, confirmations, owned run).
+
+    A case marker without an API admission owner cannot turn zero writes into a pass.
+    """
     items, kwargs = [], {}
     while True:
         page = table().query(
@@ -99,7 +102,12 @@ def run_record(run_id: str) -> tuple[list[dict[str, str]], list[dict] | None, li
     ]
     forbidden = json.loads(case["forbidden_effects"]) if case else None
     confirmed = [str(t) for t in (owner or {}).get("confirmed", [])]
-    return writes, forbidden, confirmed, owner is not None or case is not None
+    return (
+        writes,
+        forbidden,
+        confirmed,
+        owner is not None and (case is None or bool(case.get("case"))),
+    )
 
 
 def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:

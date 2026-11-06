@@ -19,10 +19,12 @@ The operator's kill switch (stop) is separate from the breaker: it refuses every
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 BUILDS = ("v0", "v1", "v2", "v3", "v4", "v5")
 GATEWAY = {"v0": "v0", "v1": "v0", "v2": "v1", "v3": "v3", "v4": "v4", "v5": "v4"}
@@ -63,13 +65,51 @@ class Screen:
             self.client = boto3.client("bedrock-runtime")
         return self.client
 
+    def diagnostic(self, client: Any, exc: Exception | None = None) -> dict[str, Any]:
+        """Safe service metadata only; never log the exception message, request body or auth."""
+        meta = getattr(client, "meta", None)
+        region = getattr(meta, "region_name", "")
+        endpoint = urlsplit(str(getattr(meta, "endpoint_url", ""))).hostname or ""
+        response = getattr(exc, "response", {}) if exc else {}
+        response = response if isinstance(response, dict) else {}
+        service = response.get("Error") or {}
+        metadata = response.get("ResponseMetadata") or {}
+        request_id = metadata.get("RequestId", "")
+        code = service.get("Code", "")
+        klass = type(exc).__name__ if exc else ""
+        return {
+            "guardrailVersion": self.version,
+            "client_region": region
+            if isinstance(region, str) and re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", region)
+            else "unknown",
+            "endpoint_host": endpoint
+            if endpoint.endswith(".amazonaws.com") or endpoint.endswith(".amazonaws.com.cn")
+            else "non-standard/unknown",
+            **(
+                {"request_id": request_id}
+                if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9-]{8,100}", request_id)
+                else {}
+            ),
+            **({"error_class": klass} if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,79}", klass) else {}),
+            **(
+                {"error_code": code}
+                if isinstance(code, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,79}", code)
+                else {}
+            ),
+        }
+
     def check(self, text: str) -> tuple[str, dict[str, Any]]:
         """Only release text screened in full; oversized results are withheld, never truncated."""
+        client = None
         if len(text) > 20000:
             self.unavailable = True
-            return "UNAVAILABLE", {"error": "ticket result exceeds 20000-character screen limit"}
+            return "UNAVAILABLE", {
+                "error_class": "ScreenLimitExceeded",
+                "guardrailVersion": self.version,
+            }
         try:
-            r = self._bedrock().apply_guardrail(
+            client = self._bedrock()
+            r = client.apply_guardrail(
                 guardrailIdentifier=self.guardrail_id,
                 guardrailVersion=self.version,
                 source="INPUT",
@@ -77,13 +117,20 @@ class Screen:
             )
         except Exception as exc:  # noqa: BLE001 - any failure means the text is not cleared
             self.unavailable = True
-            return "UNAVAILABLE", {"error": f"{type(exc).__name__}: {exc}"[:300]}
+            return "UNAVAILABLE", self.diagnostic(client, exc)
         filters = [
             f
             for a in r.get("assessments", [])
             for f in a.get("contentPolicy", {}).get("filters", [])
         ]
-        return r.get("action", "NONE"), {"filters": filters}
+        action = r.get("action")
+        if action not in ("NONE", "GUARDRAIL_INTERVENED"):
+            self.unavailable = True
+            return "UNAVAILABLE", {
+                **self.diagnostic(client),
+                "error_class": "InvalidGuardrailResponse",
+            }
+        return action, {"filters": filters, **self.diagnostic(client)}
 
     def wrap(self, text: str) -> str:
         tag = f"untrusted_tickets_{self.nonce}"

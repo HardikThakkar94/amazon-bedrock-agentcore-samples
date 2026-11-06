@@ -723,6 +723,7 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
             {
                 "CHANGED": "harmful",
                 "ERROR": "error",
+                "UNAVAILABLE": "error",
                 "STOPPED": "halted",
                 "HALTED": "halted",
                 "READ_ONLY": "halted",
@@ -741,7 +742,8 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 "READ_ONLY": "circuit breaker open · write refused",
                 "CONFIRMED": "answer returned · confirmed close done",
                 "BLOCKED": "answer returned · write denied by policy",
-                "FILTERED": "guardrail withheld the ticket text",
+                "FILTERED": "guardrail detected a prompt attack; ticket text withheld",
+                "UNAVAILABLE": "guardrail could not screen text; withheld (dependency error)",
                 "AWAITING_APPROVAL": "answer returned · close held for approval",
             }.get(result["status"], "answer returned to " + who["username"]),
             verdict=result["status"],
@@ -750,6 +752,7 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                     "verdict": result["status"],
                     "answer": result.get("answer", ""),
                     "controls": result.get("controls", []),
+                    "guardrail_unavailable": result.get("guardrail_unavailable", False),
                     "effects (DynamoDB before/after)": result.get("effects", []),
                     **({"error": result["note"]} if result["status"] == "ERROR" else {}),
                 },
@@ -1524,14 +1527,53 @@ def reject_approval(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]
     return {"approvals": items}
 
 
+def current_eval_dataset() -> dict[str, Any]:
+    source_dir = os.path.dirname(__file__)
+    packaged = os.path.join(source_dir, "dataset.json")
+    # Source-tree tests run without the CodeBuild package; Lambda always uses the local copy.
+    path = (
+        packaged
+        if os.path.isfile(packaged)
+        else os.path.join(source_dir, "..", "..", "evals", "dataset.json")
+    )
+    with open(path) as source:
+        return json.load(source)
+
+
+def current_eval_version() -> str:
+    return current_eval_dataset()["version"]
+
+
 def eval_suites(who: dict[str, str]) -> dict[str, Any]:
     """The latest eval suite per build (V0-V5): status, the gate and every case's samples."""
     require(who, "operator")
     out = {}
+    dataset = current_eval_dataset()
+    version = dataset["version"]
+    expected = [(c["id"], c["samples"]) for c in dataset["cases"]]
     for stage in STAGES:
         item = _state.get_item(Key={"customer_id": f"evals#{stage}"}).get("Item")
-        out[stage] = json.loads(item["suite"]) if item else None
-    return {"builds": out}
+        record = json.loads(item["suite"]) if item else None
+        if record:
+            # Do not rewrite legacy rows or present their old green gates as release evidence.
+            complete = (
+                record.get("status") != "DONE"
+                or [(c.get("id"), len(c.get("samples", []))) for c in record.get("cases", [])]
+                == expected
+            )
+            record["dataset_status"] = (
+                "current"
+                if record.get("dataset") == version
+                and record.get(
+                    "source_version", version if record.get("status") == "QUEUED" else ""
+                )
+                == version
+                and record.get("dataset_name") == "default"
+                and complete
+                else "historical"
+            )
+        out[stage] = record
+    return {"builds": out, "dataset": version}
 
 
 def run_eval_suite(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -1555,6 +1597,8 @@ def run_eval_suite(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
                     "suite_id": suite_id,
                     "build": stage,
                     "status": "QUEUED",
+                    "dataset": current_eval_version(),
+                    "dataset_name": "default",
                     "started": int(time.time()),
                 }
             ),

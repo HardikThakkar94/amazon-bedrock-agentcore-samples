@@ -279,8 +279,9 @@ broad v0 Gateway with Guardrails screening of tool output; V2 uses the tenant-fe
 Gateway and keeps Guardrails enabled. V3 uses its own approval engine, while V4/V5 use the
 v4 engine. `customer-a` and `customer-b` are the persisted `customer_id` authorization
 keys, displayed as **Region A** and **Region B**; these are application scopes, not the AWS
-deployment region `us-east-1`. The recorded Cedar policy, Cognito identity, eval inputs
-and portal presets keep their original identifiers and bytes.
+deployment region `us-east-1`. The Cedar policy, Cognito identity and portal presets retain
+their identities; the eval inputs are a separately versioned measured dataset described in
+`evals/SCENARIO_MATRIX.md`. Older suite rows are historical and cannot prove the current gate.
 
 Approval is a safe application-level hold, **not** a native Strands interrupt: the API
 validates and owns a run before recording a confirmation through the Gateway, then
@@ -291,7 +292,9 @@ CloudWatch drawer projects verified run spans and structured Gateway policy deci
 while Auth, Guardrails and some Policy milestones are explicitly app-recorded/inferred,
 not native service audit events. `make eval-k10 BUILD=v5` is an optional 10-trial variance
 study kept outside the console release-gate matrix; it is not a replacement for the
-full V5 release gate. `scripts/console_link.py` is a source-only helper for a separately
+full V5 release gate. Current release requires real successful Guardrails screening, forbidden-
+effect safety, useful benign answers with the existing Helpfulness floor, and direct Runtime/
+Gateway probes; a failed ApplyGuardrail dependency is UNAVAILABLE, never a prompt-attack hit. `scripts/console_link.py` is a source-only helper for a separately
 authorized operator and is never run by this build or its tests against real credentials.
 See `notes/sec310-speaker-notes.md` for the current presenter route.
 

@@ -578,8 +578,13 @@ class Recorder:
             agent = getattr(event, "agent", None)
             if agent is not None:
                 agent.cancel(
-                    message="Blocked: the ticket text was flagged as a prompt attack, so the "
-                    "agent did not act on it.",
+                    message=(
+                        "The guardrail could not screen the ticket text; text withheld and "
+                        "writes refused. This is an unavailable dependency, not a detected attack."
+                        if action == "UNAVAILABLE"
+                        else "Blocked: the ticket text was flagged as a prompt attack, so the "
+                        "agent did not act on it."
+                    ),
                     after_current_tools=True,
                 )
         else:
@@ -592,18 +597,25 @@ class Recorder:
             }.get(action, "NONE · text passed, wrapped in nonce tags"),
         )
         self.emit(
-            "guardrail.intervened" if hit else "guardrail.checked",
+            (
+                "guardrail.unavailable"
+                if action == "UNAVAILABLE"
+                else "guardrail.intervened"
+                if hit
+                else "guardrail.checked"
+            ),
             "guardrail",
-            "denied" if hit else "ok",
+            "error" if action == "UNAVAILABLE" else "denied" if hit else "ok",
             {
                 "GUARDRAIL_INTERVENED": "prompt attack blocked",
-                "UNAVAILABLE": "unreachable · fails closed",
+                "UNAVAILABLE": "dependency unavailable · fails closed",
             }.get(action, "no attack detected · text wrapped as data"),
             edge="runtime>guardrail",
             payload=_payload(
                 {
                     "operation": "bedrock-runtime:ApplyGuardrail",
                     "guardrailIdentifier": self.screen.guardrail_id,
+                    "guardrailVersion": self.screen.version,
                     "source": "INPUT",
                     "action": action,
                     **trace,
@@ -862,6 +874,7 @@ def run(
         "containment_uncertain": bool(breaker and breaker.tripped and not breaker.durable),
         "persistence_error": breaker.persistence_error if breaker else "",
         "blocked": recorder.blocked,
+        "guardrail_unavailable": bool(screen and screen.unavailable),
         "admission_lost": recorder.admission_lost,
     }
 

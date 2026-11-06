@@ -40,12 +40,19 @@ def main() -> int:
     function, table = param("evals/runner_function"), param("app/state_table")
     state = boto3.resource("dynamodb", region_name=a.region).Table(table)
     lam = boto3.client("lambda", region_name=a.region)
+    source = json.loads((ROOT / "evals/dataset.json").read_text())
     if a.dataset == "default":
         suite = run_one(lam, state, function, f"evals#{a.build}", {"build": a.build}, a.timeout)
-        return report(suite) if suite else 2
+        if not suite or not compatible(suite, source):
+            print(f"{PINK}incomplete or historical dataset; no current release evidence{RESET}")
+            return 2
+        return report(suite)
     # k10 is 52 live runs, more than one Lambda invocation allows: one case per invocation,
     # stored apart from the console's matrix, then the same gate over all of them
     study = json.loads((ROOT / "evals/dataset-k10.json").read_text())
+    if study.get("source_version") != source["version"]:
+        print(f"{PINK}k10 source revision does not match default{RESET}")
+        return 2
     cases = study["cases"]
     done = []
     for case in cases:
@@ -55,6 +62,7 @@ def main() -> int:
         if (
             not suite
             or suite.get("dataset") != study["version"]
+            or suite.get("source_version") != source["version"]
             or len(suite.get("cases", [])) != 1
             or suite["cases"][0].get("id") != case["id"]
             or len(suite["cases"][0].get("samples", [])) != case["samples"]
@@ -62,8 +70,26 @@ def main() -> int:
             print(f"{PINK}incomplete or mismatched k10 case: {case['id']}{RESET}")
             return 2
         done += suite["cases"]
-    combined = {"build": a.build, "cases": done, "gate": gate_rules.gate(done)}
+    combined = {
+        "build": a.build,
+        "dataset": study["version"],
+        "cases": done,
+        "gate": gate_rules.gate(done),
+    }
     return report(combined)
+
+
+def compatible(record: dict, dataset: dict) -> bool:
+    """Old/partial rows cannot be promoted by an old green gate or a matching suite ID."""
+    return (
+        record.get("status") == "DONE"
+        and record.get("dataset") == dataset["version"]
+        and record.get("source_version") == dataset["version"]
+        and record.get("dataset_name") == "default"
+        and [(c.get("id"), len(c.get("samples", []))) for c in record.get("cases", [])]
+        == [(c["id"], c["samples"]) for c in dataset["cases"]]
+        and record.get("gate") == gate_rules.gate(record["cases"])
+    )
 
 
 def run_one(lam, state, function: str, key: str, payload: dict, timeout: int) -> dict | None:
@@ -101,17 +127,23 @@ def report(suite: dict) -> int:
     print()
     for case in suite["cases"]:
         r = rows[case["id"]]
-        mark = f"{GREEN}PASS{RESET}" if r["safety"] == "PASS" else f"{PINK}FAIL{RESET}"
+        ok_case = r["safety"] == "PASS" and r.get("control", "PASS") == "PASS"
+        mark = f"{GREEN}PASS{RESET}" if ok_case else f"{PINK}FAIL{RESET}"
         judge = [
             (s.get("scores") or {}).get("ticket_text_as_data", {}).get("label", "-")
             for s in case["samples"]
         ]
         verdicts = ", ".join(s.get("verdict", "?") for s in case["samples"])
         print(
-            f"  {mark}  {case['title']:<46} {r['passed']}/{r['k']}  runs: {verdicts:<24} judge: {'/'.join(judge)}"
+            f"  {mark}  {case['title']:<46} safety {r['passed']}/{r['k']} "
+            f"control {r.get('control', '—')}: {r.get('control_reason', '—')} "
+            f"runs: {verdicts:<24} judge: {'/'.join(judge)}"
         )
     q = gate["quality"]
-    print(f"\n  quality: mean Helpfulness {q['helpfulness_mean']} (floor {q['floor']})")
+    print(
+        f"\n  safety: {gate['safety']}; controls: {gate.get('controls', {}).get('status', 'not evaluated')}"
+    )
+    print(f"  quality: mean Helpfulness {q['helpfulness_mean']} (floor {q['floor']})")
     ok = gate["passed"]
     print(
         f"\n{GREEN if ok else PINK}{suite['build'].upper()} release gate: {'PASS' if ok else 'FAIL'}{RESET}"
