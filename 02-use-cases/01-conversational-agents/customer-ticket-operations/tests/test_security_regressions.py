@@ -961,6 +961,84 @@ def test_approved_close_authoritatively_denied_finishes_without_unknown(api, mon
     assert request(api, "/api/reset")[0] == 200
 
 
+@pytest.mark.parametrize("position", (4, 5))
+def test_invalid_late_target_is_not_dropped_before_api_admission(api, monkeypatch, position):
+    for ticket in ("A-43", "A-44"):
+        api.tables["tickets"].put_item(
+            Item={
+                "customer_id": "customer-a",
+                "ticket_id": ticket,
+                "status": "OPEN",
+                "origin": "seed",
+                "subject": ticket,
+                "body": "Own open seed ticket",
+            }
+        )
+    asked = ["A-41", "A-42", "A-43", "A-44"][: position - 1] + ["B-77"]
+    monkeypatch.setattr(
+        api.app, "invoke_agent", lambda *args: pytest.fail("invalid tail dispatched")
+    )
+    status, _ = request(api, "/api/run", {"requests": asked})
+    assert status == 400
+    assert not api.app.demo_state("customer-a").get("busy_owner")
+    assert api.tables["events"].rows == {}
+
+
+def test_complete_five_target_operator_request_boundary(api, monkeypatch):
+    from copy import deepcopy
+
+    for ticket in ("A-43", "A-44", "A-45"):
+        api.tables["tickets"].put_item(
+            Item={
+                "customer_id": "customer-a",
+                "ticket_id": ticket,
+                "status": "OPEN",
+                "origin": "seed",
+                "subject": ticket,
+                "body": "Own open seed ticket",
+            }
+        )
+    targets = ["A-41", "A-42", "A-43", "A-44", "A-45"]
+    assert api.app.MAX_OPERATOR_REQUESTS == 5
+    called = []
+
+    def invoke(token, run_id, payload):
+        called.append(deepcopy(payload["requests"]))
+        return {"run_id": run_id, "model_id": "offline", "tool_calls": []}
+
+    monkeypatch.setattr(api.app, "invoke_agent", invoke)
+    for size in range(6):
+        body = {"requests": targets[:size]}
+        status, result = request(api, "/api/run", body)
+        assert status == 200 and result["result"]["status"] == "NO_EFFECT"
+        assert called[-1] == targets[:size]
+        assert not api.app.demo_state("customer-a").get("busy_owner")
+    unchanged = deepcopy(api.app.demo_state("customer-a"))
+    invalid = [
+        {"requests": targets + ["A-46"]},
+        {"requests": targets[:3] + ["B-77"]},
+        {"requests": targets[:4] + ["B-77"]},
+        {"requests": targets[:3] + ["A-404"]},
+        {"requests": targets[:3] + [True]},
+        {"requests": targets[:3] + [["A-44"]]},
+        {"requests": targets[:4] + [{"ticket_id": "A-45"}]},
+        {"requests": targets[:4] + ["A-44" * 10]},
+        {"requests": targets[:3] + [""]},
+        {"requests": targets[:3] + ["A-41"]},
+        {"requests": None},
+        {"requests": False},
+        {"requests": "A-41"},
+        {"requests": {"ticket_id": "A-41"}},
+    ]
+    for body in invalid:
+        status, _ = request(api, "/api/run", body)
+        assert status == 400, body
+        assert len(called) == 6
+        assert api.app.demo_state("customer-a") == unchanged
+    status, _ = request(api, "/api/run")  # missing means zero, never an implicit Ask
+    assert status == 200 and called[-1] == []
+
+
 def test_pre_dispatch_invalid_request_and_holds_do_not_create_unknown_effect(api, monkeypatch):
     monkeypatch.setattr(
         api.app, "invoke_agent", lambda *args: pytest.fail("invalid request dispatched")

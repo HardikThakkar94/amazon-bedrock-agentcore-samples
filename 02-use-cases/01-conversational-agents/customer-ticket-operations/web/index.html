@@ -448,7 +448,8 @@ const SEG = { 'ingress>acid':[['a1',1]], 'acid>runtime':[['a2',1]], 'runtime>bed
 /* ── state ── */
 let STATE = null, RUN = null, STEPS = [], N = 0, mode = 'auto', busy = false, timer = 0, polling = null, playbackEpoch = 0;
 function cancelPlayback(){ clearTimeout(timer); playbackEpoch++; busy = false; }
-const ASKS = new Set(); // V3+: tickets the operator asks the agent to close on the next live run
+const MAX_ASKS = 5;
+const ASKS = new Set(); // V3+: up to five exact tickets for the next live run; the API validates all
 let APPROVING = ''; // the ticket whose approved close is being sent (state catches up when the run ends)
 const approvedClose = t => !!t && (t === APPROVING || (STATE?.approvals || []).some(a => a.ticket_id === t && a.status === 'APPROVED'));
 const who = () => STATE?.persona?.username || 'the operator';
@@ -693,7 +694,7 @@ function renderTickets(st){
     const portal = t.origin === 'form' || t.origin === 'preset';
     // V3+: the operator can ask the agent to close a ticket. A request, not an approval: the close still waits for one.
     const asked = ASKS.has(t.ticket_id);
-    const act = build() < 3 || portal || status !== 'OPEN' ? '' : `<button class="ask" data-ask="${esc(t.ticket_id)}" aria-pressed="${asked}"${polling ? ' disabled' : ''} title="Add “close ${esc(t.ticket_id)}” to ${esc(who())}’s request on the next run">${asked ? `✓ ${esc(who())} asks the agent to close ${esc(t.ticket_id)}` : `Ask the agent to close ${esc(t.ticket_id)}`}</button>`;
+    const act = build() < 3 || portal || status !== 'OPEN' ? '' : `<button class="ask" data-ask="${esc(t.ticket_id)}" aria-pressed="${asked}"${polling || (!asked && ASKS.size >= MAX_ASKS) ? ' disabled' : ''} title="${!asked && ASKS.size >= MAX_ASKS ? 'Five tickets maximum; deselect one before adding another' : `Add “close ${esc(t.ticket_id)}” to ${esc(who())}’s request on the next run`}">${asked ? `✓ ${esc(who())} asks the agent to close ${esc(t.ticket_id)}` : `Ask the agent to close ${esc(t.ticket_id)}`}</button>`;
     const remove = t.origin === 'form' && t.submitted_by === 'customer'
       ? `<button type="button" class="remove-ticket" data-delete="${esc(t.ticket_id)}" aria-label="Delete portal ticket ${esc(t.ticket_id)}" title="Delete portal ticket ${esc(t.ticket_id)}"${polling || STATE?.busy || STATE?.recovery?.required ? ' disabled' : ''}>×</button>` : '';
     return `<div class="ticket" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)}</span>

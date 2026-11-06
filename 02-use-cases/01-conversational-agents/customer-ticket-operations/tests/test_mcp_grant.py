@@ -70,9 +70,9 @@ class OpenSSE(Response):
 
 
 class MCPWire:
-    def __init__(self, scenario="ok", sse=False, actor=None, token="test-token"):
+    def __init__(self, scenario="ok", sse=False, actor=None, token="test-token", target="A-41"):
         self.scenario, self.sse, self.sent = scenario, sse, []
-        self.actor, self.token = actor or ACTOR, token
+        self.actor, self.token, self.target = actor or ACTOR, token, target
 
     def open(self, request, timeout):
         assert 0 < timeout <= 30
@@ -112,7 +112,7 @@ class MCPWire:
             elif method == "tools/call":
                 assert message["params"] == {
                     "name": TOOL,
-                    "arguments": {**ARGS, "actor": self.actor},
+                    "arguments": {**ARGS, "actor": self.actor, "ticket_id": self.target},
                 }
                 if self.scenario == "timeout":
                     raise TimeoutError("lost external response")
@@ -125,7 +125,7 @@ class MCPWire:
                                 {
                                     "status": "CONFIRMED",
                                     "customer_id": "customer-a",
-                                    "ticket_id": "A-41",
+                                    "ticket_id": self.target,
                                     "confirmed_by": self.actor,
                                 }
                             ),

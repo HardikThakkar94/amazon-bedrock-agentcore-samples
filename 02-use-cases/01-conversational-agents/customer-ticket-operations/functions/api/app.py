@@ -26,6 +26,7 @@ from jwt_verify import InvalidToken, verify
 TICKETS = os.environ["TICKETS_TABLE"]
 STATE = os.environ["STATE_TABLE"]
 MAX_SUBJECT, MAX_BODY = 120, 2000
+MAX_OPERATOR_REQUESTS = 5  # must match the Runtime's bounded native-close task contract
 AGENT_TIMEOUT = 50  # seconds; CloudFront waits up to 60 for the API origin
 
 _ddb = boto3.resource("dynamodb")
@@ -304,12 +305,19 @@ def pending_approval(st: dict[str, Any], approval_id: str) -> dict[str, Any]:
 def operator_requests(who: dict[str, str], body: dict[str, Any]) -> tuple[str, ...]:
     """Tickets the operator asks the agent to close (the console's toggles): open, their own
     tenant's, never a portal ticket. A request makes the model propose; it approves nothing."""
-    asked = [str(t)[:16] for t in (body.get("requests") or [])][:3]
-    own = {t["ticket_id"]: t for t in tickets_for(who["customer_id"])}
+    asked = body.get("requests", [])
+    if (
+        not isinstance(asked, list)
+        or len(asked) > MAX_OPERATOR_REQUESTS
+        or any(not isinstance(t, str) or not 1 <= len(t) <= 16 for t in asked)
+        or len(asked) != len(set(asked))
+    ):
+        raise HttpError(400, "requests must contain at most five distinct ticket IDs")
+    own = {t["ticket_id"]: t for t in tickets_for(who["customer_id"])} if asked else {}
     for ticket_id in asked:
         t = own.get(ticket_id)
         if t is None or t.get("status") != "OPEN" or t.get("origin") != "seed":
-            raise HttpError(400, f"{ticket_id} is not an open ticket the operator can ask about")
+            raise HttpError(400, "requested ticket is not an open own-region seed ticket")
     return tuple(asked)
 
 
@@ -621,7 +629,8 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
         raise HttpError(409, "approval or build changed before admission")
     if kind == "live" and v3 and not stopped:
         try:
-            operator_requests(who, body)  # the ticket may have changed before admission
+            if operator_requests(who, body) != requests:  # recheck the complete bounded task
+                raise HttpError(409, "operator close request changed before admission")
         except Exception:
             release_run(who["customer_id"], session_id)
             raise

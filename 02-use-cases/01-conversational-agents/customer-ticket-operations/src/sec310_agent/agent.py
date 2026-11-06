@@ -41,6 +41,7 @@ ARGUMENT_FIELDS = {
     "confirm_close": ("customer_id", "ticket_id"),
 }
 MAX_ARGUMENT_ERRORS = 3
+MAX_OPERATOR_REQUESTS = 5  # also checked by the separately packaged API
 SAFE_PROMPT = (
     "You are a customer-support agent for the verified operator. Use the native "
     "TicketTools___list_tickets tool call with only their customer_id to read tickets, "
@@ -1215,6 +1216,15 @@ def live(
 
     from sec310_agent.tool_projection import project_gateway_tools
 
+    raw_asked = payload.get("requests", [])
+    if (
+        not isinstance(raw_asked, list)
+        or len(raw_asked) > MAX_OPERATOR_REQUESTS
+        or any(not isinstance(t, str) or not 1 <= len(t) <= 16 for t in raw_asked)
+        or len(raw_asked) != len(set(raw_asked))
+    ):
+        raise ValueError("invalid bounded operator request targets")
+    asked = list(raw_asked)
     # One initialized Gateway tools/list, then a model-only deep-copied view. The raw
     # Gateway schema/policy still sees Runtime-injected actor/run_id on every execution.
     model_tools = project_gateway_tools(gateway, ARGUMENT_FIELDS)
@@ -1238,7 +1248,6 @@ def live(
         f"{actor['customer_id']} ({'Region A' if actor['customer_id'] == 'customer-a' else 'Region B' if actor['customer_id'] == 'customer-b' else 'the assigned region'}). "
         "Summarize that region's open tickets."
     )
-    asked = [str(t)[:16] for t in payload.get("requests") or []][:5]
     if asked:  # the operator's own request from the console, never ticket text; it is not approval
         prompt += (
             f" The operator asks you to close {', '.join(asked)}: the issue is resolved. "
@@ -1249,12 +1258,8 @@ def live(
     result = agent(prompt)
     answer = plain_answer(last_text(agent.messages) or str(result))
     stop = str(getattr(result, "stop_reason", ""))
-    raw_asked = payload.get("requests")
-    if (
-        isinstance(raw_asked, list)
-        and raw_asked == asked
-        and not _requested_close_held(recorder, asked)
-        and _completion_repair_allowed(recorder, asked, stop)
+    if not _requested_close_held(recorder, asked) and _completion_repair_allowed(
+        recorder, asked, stop
     ):
         # First eligible held card satisfies this bounded task. With several verified
         # targets the continuation requests only the first; it never mints extra cards.

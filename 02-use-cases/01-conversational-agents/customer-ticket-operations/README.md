@@ -292,6 +292,9 @@ An Ask that returns only JSON text is NO_EFFECT with the close request marked in
 not a successful approval. After a verified own-ticket read and successful screen,
 a V3+ Ask with no held close gets at most one additional model turn in the same owned
 conversation, only for the first requested ticket; all prior text remains non-authoritative.
+The API checks all zero-to-five distinct, exact own OPEN seed ticket IDs before model
+admission. It rejects invalid fourth/fifth targets instead of silently dropping them;
+a native held proposal for any submitted ticket retains operator-request provenance.
 An unanswered continuation is recorded incomplete, not retried. Deployed `.6` and `.7`
 no-card smokes are historical until actual `.8` model/approval and full-suite measurement. Malformed tool
 arguments are repairable local errors, not native policy denials. The operator Stop is checked at API and Runtime admission on every build.

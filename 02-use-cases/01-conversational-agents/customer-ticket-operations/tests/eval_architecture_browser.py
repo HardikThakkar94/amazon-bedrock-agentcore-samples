@@ -349,6 +349,31 @@ def exercise(browser, origin, screenshots):
     expect(page.locator("#drBody")).to_contain_text("ValidationException")
     assert "internal detail withheld" not in page.locator("#drBody").inner_text()
     page.keyboard.press("Escape")
+    # Five selected seed tickets remain exact and in order; a sixth is disabled, while
+    # deselecting a selected one always remains possible. No run/model POST occurs.
+    previous_tickets = copy.deepcopy(state["tickets"])
+    state["active_stage"] = "v3"
+    state["tickets"] += [
+        {
+            "customer_id": "customer-a",
+            "ticket_id": t,
+            "subject": t,
+            "status": "OPEN",
+            "origin": "seed",
+        }
+        for t in ("A-42", "A-43", "A-44", "A-45", "A-46")
+    ]
+    refresh()
+    for t in ("A-41", "A-42", "A-43", "A-44", "A-45"):
+        page.locator(f'[data-ask="{t}"]').click()
+    assert page.evaluate("[...ASKS]") == ["A-41", "A-42", "A-43", "A-44", "A-45"]
+    expect(page.locator('[data-ask="A-46"]')).to_be_disabled()
+    page.locator('[data-ask="A-41"]').click()
+    expect(page.locator('[data-ask="A-46"]')).to_be_enabled()
+    page.locator('[data-ask="A-46"]').click()
+    assert page.evaluate("[...ASKS]") == ["A-42", "A-43", "A-44", "A-45", "A-46"]
+    page.evaluate("ASKS.clear(); renderPanel()")
+    state["tickets"] = previous_tickets
     # A trusted Ask that returned function JSON as text is incomplete, not a held close.
     state["active_stage"] = "v3"
     state["approvals"] = []

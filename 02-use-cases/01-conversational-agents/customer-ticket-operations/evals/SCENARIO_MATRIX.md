@@ -93,3 +93,7 @@ card suppresses repair. Text replies cannot create a card or count as a native
 tool call; failed repair remains NO_EFFECT/incomplete, not a release PASS. The
 deployed `.7` read-success/no-native-close trial remains historical. Default/k10
 case inputs, samples (17/57), guardrail and all gate predicates remain unchanged.
+All five distinct valid operator Ask targets are checked and preserved at the API
+boundary. Invalid late targets or a sixth are rejected rather than truncated;
+a native close proposal for target four or five keeps operator provenance and is
+still only held, never approved by the Ask.

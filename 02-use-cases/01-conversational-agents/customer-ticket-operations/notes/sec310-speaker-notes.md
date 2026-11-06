@@ -26,7 +26,10 @@ answers after a successful native own-ticket read and Guardrail screen instead,
 Runtime may offer one corrective model turn in that same owned conversation after
 rechecking durable admission. Only the first verified requested ticket is named;
 no pending card, uncertain effect, missing ownership or exhausted model budget
-can be repaired. The corrective message is not approval and no text is translated
+can be repaired. The API validates and preserves up to five distinct operator-selected
+own OPEN seed ticket IDs without dropping the fourth or fifth; a late-target native
+proposal is operator-requested but still only held. More than five or any invalid
+member is rejected before Runtime/model dispatch. The corrective message is not approval and no text is translated
 into tool calls. On a plausible same-region close, V3 holds the agent's native
 tool proposal in the before-tool hook. The app persists a unique approval card including exact origin/run/ticket and policy session. It does **not** currently pause and resume Strands natively. Rejecting a card is a durable operator decision; no Gateway confirmation is granted. Approving validates the card and claims exclusion **before** recording `confirm_close` with the real operator's token; it then initializes a standard MCP transport session, checks the exact tool schema and
 bound response, and dispatches the exact captured call once. An MCP transport session is

@@ -374,6 +374,42 @@ def test_valid_native_foreign_customer_stays_foreign_and_policy_denies(client, m
     assert not result["blocked"] and "B-77" not in result["answer"]
 
 
+@pytest.mark.parametrize(
+    "requests",
+    (
+        ["A-41", "A-42", "A-43", "A-44", "A-45", "A-46"],
+        ["A-41", "A-42", "A-43", True],
+        ["A-41", "A-42", "A-43", {"ticket_id": "A-44"}],
+        ["A-41", "A-42", "A-43", "A-44" * 10],
+        ["A-41", "A-41"],
+        "A-41",
+        None,
+    ),
+)
+def test_runtime_refuses_noncanonical_request_shape_before_gateway_or_model(client, requests):
+    with pytest.raises(ValueError, match="bounded operator request targets"):
+        runtime.run(
+            {
+                "run_id": "owned-run",
+                "stage": "v3",
+                "mode": "live",
+                "policy_session": "policy-1",
+                "operator": "alice",
+                "requests": requests,
+            },
+            "local",
+            "https://gateway.invalid",
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            "owned-run",
+            screen=Guardrail(),
+            state_table=State("v3"),
+        )
+    assert client.requests == []
+    assert len(Gateway.instances) == 1
+    assert Gateway.instances[0].starts == Gateway.instances[0].lists == 0
+    assert Gateway.instances[0].sent == []
+
+
 def test_default_v0_model_still_uses_native_read_with_projected_schema(client):
     from functions.api import runs
 
@@ -521,6 +557,33 @@ def test_no_ask_and_unrelated_pending_card_never_add_repair_model_turn(client):
     assert held["tool_calls"][1]["status"] == "PENDING_APPROVAL"
     assert held["tool_calls"][1]["input"]["ticket_id"] == "A-42"
     assert [c["tool"] for c in held["tool_calls"]] == ["list_tickets", "close_ticket"]
+
+
+def test_runtime_preserves_all_five_valid_asks_and_repairs_first_only(client):
+    client.text_after_read = client.repair_close = True
+    asked = ["A-41", "A-42", "A-43", "A-44", "A-45"]
+    result = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": asked,
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=State("v3"),
+    )
+    assert runtime.MAX_OPERATOR_REQUESTS == len(asked)
+    assert all(t in client.requests[0]["messages"][0]["content"][0]["text"] for t in asked)
+    assert len(client.requests) == 3 and result["completion_repair_used"]
+    corrective = client.requests[2]["messages"][-1]["content"][0]["text"]
+    assert "A-41" in corrective and all(t not in corrective for t in asked[1:])
+    assert [c["status"] for c in result["tool_calls"]] == ["OK", "PENDING_APPROVAL"]
 
 
 def test_inflight_stop_does_not_cancel_already_admitted_completion_turn(client):

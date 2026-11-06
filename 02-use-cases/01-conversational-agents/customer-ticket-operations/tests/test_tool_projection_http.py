@@ -116,7 +116,7 @@ class Handler(BaseHTTPRequestHandler):
             assert args["actor"] == ACTOR and args["customer_id"] == "customer-a"
             assert args["run_id"] == self.server.expected_run
             if name == "TicketTools___close_ticket":
-                assert args["ticket_id"] == "A-41"
+                assert args["ticket_id"] == self.server.expected_ticket
                 assert self.server.admission_state is not None
                 assert self.server.admission_state.get_item(
                     Key={"customer_id": "customer-a"}, ConsistentRead=True
@@ -160,6 +160,7 @@ def local_mcp(monkeypatch):
     server.received = []
     server.raw_tools = copy.deepcopy(RAW)
     server.auth_token, server.expected_run, server.admission_state = "local", "owned-run", None
+    server.expected_ticket = "A-41"
     server.expected_policy_session = None
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -536,6 +537,175 @@ def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact
         if item.get("run_id") == run_id and item.get("kind") == "store.write"
     ]
     assert len(writes) == 1 and writes[0]["effect"]["ticket_id"] == "A-41"
+    state = api.app.demo_state("customer-a")
+    assert api.app.current_approvals(state)[0]["status"] == "APPROVED"
+    assert state["policy_session"] != "policy-1" and not state.get("busy_owner")
+
+
+@pytest.mark.parametrize("bad", ("B-77", True, {"ticket_id": "A-44"}, ["A-44"], "A-44" * 10))
+def test_invalid_fourth_target_is_refused_before_runtime_mcp_or_model(
+    api, local_mcp, monkeypatch, bad
+):
+    import strands.models.bedrock as bedrock_module
+
+    from tests.test_security_regressions import request
+
+    api.tables["tickets"].put_item(
+        Item={
+            "customer_id": "customer-a",
+            "ticket_id": "A-43",
+            "status": "OPEN",
+            "origin": "seed",
+            "subject": "A-43",
+            "body": "Own",
+        }
+    )
+    model = Bedrock()
+    session = SimpleNamespace(region_name="us-east-1", client=lambda **kw: model)
+    monkeypatch.setattr(bedrock_module.boto3, "Session", lambda: session)
+    url, server, _, _ = local_mcp
+    monkeypatch.setattr(
+        api.app,
+        "invoke_agent",
+        lambda token, run_id, payload: runtime.run(
+            payload,
+            token,
+            url,
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            run_id,
+            screen=Guardrail(),
+            state_table=api.tables["state"],
+        ),
+    )
+    status, _ = request(api, "/api/run", {"requests": ["A-41", "A-42", "A-43", bad]})
+    assert status == 400
+    assert server.received == [] and model.requests == []
+    assert not api.app.demo_state("customer-a").get("busy_owner")
+    assert not api.app.current_approvals(api.app.demo_state("customer-a"))
+    assert api.tables["events"].rows == {}
+    assert all(row["status"] == "OPEN" for row in api.tables["tickets"].rows.values())
+
+
+@pytest.mark.parametrize("target", ("A-44", "A-45"))
+def test_five_verified_api_targets_keep_late_card_provenance_and_one_approved_effect(
+    api, local_mcp, monkeypatch, target
+):
+    import strands.models.bedrock as bedrock_module
+
+    from sec310_agent.events import Events as RuntimeEvents
+    from tests.test_mcp_grant import MCPWire
+    from tests.test_security_regressions import request
+
+    for ticket in ("A-43", "A-44", "A-45"):
+        api.tables["tickets"].put_item(
+            Item={
+                "customer_id": "customer-a",
+                "ticket_id": ticket,
+                "status": "OPEN",
+                "origin": "seed",
+                "subject": ticket,
+                "body": "Own test ticket",
+            }
+        )
+    asked = ["A-41", "A-42", "A-43", "A-44", "A-45"]
+    monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
+    model = Bedrock()
+    model.request_close, model.close_target = True, target
+    session = SimpleNamespace(region_name="us-east-1", client=lambda **kw: model)
+    monkeypatch.setattr(bedrock_module.boto3, "Session", lambda: session)
+    monkeypatch.setattr(
+        runtime,
+        "claims_of",
+        lambda token: {"sub": ACTOR["user_sub"], "customer_id": "customer-a", "role": "operator"},
+    )
+    url, server, _, _ = local_mcp
+    server.auth_token = "offline"
+    server.expected_policy_session = "policy-1"
+    server.expected_ticket = target
+    server.admission_state = api.tables["state"]
+    monkeypatch.setattr(tools, "_table", api.tables["tickets"])
+    monkeypatch.setattr(tools, "_events", api.tables["events"])
+    payloads = []
+
+    def invoke(token, run_id, payload):
+        server.expected_run = run_id
+        payloads.append(dict(payload))
+        return runtime.run(
+            payload,
+            token,
+            url,
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            run_id,
+            screen=Guardrail() if payload["mode"] == "live" else None,
+            state_table=api.tables["state"],
+        )
+
+    monkeypatch.setattr(api.app, "invoke_agent", invoke)
+    status, out = request(api, "/api/run", {"requests": asked})
+    held = out["result"]
+    assert status == 200 and held["status"] == "AWAITING_APPROVAL"
+    assert payloads[0]["requests"] == asked
+    auth = next(
+        e
+        for e in api.tables["events"].rows.values()
+        if e.get("run_id") == held["run_id"] and e.get("kind") == "auth.verified"
+    )
+    assert json.loads(auth["payload"])["request"]["operator asks the agent to close"] == asked
+    assert all(t in model.requests[0]["messages"][0]["content"][0]["text"] for t in asked)
+    assert len(model.requests) == 3 and not held["completion_repair_used"]
+    assert [c["status"] for c in held["tool_calls"]] == ["OK", "PENDING_APPROVAL"]
+    assert held["tool_calls"][1]["input"] == {
+        "customer_id": "customer-a",
+        "ticket_id": target,
+        "reason": "operator says resolved",
+        "actor": ACTOR,
+        "run_id": held["run_id"],
+    }
+    assert "other pending cards are separate" not in held["note"]
+    assert held["effects"][0]["status"] == "HELD_FOR_APPROVAL"
+    cards = api.app.current_approvals(api.app.demo_state("customer-a"))
+    assert len(cards) == 1 and cards[0]["requested_by"] == "operator"
+    assert cards[0]["ticket_id"] == target and cards[0]["customer_id"] == "customer-a"
+    assert cards[0]["reason"] == "operator says resolved" and cards[0]["run_id"] == held["run_id"]
+    assert all(api.tables["tickets"].rows[("customer-a", t)]["status"] == "OPEN" for t in asked)
+    assert [row["params"]["name"] for name, row, _ in server.received if name == "tools/call"] == [
+        "TicketTools___list_tickets"
+    ]
+
+    wire = MCPWire("real_tools", actor=ACTOR, token="offline", target=target)
+    monkeypatch.setattr(
+        api.app, "agent_param", lambda key, default: json.dumps({"v3": "https://gateway.invalid"})
+    )
+    monkeypatch.setattr(api.app.mcp_grant.urllib.request, "build_opener", lambda *a: wire)
+    approved_status, approved = request(
+        api, "/api/run", {"mode": "approve", "approval": cards[0]["id"]}
+    )
+    assert approved_status == 200 and approved["result"]["status"] == "CONFIRMED"
+    assert [m["method"] for m, _ in wire.sent] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "tools/call",
+    ]
+    assert [row["params"]["name"] for name, row, _ in server.received if name == "tools/call"] == [
+        "TicketTools___list_tickets",
+        "TicketTools___close_ticket",
+    ]
+    assert len(model.requests) == 3  # approval never invokes a model
+    assert approved["result"]["effects"][0]["target"] == target
+    assert approved["result"]["effects"][0]["confirmed"] is True
+    assert api.tables["tickets"].rows[("customer-a", target)]["status"] == "CLOSED"
+    assert all(
+        api.tables["tickets"].rows[("customer-a", t)]["status"] == "OPEN"
+        for t in asked
+        if t != target
+    )
+    writes = [
+        e
+        for e in api.tables["events"].rows.values()
+        if e.get("run_id") == approved["result"]["run_id"] and e.get("kind") == "store.write"
+    ]
+    assert len(writes) == 1 and writes[0]["effect"]["ticket_id"] == target
     state = api.app.demo_state("customer-a")
     assert api.app.current_approvals(state)[0]["status"] == "APPROVED"
     assert state["policy_session"] != "policy-1" and not state.get("busy_owner")
