@@ -305,7 +305,11 @@ scoped Events-table UpdateItem permission permits its post-grant owner receipt;
 unknown outcomes still retire/fence the policy session. Fresh sign-in may replay only
 a tenant-owned recorded run verified by the event owner, never mint approval authority.
 On an authoritative tenant/run invalidation, open run-trace drawers and pending
-CloudWatch replies are discarded; static Evals/architecture controls remain separate. Malformed tool
+CloudWatch replies are discarded; static Evals/architecture controls remain separate.
+Successful approval rotates the policy session: the old drawer is cleared, but the
+newly completed approval run stays playable only when the API's new recorded_run
+proves that exact run ID and tenant. Missing event ingestion gets one bounded owned
+read, not a stale/foreign trace or a repeated model/approval call. Malformed tool
 arguments are repairable local errors, not native policy denials. The operator Stop is checked at API and Runtime admission on every build.
 Stop is admission-only: an already-admitted run can finish; its pill is not evidence of
 cancellation or quiescence. Future runs refuse until cleared, without bypassing an owner/

@@ -110,3 +110,6 @@ establish release evidence. Dataset case/gate/sample bytes remain unchanged.
 The browser closes/clears an open recorded-hop drawer when its tenant or event-owner
 proof changes, and ignores delayed CloudWatch success/error replies from that drawer;
 static Evals controls remain read-only and independent of run trace authority.
+On a completed approved close, retiring the old policy session never erases the
+new owner-proven approval run; only that new run's recorded events may remain
+playable or receive a single post-ingestion hydration request.

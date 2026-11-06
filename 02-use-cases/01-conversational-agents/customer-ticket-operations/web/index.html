@@ -833,11 +833,25 @@ async function refresh(loadRun = true){
   const previous = STATE;
   STATE = state;
   STATE.model_label = (STATE.model.match(/llama4-maverick/) ? 'Llama 4 Maverick' : (STATE.model.split('·')[1] || 'model').trim());
-  if(previous && (previous.persona?.customer_id !== STATE.persona?.customer_id ||
-      previous.policy_session !== STATE.policy_session ||
-      (!polling && RUN?.run_id === previous.recorded_run?.run_id && RUN?.run_id !== STATE.recorded_run?.run_id))){
-    invalidateRunDrawer();
-    cancelPlayback(); RUN = null; STEPS = []; N = 0; traceError = '';
+  const tenantChanged = previous && previous.persona?.customer_id !== STATE.persona?.customer_id;
+  const sessionChanged = previous && previous.policy_session !== STATE.policy_session;
+  const oldRunLost = previous && !polling && RUN?.run_id === previous.recorded_run?.run_id && RUN?.run_id !== STATE.recorded_run?.run_id;
+  let newOwnedRun = false, hydratedNewRun = false;
+  if(tenantChanged || sessionChanged || oldRunLost){
+    invalidateRunDrawer(); // close/fence the old drawer even when a new approved run is owned
+    newOwnedRun = !tenantChanged && sessionChanged && !polling && RUN?.run_id &&
+      RUN.run_id !== previous.recorded_run?.run_id && RUN.run_id === STATE.recorded_run?.run_id &&
+      RUN.run_id === STATE.last_run?.run_id && /^v[0-5]$/.test(STATE.recorded_run?.stage);
+    if(newOwnedRun){ RUN.stage = STATE.recorded_run.stage; traceError = ''; }
+    else { cancelPlayback(); RUN = null; STEPS = []; N = 0; traceError = ''; }
+  }
+  if(newOwnedRun && !RUN.events.some(e => e.kind === 'run.completed')){
+    const id = RUN.run_id;
+    let events = null;
+    try { const r = await api(`/api/runs/${id}/events`); if(r.run_id === id && Array.isArray(r.events)) events = r.events; } catch(_) {}
+    if(epoch !== viewEpoch || STATE !== state || RUN?.run_id !== id || polling) return;
+    if(events){ RUN.events = events; STEPS = toSteps(events); N = Math.min(N, STEPS.length); hydratedNewRun = true; }
+    else traceError = 'New owned recorded trace unavailable; reload to inspect.';
   }
   if(loadRun && !polling){
     const record = STATE.recorded_run, id = record?.run_id;
@@ -859,6 +873,7 @@ async function refresh(loadRun = true){
     }
   }
   renderChrome(); renderPanel();
+  if(hydratedNewRun && mode === 'auto') schedule();
   if(build() === 5 && (!EVALS || !loadEvals.at || Date.now() - loadEvals.at > 15000)){ loadEvals.at = Date.now(); loadEvals(); } else renderGate();
 }
 
