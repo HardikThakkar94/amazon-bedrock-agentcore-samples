@@ -309,7 +309,10 @@ CloudWatch replies are discarded; static Evals/architecture controls remain sepa
 Successful approval rotates the policy session: the old drawer is cleared, but the
 newly completed approval run stays playable only when the API's new recorded_run
 proves that exact run ID and tenant. Missing event ingestion gets one bounded owned
-read, not a stale/foreign trace or a repeated model/approval call. Malformed tool
+read, not a stale/foreign trace or a repeated model/approval call.
+The one owned approval-events read is protected from periodic state polling while
+pending; authoritative tenant/proof/Run/Reset/stage changes still cancel it. Empty,
+denied or malformed results remain explicitly unavailable without repeated reads. Malformed tool
 arguments are repairable local errors, not native policy denials. The operator Stop is checked at API and Runtime admission on every build.
 Stop is admission-only: an already-admitted run can finish; its pill is not evidence of
 cancellation or quiescence. Future runs refuse until cleared, without bypassing an owner/

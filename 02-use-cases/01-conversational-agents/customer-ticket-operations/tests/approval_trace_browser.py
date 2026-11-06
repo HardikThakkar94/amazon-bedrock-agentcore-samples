@@ -29,7 +29,15 @@ class Quiet(SimpleHTTPRequestHandler):
 
 
 def main():
-    late_events = "--late-events" in sys.argv
+    late_events = "--late-events" in sys.argv or "--hold-full" in sys.argv
+    hold_full = "--hold-full" in sys.argv
+    case = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--case=")), "success")
+    invalidation = next(
+        (arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--invalidate=")), ""
+    )
+    late_reply = next(
+        (arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--reply=")), "success"
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Quiet, directory=str(ROOT / "web")))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -69,6 +77,7 @@ def main():
         "recorded_run": {"run_id": HELD, "stage": "v3"},
     }
     new = {"id": "", "events": [], "late": False}
+    pending_full = []
     requests, blocked, errors, trace_queries, event_queries = [], [], [], [], []
     try:
         with sync_playwright() as playwright:
@@ -99,6 +108,9 @@ def main():
                     route.fulfill(json={"run_id": HELD, "events": TRACE["events"]})
                 elif req.method == "GET" and path == f"/api/runs/{new['id']}/events" and new["id"]:
                     event_queries.append(parsed.query)
+                    if hold_full and new["late"] and not parsed.query:
+                        pending_full.append(route)
+                        return
                     # Polls may precede event ingestion; after a successful POST the
                     # owner-proven full GET provides the one bounded hydration attempt.
                     rows = (
@@ -238,6 +250,135 @@ def main():
             expect(page.locator("#drBody")).to_be_empty()
             if late_events:
                 page.clock.run_for(5000)
+            if hold_full:
+                page.wait_for_function(
+                    "RUN?.run_id === STATE?.recorded_run?.run_id && RUN.events.length === 0"
+                )
+                page.wait_for_timeout(150)
+                assert len(pending_full) == 1 and event_queries.count("") == 1
+                before_tick = page.evaluate("viewEpoch")
+                page.clock.run_for(10000)  # crosses the ordinary 8-second periodic refresh
+                assert page.evaluate("viewEpoch") == before_tick
+                assert page.evaluate("traceLoading") > 0
+                assert len(pending_full) == 1 and event_queries.count("") == 1
+                full = pending_full.pop()
+                if invalidation:
+                    stale_id, stale_events = new["id"], list(new["events"])
+                    if invalidation == "bob":
+                        state.update(
+                            persona={
+                                "username": "bob",
+                                "customer_id": "customer-b",
+                                "role": "operator",
+                            },
+                            recorded_run=None,
+                            last_run=None,
+                        )
+                        page.evaluate("refresh(false)")
+                    elif invalidation == "proof":
+                        state.update(recorded_run=None, last_run=None)
+                        page.evaluate("refresh(false)")
+                    elif invalidation == "reset":
+                        page.once("dialog", lambda dialog: dialog.accept())
+                        page.evaluate("() => { resetDemo(); }")
+                        page.wait_for_function("STATE?.active_stage === 'v0' && RUN === null")
+                    elif invalidation == "stage":
+                        page.evaluate("() => { patch('v4'); }")
+                        page.wait_for_function("STATE?.active_stage === 'v4' && RUN === null")
+                    elif invalidation == "new_run":
+                        page.evaluate("() => { runAgent('live'); }")
+                        page.wait_for_function(
+                            "RUN?.run_id === STATE?.recorded_run?.run_id && RUN?.events?.length === 2"
+                        )
+                        assert new["id"] != stale_id
+                    else:
+                        raise AssertionError("unexpected invalidation case")
+                    assert page.evaluate("traceLoading") == 0
+                    if late_reply == "error":
+                        full.fulfill(status=503, json={"error": "stale prior-owner response"})
+                    else:
+                        full.fulfill(json={"run_id": stale_id, "events": stale_events})
+                    page.wait_for_timeout(150)
+                    if invalidation == "new_run":
+                        assert page.evaluate("RUN.run_id") == new["id"] != stale_id
+                        assert page.evaluate("RUN.events.length") == 2
+                    else:
+                        assert page.evaluate("RUN") is None and page.evaluate("STEPS.length") == 0
+                        assert state["recorded_run"] is None
+                    assert event_queries.count("") == 1 and not blocked and not errors
+                    if invalidation != "new_run":
+                        # The next signed-in operator state supplies a different exact
+                        # owner-proven run; no old trace or client-side id fallback is used.
+                        fresh_id = "01a1b318-6781-7197-b31c-19e40c8c2715"
+                        assert fresh_id != stale_id
+                        new["id"] = fresh_id
+                        new["late"] = False
+                        new["events"] = [
+                            {
+                                "sk": "001#api#fresh",
+                                "node": "ingress",
+                                "source": "api",
+                                "kind": "auth.verified",
+                                "status": "ok",
+                                "label": "newly authorized own trace",
+                            }
+                        ]
+                        state.update(
+                            persona={
+                                "username": "alice",
+                                "customer_id": "customer-a",
+                                "role": "operator",
+                            },
+                            policy_session="new-own-session",
+                            active_stage="v3",
+                            recorded_run={"run_id": fresh_id, "stage": "v3"},
+                            last_run={"run_id": fresh_id, "stage": "v3", "status": "NO_EFFECT"},
+                        )
+                        page.reload(wait_until="domcontentloaded")
+                        page.wait_for_function(
+                            "RUN?.run_id === '" + fresh_id + "' && RUN.events.length === 1"
+                        )
+                        page.locator('.node[data-id="ingress"]').click()
+                        expect(page.locator("#drBody")).to_contain_text(
+                            "newly authorized own trace"
+                        )
+                        expect(page.locator("#drBody")).not_to_contain_text(
+                            "alice approved this new run"
+                        )
+                    context.close()
+                    browser.close()
+                    print(
+                        "PASS: stale new-owner full trace reply ignored across authoritative invalidation"
+                    )
+                    return
+                if case == "success":
+                    full.fulfill(json={"run_id": new["id"], "events": new["events"]})
+                elif case == "empty":
+                    full.fulfill(json={"run_id": new["id"], "events": []})
+                elif case == "wrong_id":
+                    full.fulfill(json={"run_id": HELD, "events": new["events"]})
+                elif case == "malformed":
+                    full.fulfill(json={"run_id": new["id"], "events": "not a list"})
+                else:
+                    full.fulfill(status=int(case), json={"error": "prior owner trace unavailable"})
+                if case != "success":
+                    page.wait_for_function("traceLoading === 0 && !!traceError")
+                    assert (
+                        page.evaluate("RUN?.run_id") == new["id"]
+                        and page.evaluate("STEPS.length") == 0
+                    )
+                    expected = "No recorded events" if case == "empty" else "trace unavailable"
+                    expect(page.locator("#capx")).to_contain_text(expected)
+                    page.clock.run_for(10000)
+                    assert event_queries.count("") == 1
+                    assert [m for m, path in requests if path == "/api/run"] == ["POST"]
+                    assert not blocked and not errors
+                    context.close()
+                    browser.close()
+                    print(
+                        "PASS: one owned full trace GET returns explicit empty/error without retry or borrowed authority"
+                    )
+                    return
             page.wait_for_function(
                 "RUN?.run_id === STATE?.recorded_run?.run_id && RUN?.events?.length === 3",
                 timeout=8000,

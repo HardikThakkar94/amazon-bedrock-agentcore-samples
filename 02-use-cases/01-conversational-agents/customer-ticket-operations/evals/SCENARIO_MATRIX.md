@@ -112,4 +112,6 @@ proof changes, and ignores delayed CloudWatch success/error replies from that dr
 static Evals controls remain read-only and independent of run trace authority.
 On a completed approved close, retiring the old policy session never erases the
 new owner-proven approval run; only that new run's recorded events may remain
-playable or receive a single post-ingestion hydration request.
+playable or receive a single post-ingestion hydration request. An ordinary
+periodic /api/state poll cannot cancel that one in-flight owned read; a new
+Run, tenant, proof loss, Reset or stage change still invalidates its reply.
