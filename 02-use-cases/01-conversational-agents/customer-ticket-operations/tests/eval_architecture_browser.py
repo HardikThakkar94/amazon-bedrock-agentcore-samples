@@ -165,7 +165,11 @@ def exercise(browser, origin, screenshots):
             if fixture["hold_trace"]:
                 pending.setdefault("trace", []).append(route)
                 return
-            result = {"run_id": "mock-run", "region": "mock-region", "sources": []}
+            result = {
+                "run_id": parse_qs(url.query).get("run", [""])[0],
+                "region": "mock-region",
+                "sources": [],
+            }
         elif path == "/api/runs/mock-run/events":
             result = {
                 "events": [
@@ -641,7 +645,11 @@ def exercise(browser, origin, screenshots):
     page.keyboard.press("Escape")
     assert len(mutations()) == mutation_count
 
-    # CloudWatch's actual drawer still renders, and a late response cannot overwrite the diagram.
+    # CloudWatch's actual drawer still renders for a currently owned recorded run;
+    # an unmatched local mock id is never a CloudWatch read authority.
+    page.evaluate(
+        "id => { RUN={run_id:id,stage:'v5',events:[]}; STEPS=[]; N=0; renderPanel(); }", OWNED_RUN
+    )
     page.locator('.node[data-id="cw"]').click()
     expect(page.locator("#drBody")).to_contain_text("AWS records can arrive later")
     expect(page.locator("#drBody")).to_contain_text("Policy (agent inference)")

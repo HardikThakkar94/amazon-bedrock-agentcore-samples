@@ -54,9 +54,16 @@ def main():
             "effects": [],
         },
         "recorded_run": {"run_id": RUN_ID, "stage": "v3"},
+        "policy_session": "policy-1",
         "observability": {"sec310_run": RUN_ID},
     }
-    flags = {"events_status": 200, "hold_events": False, "pending": []}
+    flags = {
+        "events_status": 200,
+        "hold_events": False,
+        "pending": [],
+        "hold_trace": False,
+        "pending_trace": [],
+    }
     requests, blocked, js_errors = [], [], []
     try:
         with sync_playwright() as playwright:
@@ -94,7 +101,10 @@ def main():
                     else:
                         route.fulfill(json={"run_id": RUN_ID, "events": TRACE["events"]})
                 elif path == "/api/trace":
-                    route.fulfill(json={"run_id": RUN_ID, "region": "us-east-1", "sources": []})
+                    if flags["hold_trace"]:
+                        flags["pending_trace"].append(route)
+                    else:
+                        route.fulfill(json={"run_id": RUN_ID, "region": "us-east-1", "sources": []})
                 elif path == "/api/evals":
                     route.fulfill(json={"builds": {}, "dataset": "2026-11-05.9"})
                 elif path == "/auth/me":
@@ -165,6 +175,9 @@ def main():
             page.wait_for_function("STATE.active_stage === 'v5'")
             assert page.evaluate("build()") == 5 and page.evaluate("traceBuild()") == 3
             expect(page.locator("#nextFix")).to_have_text("Evaluations architecture")
+            page.locator('.node[data-id="ingress"]').click()
+            expect(page.locator("#drBody")).to_contain_text("alice signed in")
+            expect(page.locator("#drawer")).to_have_attribute("aria-hidden", "false")
             state.update(
                 persona={"username": "bob", "customer_id": "customer-b", "role": "operator"},
                 recorded_run=None,
@@ -174,7 +187,149 @@ def main():
             page.evaluate("refresh(false)")
             page.wait_for_function("STATE.persona.username === 'bob'")
             assert page.evaluate("RUN") is None and page.evaluate("STEPS.length") == 0
+            expect(page.locator("#drawer")).to_have_attribute("aria-hidden", "true")
+            expect(page.locator("#drBody")).to_be_empty()
+            expect(page.locator('.node[data-id="ingress"]')).to_be_focused()
+            page.locator('.node[data-id="ingress"]').click()
+            expect(page.locator("#drBody")).not_to_contain_text("alice")
+            page.keyboard.press("Escape")
             assert sum(path.endswith("/events") for _, path in requests) == 2
+
+            state.update(
+                persona={"username": "alice", "customer_id": "customer-a", "role": "operator"},
+                recorded_run={"run_id": RUN_ID, "stage": "v3"},
+                last_run={"run_id": RUN_ID, "stage": "v3", "status": "AWAITING_APPROVAL"},
+                active_stage="v3",
+            )
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_function("RUN?.run_id === '" + RUN_ID + "' && RUN.events.length === 19")
+            page.locator('.node[data-id="ingress"]').click()
+            state["policy_session"] = "retired-session"
+            page.evaluate("refresh(false)")
+            expect(page.locator("#drawer")).to_have_attribute("aria-hidden", "true")
+            expect(page.locator("#drBody")).to_be_empty()
+            assert page.evaluate("RUN") is None
+            state["policy_session"] = "policy-1"
+
+            # Every other run-correlated hop shares the same invalidation; restoring
+            # Alice is a new authenticated state load, not a localStorage replay.
+            other_hops = (
+                "acid",
+                "agent",
+                "bedrock",
+                "guardrail",
+                "gateway",
+                "policy",
+                "lambda",
+                "ddb",
+            )
+            for hop in other_hops:
+                state.update(
+                    persona={"username": "alice", "customer_id": "customer-a", "role": "operator"},
+                    recorded_run={"run_id": RUN_ID, "stage": "v3"},
+                    last_run={"run_id": RUN_ID, "stage": "v3", "status": "AWAITING_APPROVAL"},
+                    active_stage="v3",
+                )
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_function(
+                    "RUN?.run_id === '" + RUN_ID + "' && RUN.events.length === 19"
+                )
+                page.locator(f'.node[data-id="{hop}"]').click()
+                expect(page.locator("#drawer")).to_have_attribute("data-run-trace", "1")
+                before_switch = sum(path.endswith("/events") for _, path in requests)
+                state.update(
+                    persona={"username": "bob", "customer_id": "customer-b", "role": "operator"},
+                    recorded_run=None,
+                    last_run=None,
+                    active_stage="v0",
+                )
+                page.evaluate("refresh(false)")
+                expect(page.locator("#drawer")).to_have_attribute("aria-hidden", "true")
+                expect(page.locator("#drBody")).to_be_empty()
+                expect(
+                    page.locator(
+                        "#runBtn" if hop in ("guardrail", "policy") else f'.node[data-id="{hop}"]'
+                    )
+                ).to_be_focused()
+                assert page.evaluate("RUN") is None
+                assert sum(path.endswith("/events") for _, path in requests) == before_switch
+
+            # Static Evals is not a run-correlated drawer: a persona change preserves
+            # its normal Close/Escape/focus behavior while clearing the backing trace.
+            state.update(
+                persona={"username": "alice", "customer_id": "customer-a", "role": "operator"},
+                recorded_run={"run_id": RUN_ID, "stage": "v3"},
+                last_run={"run_id": RUN_ID, "stage": "v3", "status": "AWAITING_APPROVAL"},
+                active_stage="v3",
+            )
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_function("RUN?.run_id === '" + RUN_ID + "' && RUN.events.length === 19")
+            page.locator("#evalBtn").click()
+            expect(page.locator("#drawer")).to_have_attribute("data-from", "evals")
+            state.update(
+                persona={"username": "bob", "customer_id": "customer-b", "role": "operator"},
+                recorded_run=None,
+                last_run=None,
+                active_stage="v0",
+            )
+            page.evaluate("refresh(false)")
+            expect(page.locator("#drawer")).to_have_attribute("data-from", "evals")
+            expect(page.locator("#drTitle")).to_contain_text("Evaluations")
+            expect(page.locator("#drBody")).to_contain_text("Current dataset")
+            assert page.evaluate("RUN") is None
+            page.keyboard.press("Escape")
+            expect(page.locator("#evalBtn")).to_be_focused()
+
+            # A delayed owned CloudWatch response (success OR error) cannot fill a
+            # newly opened Bob drawer after authoritative tenant invalidation.
+            for outcome in ("success", "error"):
+                flags["hold_trace"] = True
+                state.update(
+                    persona={"username": "alice", "customer_id": "customer-a", "role": "operator"},
+                    recorded_run={"run_id": RUN_ID, "stage": "v3"},
+                    last_run={"run_id": RUN_ID, "stage": "v3", "status": "AWAITING_APPROVAL"},
+                    active_stage="v3",
+                )
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_function(
+                    "RUN?.run_id === '" + RUN_ID + "' && RUN.events.length === 19"
+                )
+                page.locator('.node[data-id="cw"]').click()
+                page.wait_for_timeout(150)
+                assert len(flags["pending_trace"]) == 1
+                assert sum(path == "/api/trace" for _, path in requests) == (
+                    2 if outcome == "success" else 3
+                )
+                state.update(
+                    persona={"username": "bob", "customer_id": "customer-b", "role": "operator"},
+                    recorded_run=None,
+                    last_run=None,
+                    active_stage="v0",
+                )
+                page.evaluate("refresh(false)")
+                expect(page.locator("#drawer")).to_have_attribute("aria-hidden", "true")
+                expect(page.locator("#drBody")).to_be_empty()
+                assert page.evaluate("RUN") is None
+                page.locator('.node[data-id="cw"]').click()
+                expect(page.locator("#drBody")).not_to_contain_text("alice")
+                if outcome == "success":
+                    flags["pending_trace"].pop().fulfill(
+                        json={"run_id": RUN_ID, "region": "us-east-1", "sources": []}
+                    )
+                else:
+                    flags["pending_trace"].pop().fulfill(
+                        status=503, json={"error": "old Alice query failed"}
+                    )
+                page.wait_for_timeout(150)
+                expect(page.locator("#drBody")).not_to_contain_text("alice")
+                expect(page.locator("#drBody")).not_to_contain_text("AWS records can arrive later")
+                assert sum(path == "/api/trace" for _, path in requests) == (
+                    2 if outcome == "success" else 3
+                )
+                page.keyboard.press("Escape")
+                flags["hold_trace"] = False
+            events_after_cloud = sum(path.endswith("/events") for _, path in requests)
+            assert events_after_cloud == 3 + len(other_hops) + 1 + 2
 
             state.update(
                 persona={"username": "alice", "customer_id": "customer-a", "role": "operator"},
@@ -186,7 +341,7 @@ def main():
             page.wait_for_function("STATE?.persona?.username === 'alice'")
             assert page.evaluate("RUN") is None
             expect(page.locator("#count")).to_have_text("0 / 0")
-            assert sum(path.endswith("/events") for _, path in requests) == 2
+            assert sum(path.endswith("/events") for _, path in requests) == events_after_cloud
             flags["events_status"] = 404
             state["recorded_run"] = {"run_id": RUN_ID, "stage": "v3"}
             state["last_run"] = {"run_id": RUN_ID, "stage": "v3", "status": "AWAITING_APPROVAL"}
@@ -196,9 +351,9 @@ def main():
                 "document.querySelector('#capx').textContent.includes('unavailable')"
             )
             assert page.evaluate("RUN") is None
-            assert sum(path.endswith("/events") for _, path in requests) == 3
+            assert sum(path.endswith("/events") for _, path in requests) == events_after_cloud + 1
             page.clock.run_for(10000)
-            assert sum(path.endswith("/events") for _, path in requests) == 3
+            assert sum(path.endswith("/events") for _, path in requests) == events_after_cloud + 1
 
             # An older trace GET cannot overwrite a newer Run or Reset view.
             flags["events_status"], flags["hold_events"] = 200, True

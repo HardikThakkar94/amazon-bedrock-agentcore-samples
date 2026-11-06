@@ -446,7 +446,7 @@ const SEG = { 'ingress>acid':[['a1',1]], 'acid>runtime':[['a2',1]], 'runtime>bed
   'gateway>lambda':[['a4',1],['a5',1]], 'lambda>ddb':[['a6',1]], 'runtime>guardrail':[['g1',1]] };
 
 /* ── state ── */
-let STATE = null, RUN = null, STEPS = [], N = 0, mode = 'auto', busy = false, timer = 0, polling = null, playbackEpoch = 0, viewEpoch = 0, traceLoading = 0, traceError = '';
+let STATE = null, RUN = null, STEPS = [], N = 0, mode = 'auto', busy = false, timer = 0, polling = null, playbackEpoch = 0, viewEpoch = 0, traceLoading = 0, drawerEpoch = 0, traceError = '';
 function cancelPlayback(){ clearTimeout(timer); playbackEpoch++; busy = false; }
 const MAX_ASKS = 5;
 const ASKS = new Set(); // V3+: up to five exact tickets for the next live run; the API validates all
@@ -834,7 +834,9 @@ async function refresh(loadRun = true){
   STATE = state;
   STATE.model_label = (STATE.model.match(/llama4-maverick/) ? 'Llama 4 Maverick' : (STATE.model.split('·')[1] || 'model').trim());
   if(previous && (previous.persona?.customer_id !== STATE.persona?.customer_id ||
+      previous.policy_session !== STATE.policy_session ||
       (!polling && RUN?.run_id === previous.recorded_run?.run_id && RUN?.run_id !== STATE.recorded_run?.run_id))){
+    invalidateRunDrawer();
     cancelPlayback(); RUN = null; STEPS = []; N = 0; traceError = '';
   }
   if(loadRun && !polling){
@@ -846,10 +848,12 @@ async function refresh(loadRun = true){
       try { const r = await api(`/api/runs/${id}/events`); if(r.run_id === id && Array.isArray(r.events)) events = r.events; } catch(_) {}
       if(traceLoading === epoch) traceLoading = 0;
       if(epoch !== viewEpoch || polling || STATE !== state) return;
+      if(!events) invalidateRunDrawer();
       cancelPlayback(); RUN = events ? {run_id:id, stage:record.stage, events} : null;
       STEPS = events ? toSteps(events) : []; N = STEPS.length;
       traceError = events ? (events.length ? '' : 'No recorded events for this run yet.') : 'Recorded trace unavailable or not authorized.';
     } else if(!record || STATE.last_run){
+      invalidateRunDrawer();
       cancelPlayback(); RUN = null; STEPS = []; N = 0;
       traceError = STATE.last_run ? 'Recorded trace unavailable or expired.' : '';
     }
@@ -863,12 +867,14 @@ const HOPS = {ingress:['ingress'], acid:['acid'], agent:['agent','runtime'], bed
 panel.querySelectorAll('.node').forEach(el => el.addEventListener('click', () => openTrace(el.dataset.id)));
 function openTrace(id){
   if(polling) return; // keep the live view in sight while a run is in flight
+  const opening = ++drawerEpoch;
   const keys = HOPS[id], evs = (RUN?.events || []).filter(e => keys.includes(e.node) || (e.edge && e.edge.split('>').some(x => keys.includes(x))));
   $('#drTitle').textContent = 'Trace · ' + nodeEl(id).querySelector('.t').textContent;
   const policy = id === 'policy' ? `<div class="ev"><div class="k">Policy reachability · app-recorded</div><p>${esc(policyReach(RUN?.events || [], traceBuild()))}</p></div>` : '';
   $('#drBody').innerHTML = policy + (evs.map(e => `<div class="ev"><div class="k">${esc(e.kind)} · ${esc(e.source)}</div><pre>${esc(JSON.stringify({edge:e.edge, status:e.status, label:e.label, ...(e.kind.startsWith('guardrail.') ? {'recorded Guardrail action': recordedGuardrailAction(e) || 'unknown', 'safe service metadata': recordedGuardrailMeta(e)} : {}), tool:e.tool, effect:e.effect, detail:e.detail}, null, 2))}</pre></div>`).join('') || '<p class="empty">No events for this hop yet.</p>');
-  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; $('#drClose').focus();
-  if(id === 'cw' && RUN) cloudTrace(RUN.run_id);
+  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; d.dataset.runTrace = '1'; $('#drClose').focus();
+  if(id === 'cw' && RUN && STATE?.recorded_run?.run_id === RUN.run_id) cloudTrace(RUN.run_id, opening);
+  else if(id === 'cw' && RUN) $('#drBody').innerHTML = '<p class="empty">Owned recorded trace is no longer available.</p>';
 }
 // AWS service data is allowlisted by the API; application run events below are a distinct
 // source, not native Cognito, Identity, Guardrails or Policy service logs.
@@ -908,11 +914,15 @@ function cloudSource(src){
     + (['done','partial'].includes(src.status) ? (src.matched > 0 && !src.records.length
       ? '<p class="empty">Records matched, but none had safe projected fields.</p>' : traceTable(src.records, cols)) : '') + '</div>';
 }
-async function cloudTrace(run){
-  const body = $('#drBody');
+async function cloudTrace(run, opening = drawerEpoch){
+  const body = $('#drBody'), tenant = STATE?.persona?.customer_id, session = STATE?.policy_session;
+  const current = () => opening === drawerEpoch && $('#drawer').dataset.from === 'cw' &&
+    $('#drawer').dataset.runTrace === '1' && RUN?.run_id === run && STATE?.recorded_run?.run_id === run &&
+    STATE?.persona?.customer_id === tenant && STATE?.policy_session === session;
+  if(!current()) return;
   body.innerHTML = '<p class="empty">Querying CloudWatch Logs Insights for this run…</p>';
-  let t; try { t = await api(`/api/trace?run=${encodeURIComponent(run)}`); } catch(e){ if($('#drawer').dataset.from === 'cw') body.innerHTML = `<p class="empty">CloudWatch query unavailable: ${esc(e.message)}</p>`; return; }
-  if($('#drawer').dataset.from !== 'cw' || RUN?.run_id !== run) return;
+  let t; try { t = await api(`/api/trace?run=${encodeURIComponent(run)}`); } catch(e){ if(current()) body.innerHTML = `<p class="empty">CloudWatch query unavailable: ${esc(e.message)}</p>`; return; }
+  if(!current() || t?.run_id !== run || !Array.isArray(t.sources)) return;
   const sources = Object.fromEntries(t.sources.map(src => [src.key, src]));
   body.innerHTML = `<p class="empty">Run ${esc(t.run_id)} · ${esc(t.region || 'AWS region unknown')}. AWS records can arrive later. No log bodies, token claims or ticket text are shown.</p>`
     + appTracePanel('Authentication / Identity', 'API and agent-recorded authorization milestones; not native Cognito or Identity audit logs.', ['auth.verified','identity.validated'])
@@ -926,7 +936,19 @@ async function cloudTrace(run){
     + appTracePanel('Policy (agent inference)', 'Agent infers these decisions from Gateway replies; Gateway policy fields above are AWS application logs.', ['policy.decision']);
 }
 
-function closeTrace(){ const d = $('#drawer'); if(!d.classList.contains('open')) return; d.classList.remove('open'); d.inert = true; d.setAttribute('aria-hidden', 'true'); (d.dataset.from === 'evalarch' ? $(evalArchTrigger === 'nextFix' ? '#nextFix' : '#evalBtn') : d.dataset.from === 'evals' ? $('#evalBtn') : nodeEl(d.dataset.from))?.focus(); d.dataset.from = ''; }
+function closeTrace(){
+  const d = $('#drawer'); if(!d.classList.contains('open')) return;
+  if(d.dataset.runTrace === '1') { drawerEpoch++; $('#drBody').replaceChildren(); $('#drTitle').textContent = ''; }
+  d.classList.remove('open'); d.inert = true; d.setAttribute('aria-hidden', 'true');
+  (d.dataset.from === 'evalarch' ? $(evalArchTrigger === 'nextFix' ? '#nextFix' : '#evalBtn') : d.dataset.from === 'evals' ? $('#evalBtn') : nodeEl(d.dataset.from))?.focus();
+  d.dataset.from = ''; d.dataset.runTrace = '';
+}
+function invalidateRunDrawer(){
+  const d = $('#drawer'); if(d.dataset.runTrace !== '1') return;
+  const hop = d.dataset.from;
+  closeTrace();
+  if((hop === 'guardrail' && build() < 1) || (hop === 'policy' && build() < 2)) $('#runBtn').focus();
+}
 
 /* ── operator actions ── */
 async function deleteTicket(ticketId){
@@ -940,11 +962,11 @@ async function deleteTicket(ticketId){
   } catch(e){ toast(e.message, true); await refresh(false).catch(() => {}); }
 }
 async function resetDemo(){ if(polling) return; if(!confirm('Reset to a clean V0? Portal tickets are removed and seed tickets reopened.')) return;
-  viewEpoch++; traceLoading = 0;
+  viewEpoch++; traceLoading = 0; invalidateRunDrawer();
   try { await api('/api/reset', {}); cancelPlayback(); RUN = null; STEPS = []; N = 0; traceError = ''; await refresh(false); toast('Demo reset to a clean V0.'); } catch(e){ toast(e.message, true); } }
 async function patch(stage){
   if(polling) return;
-  viewEpoch++; traceLoading = 0;
+  viewEpoch++; traceLoading = 0; invalidateRunDrawer();
   ASKS.clear();
   try { const r = await api('/api/patch', stage ? {stage} : {}); cancelPlayback(); RUN = null; STEPS = []; N = 0; await refresh(false); toast(`${r.active_stage.toUpperCase()} · ${r.title}. Effects reopened; run or replay.`); }
   catch(e){ toast(e.message, true); }
@@ -958,7 +980,7 @@ async function openCode(){
     + (c.policies.length ? `<h4>AgentCore Policy · ${esc(c.policy_engine || '')}</h4>` + c.policies.map(p => `<pre>// ${esc(p.name)} (${esc(p.status)})
 ${esc(p.statement)}</pre>`).join('') : `<h4>AgentCore Policy</h4><pre>no policy engine on this build's gateway</pre>`)
     + (hooks ? `<h4>Agent hooks · sec310_agent/controls.py</h4><pre>${esc(hooks)}</pre>` : '') + `</div>`;
-  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'agent'; $('#drClose').focus();
+  const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'agent'; $('#drClose').focus();
 }
 async function rejectApproval(id){
   if(polling) return;
@@ -1086,7 +1108,7 @@ function openEvalArch(trigger){
     <div class="eae"><span class="sx ok">reports</span><b>Refusal · GoalSuccessRate</b><span>On-demand builtins only: attacks / benign cases respectively. Advisory, not release gates.</span></div>
   </div>
   <div class="eav"><b>Evidence and scope</b><p class="ea-note">Only absent evaluator results fall back to a labelled DynamoDB diff; an evaluator ERROR or disagreement fails. Replay controls use actual Runtime/Gateway/tool outcomes, not empty write diffs. Old datasets are historical, not a current PASS. Run errors or uncertain evidence fail safety. Ingestion delays mean configured online sampling is not proof that every session was scored.</p><p class="ea-note">The optional k10 variance study is separate from the default release suite, its per-build matrix and release metrics. This diagram shows configuration, not a current PASS or alarm state.</p></div>`;
-  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evalarch'; $('#drBody').scrollTop = 0; $('#drClose').focus();
+  const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evalarch'; $('#drBody').scrollTop = 0; $('#drClose').focus();
 }
 // The nested Architecture link returns to the cached matrix, without fetching or running it.
 function dismissTrace(){
@@ -1100,7 +1122,7 @@ function dismissTrace(){
 }
 async function openEvals(){
   $('#drTitle').textContent = 'Evaluations · release gate per build';
-  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evals'; $('#drClose').focus();
+  const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evals'; $('#drClose').focus();
   $('#drBody').innerHTML = '<p class="empty">Loading eval suites…</p>';
   await loadEvals(); renderEvals(); pollEvals();
 }

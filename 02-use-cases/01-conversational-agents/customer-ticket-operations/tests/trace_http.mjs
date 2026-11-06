@@ -8,10 +8,11 @@ const html = fs.readFileSync('web/index.html', 'utf8');
 const esc = html.match(/const esc = .*?;\n/)[0];
 const policy = html.split('const POLICY_TEXT = ')[1].split('/* ── edges')[0];
 const drawer = html.split('const TRACE_COLS = ')[1].split('\nfunction closeTrace()')[0];
-const body = {innerHTML: ''}, panel = {dataset: {from: 'cw'}};
+const body = {innerHTML: ''}, panel = {dataset: {from: 'cw', runTrace: '1'}};
 const ctx = vm.createContext({
   $: selector => selector === '#drBody' ? body : panel,
-  RUN: {run_id: run, events: []}, build: () => 5, traceBuild: () => 5,
+  RUN: {run_id: run, events: []}, STATE: {persona:{customer_id:'customer-a'}, policy_session:'policy-1', recorded_run:{run_id:run}}, drawerEpoch:1,
+  build: () => 5, traceBuild: () => 5,
   api: async path => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`);
     assert.equal(response.status, 200);

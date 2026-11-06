@@ -107,3 +107,6 @@ The actual deployed `.8` V3 native card/Reject passed but Approve returned 502
 after Gateway confirm succeeded; no real close followed. No `.8` suite was launched.
 Only parent-owned deployment, native approval and full current `.9` suites may
 establish release evidence. Dataset case/gate/sample bytes remain unchanged.
+The browser closes/clears an open recorded-hop drawer when its tenant or event-owner
+proof changes, and ignores delayed CloudWatch success/error replies from that drawer;
+static Evals controls remain read-only and independent of run trace authority.
