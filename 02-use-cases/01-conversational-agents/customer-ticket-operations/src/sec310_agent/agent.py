@@ -31,8 +31,8 @@ WRITE_TOOLS = ("close_ticket", "add_note")
 # V3+: consequential tools the agent may only propose. The harness holds each call for the
 # operator, and AgentCore Policy at the Gateway refuses it unless that approval was recorded.
 APPROVE_TOOLS = ("close_ticket",)
-# confirm_close is the operator console's tool; listed to the agent, but AgentCore Policy (V3+)
-# forbids it on any call that carries the runtime's run_id, so the agent can never confirm.
+# confirm_close is the operator console's Gateway tool; excluded from the model's projected
+# ToolConfig. Gateway Policy (V3+) also denies any runtime call carrying run_id.
 GATEWAY_TOOLS = ("list_tickets", "confirm_close", *WRITE_TOOLS)
 ARGUMENT_FIELDS = {
     "list_tickets": ("customer_id",),
@@ -153,6 +153,36 @@ CLOSED = re.compile(r'status"?\s*[:=]\s*"?CLOSED')
 FROM_PORTAL = re.compile(r'origin"?\s*[:=]\s*"?form')
 
 
+def _schema_text_reply(text: str) -> bool:
+    """Recognize bounded model *text* shaped like the captured JSON-string tool array.
+
+    Parsing only improves narration: it never proposes a tool, authorizes a write or
+    supplies evidence of a ticket read. Invalid/large/deep JSON is ordinary text.
+    """
+    if len(text) > 4096:
+        return False
+    try:
+        items = json.loads(text)
+        if not isinstance(items, list) or not 1 <= len(items) <= 4:
+            return False
+        for item in items:
+            if isinstance(item, str):
+                if len(item) > 2048:
+                    return False
+                item = json.loads(item)
+            if (
+                not isinstance(item, dict)
+                or item.get("type") != "function"
+                or not isinstance(item.get("name"), str)
+                or item["name"] not in {f"TicketTools___{name}" for name in ARGUMENT_FIELDS}
+                or ("parameters" in item and not isinstance(item["parameters"], dict))
+            ):
+                return False
+        return True
+    except (ValueError, RecursionError):
+        return False
+
+
 def describe_turn(message: dict[str, Any] | None) -> str:
     """What the model decided on this turn, from its own message (tool uses or text)."""
     uses = [
@@ -170,7 +200,7 @@ def describe_turn(message: dict[str, Any] | None) -> str:
         for block in (message or {}).get("content", [])
         if isinstance(block, dict)
     )
-    if '"type": "function"' in text and '"name": "TicketTools___' in text:
+    if _schema_text_reply(text):
         return "wrote tool schemas as text (no toolUse or ticket read)"
     return "writes the summary" if uses or message else "no response"
 

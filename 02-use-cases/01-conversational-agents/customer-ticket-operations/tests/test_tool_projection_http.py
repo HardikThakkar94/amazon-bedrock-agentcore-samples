@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +14,7 @@ from mcp.types import Tool
 
 from functions.ticket_tools import handler as tools
 from sec310_agent import agent as runtime
+from tests.test_tool_projection import ADDITIONAL_CASES, ADDITIONAL_IDS, additional_schema
 from tests.test_tool_projection_integration import ACTOR, Bedrock, Guardrail, State
 
 pytest_plugins = ("tests.test_security_regressions",)
@@ -103,7 +105,10 @@ class Handler(BaseHTTPRequestHandler):
             }
         elif method == "tools/list":
             result = {
-                "tools": [Tool(**row).model_dump(by_alias=True, exclude_none=True) for row in RAW]
+                "tools": [
+                    Tool(**row).model_dump(by_alias=True, exclude_none=True)
+                    for row in self.server.raw_tools
+                ]
             }
         elif method == "tools/call":
             name, args = request["params"]["name"], request["params"]["arguments"]
@@ -153,6 +158,7 @@ def local_mcp(monkeypatch):
     monkeypatch.setattr(models, "BedrockModel", RealBedrockModel)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.received = []
+    server.raw_tools = copy.deepcopy(RAW)
     server.auth_token, server.expected_run, server.admission_state = "local", "owned-run", None
     server.expected_policy_session = None
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -171,6 +177,49 @@ def local_mcp(monkeypatch):
         thread.join(timeout=3)
 
 
+@pytest.mark.parametrize("scope,label,bad", ADDITIONAL_CASES, ids=ADDITIONAL_IDS)
+def test_initialized_mcp_rejects_unsupported_raw_schema_before_model_or_effect(
+    scope, label, bad, local_mcp, monkeypatch
+):
+    import strands.models.bedrock as bedrock_module
+    from strands.tools.mcp.mcp_client import MCPClient as RealMCPClient
+
+    url, server, tickets, events = local_mcp
+    additional_schema(server.raw_tools, scope)["additionalProperties"] = bad
+    model = Bedrock()
+    session = SimpleNamespace(region_name="us-east-1", client=lambda **kw: model)
+    monkeypatch.setattr(bedrock_module.boto3, "Session", lambda: session)
+    monkeypatch.setattr(
+        runtime,
+        "claims_of",
+        lambda token: {"sub": ACTOR["user_sub"], "customer_id": "customer-a", "role": "operator"},
+    )
+    stops = []
+    real_stop = RealMCPClient.stop
+
+    def recorded_stop(self, *args):
+        stops.append(self)
+        return real_stop(self, *args)
+
+    monkeypatch.setattr(RealMCPClient, "stop", recorded_stop)
+    with pytest.raises(ValueError, match="Gateway|actor"):
+        runtime.run(
+            {"run_id": "owned-run", "stage": "v1", "mode": "live", "operator": "alice"},
+            "local",
+            url,
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            "owned-run",
+            screen=Guardrail(),
+            state_table=State("v1"),
+        )
+    methods = [name for name, _, _ in server.received]
+    assert "initialize" in methods and "tools/list" in methods
+    assert methods.index("initialize") < methods.index("tools/list")
+    assert "tools/call" not in methods and not model.requests and len(stops) == 1
+    assert tickets.rows[0]["status"] == "OPEN"
+    assert not any(event.get("kind") in ("store.read", "store.write") for event in events.items)
+
+
 def test_model_schema_json_text_is_not_a_read_or_pending_approval(api, local_mcp, monkeypatch):
     import strands.models.bedrock as bedrock_module
 
@@ -180,7 +229,10 @@ def test_model_schema_json_text_is_not_a_read_or_pending_approval(api, local_mcp
     monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
 
     model = Bedrock()
-    model.schema_text = True
+    captured = json.loads(
+        (Path(__file__).parent / "fixtures/model_schema_text_v3.json").read_text()
+    )["text"]
+    model.schema_text = captured
     session = SimpleNamespace(region_name="us-east-1", client=lambda **kw: model)
     monkeypatch.setattr(bedrock_module.boto3, "Session", lambda: session)
     monkeypatch.setattr(
@@ -208,7 +260,7 @@ def test_model_schema_json_text_is_not_a_read_or_pending_approval(api, local_mcp
     assert status == 200 and data["result"]["status"] == "NO_EFFECT"
     assert data["result"]["tool_calls"] == [] and data["result"]["effects"] == []
     assert len(model.requests) == 1
-    assert "type" in data["result"]["answer"]
+    assert data["result"]["answer"] == captured
     assert not api.app.current_approvals(api.app.demo_state("customer-a"))
     assert not any(name == "tools/call" for name, _, _ in server.received)
     run_id = data["result"]["run_id"]
@@ -217,11 +269,14 @@ def test_model_schema_json_text_is_not_a_read_or_pending_approval(api, local_mcp
         for entry in api.tables["events"].rows.values()
         if entry.get("run_id") == run_id and entry.get("kind") == "model.call_end"
     ]
-    assert ends and "no toolUse or ticket read" in ends[0]["label"]
+    assert len(ends) == 1 and ends[0]["label"] == (
+        "wrote tool schemas as text (no toolUse or ticket read)"
+    )
 
 
+@pytest.mark.parametrize("explicit_false", (False, True), ids=("captured_absent", "boolean_false"))
 def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact_store(
-    api, local_mcp, monkeypatch
+    api, local_mcp, monkeypatch, explicit_false
 ):
     import strands.models.bedrock as bedrock_module
 
@@ -240,6 +295,10 @@ def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact
         lambda token: {"sub": ACTOR["user_sub"], "customer_id": "customer-a", "role": "operator"},
     )
     url, server, _, _ = local_mcp
+    if explicit_false:
+        for row in server.raw_tools:
+            row["inputSchema"]["additionalProperties"] = False
+            row["inputSchema"]["properties"]["actor"]["additionalProperties"] = False
     server.auth_token = "offline"
     server.expected_policy_session = "policy-1"
     server.admission_state = api.tables["state"]
@@ -318,7 +377,10 @@ def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact
     assert state["policy_session"] != "policy-1" and not state.get("busy_owner")
 
 
-def test_actual_initialized_mcp_raw_schema_projected_through_real_bedrock(monkeypatch, local_mcp):
+@pytest.mark.parametrize("explicit_false", (False, True), ids=("captured_absent", "boolean_false"))
+def test_actual_initialized_mcp_raw_schema_projected_through_real_bedrock(
+    monkeypatch, local_mcp, explicit_false
+):
     import strands.models.bedrock as bedrock_module
 
     fake = Bedrock()
@@ -330,6 +392,10 @@ def test_actual_initialized_mcp_raw_schema_projected_through_real_bedrock(monkey
         lambda token: {"sub": ACTOR["user_sub"], "customer_id": "customer-a", "role": "operator"},
     )
     url, server, tickets, events = local_mcp
+    if explicit_false:
+        for row in server.raw_tools:
+            row["inputSchema"]["additionalProperties"] = False
+            row["inputSchema"]["properties"]["actor"]["additionalProperties"] = False
     result = runtime.run(
         {"run_id": "owned-run", "stage": "v1", "mode": "live", "operator": "alice"},
         "local",

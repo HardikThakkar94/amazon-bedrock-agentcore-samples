@@ -120,7 +120,11 @@ class Bedrock:
         }
         if len(self.requests) == 1:
             if self.schema_text:
-                answer = {"text": '[{"type": "function", "name": "TicketTools___list_tickets"}]'}
+                answer = {
+                    "text": self.schema_text
+                    if isinstance(self.schema_text, str)
+                    else '[{"type": "function", "name": "TicketTools___list_tickets"}]'
+                }
                 stop = "end_turn"
             else:
                 answer = {
@@ -184,6 +188,61 @@ def client(monkeypatch):
         },
     )
     return fake
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A-41 delivery remains open and needs follow-up.",
+        '["{\\"type\\": invalid JSON]',
+        "[" * 1100 + "]" * 1100,
+        '[{"type":"function","name":[]}]',
+        '["{\\"type\\":\\"function\\",\\"name\\":\\"TicketTools___list_tickets\\"}"]' * 120,
+    ],
+)
+def test_invalid_deep_or_oversize_schema_text_is_bounded_and_not_a_tool(text):
+    assert runtime.describe_turn({"content": [{"text": text}]}) == "writes the summary"
+
+
+@pytest.mark.parametrize("failure", ("invalid_cursor", "tools_list_failure"))
+def test_runtime_closes_gateway_when_projection_fails_before_model(client, monkeypatch, failure):
+    from strands.tools import mcp
+
+    class FailedListGateway(Gateway):
+        def __init__(self, url, headers):
+            super().__init__(url, headers)
+            self.stopped = False
+
+        def stop(self, *_):
+            self.stopped = True
+
+        def list_tools_sync(self, pagination_token=None):
+            assert pagination_token is None
+            self.lists += 1
+            if failure == "tools_list_failure":
+                raise ConnectionError("MCP tools/list unavailable")
+            return PaginatedList(self.raw_tools, "")
+
+    monkeypatch.setattr(mcp, "MCPClient", FailedListGateway)
+    with pytest.raises(ConnectionError if failure == "tools_list_failure" else ValueError):
+        runtime.run(
+            {"run_id": "owned-run", "stage": "v1", "mode": "live", "operator": "alice"},
+            "local",
+            "https://gateway.invalid",
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            "owned-run",
+            screen=Guardrail(),
+            state_table=State(),
+        )
+    gateway = Gateway.instances[-1]
+    assert gateway.starts == gateway.lists == 1 and gateway.stopped
+    assert gateway.sent == [] and client.requests == []
+
+
+def test_plain_unescaped_tool_schema_text_is_not_a_read():
+    assert runtime.describe_turn(
+        {"content": [{"text": '[{"type":"function","name":"TicketTools___list_tickets"}]'}]}
+    ) == ("wrote tool schemas as text (no toolUse or ticket read)")
 
 
 def test_real_strands_bedrock_converse_sees_only_model_fields_then_gateway_gets_actor(client):

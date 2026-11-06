@@ -19,6 +19,11 @@ MODEL_TOOLS = frozenset(DESCRIPTIONS)
 RAW_TOOLS = MODEL_TOOLS | {"confirm_close"}  # operator console only; never advertised to model
 
 
+def _closed_additional_properties(schema: dict[str, Any]) -> bool:
+    """Only missing or JSON boolean false; numeric zero and explicit null are not false."""
+    return "additionalProperties" not in schema or schema["additionalProperties"] is False
+
+
 def _schema(tool: Any, fields: tuple[str, ...]) -> None:
     name = tool.tool_name
     native = tool.mcp_tool
@@ -46,7 +51,7 @@ def _schema(tool: Any, fields: tuple[str, ...]) -> None:
         or any(not isinstance(item, str) for item in required)
         or len(required) != len(set(required))
         or set(required) != set(fields) | {"actor"}
-        or raw.get("additionalProperties") not in (None, False)
+        or not _closed_additional_properties(raw)
     ):
         raise ValueError(f"{name}: Gateway schema fields differ from trusted contract")
     for field in fields:
@@ -85,7 +90,7 @@ def _schema(tool: Any, fields: tuple[str, ...]) -> None:
             or set(actor_fields[key]) - {"type", "description"}
             for key in ("customer_id", "user_sub")
         )
-        or actor.get("additionalProperties") not in (None, False)
+        or not _closed_additional_properties(actor)
     ):
         raise ValueError(f"{name}: invalid verified actor properties")
 
