@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
+from strands.tools import mcp  # import before api fixture installs an isolated boto3 module
 
 from functions.api import mcp_grant
 
@@ -130,6 +132,14 @@ class MCPWire:
                         }
                     ],
                 }
+                if self.scenario == "real_tools":
+                    from functions.ticket_tools import handler as tools
+
+                    context = SimpleNamespace(
+                        client_context=SimpleNamespace(custom={"bedrockAgentCoreToolName": TOOL})
+                    )
+                    confirmed = tools.lambda_handler(message["params"]["arguments"], context)
+                    result["content"][0]["text"] = json.dumps(confirmed)
                 if self.scenario == "foreign_target":
                     result["content"][0]["text"] = json.dumps(
                         {
@@ -239,56 +249,99 @@ def test_malformed_mcp_result_never_grants_or_retries(monkeypatch, scenario, ste
     assert sum(m["method"] == "tools/call" for m, _ in wire.sent) <= 1
 
 
-def test_operator_approve_api_uses_initialized_mcp_then_exact_confirmed_close(api, monkeypatch):
+def test_api_initialized_approval_to_actual_runtime_recorder_tool_and_store(api, monkeypatch):
+    from functions.ticket_tools import handler as tools
+    from sec310_agent import agent as runtime
     from tests.test_security_regressions import ALICE, held, request
 
     card = held(api, monkeypatch, "A-41")
     actor = {"user_sub": ALICE["sub"], "customer_id": "customer-a"}
-    wire = MCPWire(actor=actor, token="offline")
+    monkeypatch.setattr(tools, "_table", api.tables["tickets"])
+    monkeypatch.setattr(tools, "_events", api.tables["events"])
+    wire = MCPWire("real_tools", actor=actor, token="offline")
     monkeypatch.setattr(
         api.app, "agent_param", lambda key, default: json.dumps({"v3": "https://gateway.invalid"})
     )
     monkeypatch.setattr(api.app.mcp_grant.urllib.request, "build_opener", lambda *a: wire)
-    admitted = []
+    monkeypatch.setattr(
+        runtime, "claims_of", lambda token: {**actor, "sub": actor["user_sub"], "role": "operator"}
+    )
+    calls = []
 
-    def runtime(token, run_id, payload):
-        assert payload["approval"] == card["id"]
-        assert payload["policy_session"] == "policy-1"
-        state = api.app.demo_state("customer-a")
-        assert state["busy_owner"] == run_id and state.get("approval_dispatch")
-        assert [m["method"] for m, _ in wire.sent] == [
-            "initialize",
-            "notifications/initialized",
-            "tools/list",
-            "tools/call",
-        ]
-        admitted.append(run_id)
-        api.tables["tickets"].rows[("customer-a", "A-41")]["status"] = "CLOSED"
-        return {
-            "run_id": run_id,
-            "model_id": "offline",
-            "tool_calls": [
-                {
-                    "tool": "close_ticket",
-                    "status": "OK",
-                    "decision": "ALLOW",
-                    "input": {**payload["calls"][0]["input"], "actor": actor, "run_id": run_id},
-                }
-            ],
-            "answer": "approved close done",
+    class Gateway:
+        def __init__(self, url, headers):
+            assert url == "https://gateway.invalid"
+            assert headers["Authorization"] == "Bearer offline"
+            assert headers["x-amzn-bedrock-agentcore-policy-session-id"] == "policy-1"
+
+        def start(self):
+            pass
+
+        def stop(self, *args):
+            pass
+
+        def list_tools_sync(self):
+            return [SimpleNamespace(tool_name="TicketTools___close_ticket")]
+
+        def call_tool_sync(self, tool_use_id, name, args):
+            assert name == "TicketTools___close_ticket"
+            assert args["actor"] == actor and args["ticket_id"] == "A-41"
+            assert api.app.demo_state("customer-a")["approval_dispatch"]
+            calls.append((tool_use_id, name, dict(args)))
+            context = SimpleNamespace(
+                client_context=SimpleNamespace(custom={"bedrockAgentCoreToolName": name})
+            )
+            reply = tools.lambda_handler(args, context)
+            return {"status": "success", "content": [{"text": json.dumps(reply)}]}
+
+    monkeypatch.setattr(mcp, "MCPClient", Gateway)
+
+    def invoke(token, run_id, payload):
+        assert payload["approval"] == card["id"] and payload["policy_session"] == "policy-1"
+        return runtime.run(
+            payload,
+            token,
+            "https://gateway.invalid",
+            "offline",
+            run_id,
+            state_table=api.tables["state"],
+        )
+
+    monkeypatch.setattr(api.app, "invoke_agent", invoke)
+    status, body = request(api, "/api/run", {"mode": "approve", "approval": card["id"]})
+    assert status == 200 and body["result"]["status"] == "CONFIRMED", body["result"].get(
+        "tool_calls"
+    )
+    assert [m["method"] for m, _ in wire.sent] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "tools/call",
+    ]
+    assert len(calls) == 1 and calls[0][2]["run_id"] == body["result"]["run_id"]
+    assert api.tables["tickets"].rows[("customer-a", "A-41")]["status"] == "CLOSED"
+    assert body["result"]["effects"] == [
+        {
+            "operation": "close_ticket",
+            "target": "A-41",
+            "customer_id": "customer-a",
+            "status": "EXECUTED",
+            "before": "OPEN",
+            "after": "CLOSED",
+            "confirmed": True,
         }
-
-    monkeypatch.setattr(api.app, "invoke_agent", runtime)
-    status, out = request(api, "/api/run", {"mode": "approve", "approval": card["id"]})
-    assert status == 200 and admitted, (status, out, [m["method"] for m, _ in wire.sent])
-    result = out["result"]
-    assert result["status"] == "CONFIRMED" and result["effects"][0]["confirmed"]
-    assert result["effects"][0]["target"] == "A-41"
-    assert api.app.current_approvals(api.app.demo_state("customer-a"))[0]["status"] == "APPROVED"
+    ]
+    run_id = body["result"]["run_id"]
+    writes = [
+        item
+        for item in api.tables["events"].rows.values()
+        if item.get("run_id") == run_id and item.get("kind") == "store.write"
+    ]
+    assert len(writes) == 1 and writes[0]["effect"]["ticket_id"] == "A-41"
     state = api.app.demo_state("customer-a")
-    assert state["policy_session"] != "policy-1" and not state.get("busy_owner")
-    assert not state.get("approval_uncertain") and not state.get("approval_dispatch")
-    assert request(api, "/api/run", {"mode": "approve", "approval": card["id"]})[0] == 409
+    assert not state.get("busy_owner") and not state.get("approval_dispatch")
+    assert state["policy_session"] != "policy-1"
+    assert api.app.current_approvals(state)[0]["status"] == "APPROVED"
 
 
 @pytest.mark.parametrize("scenario", ["missing_schema", "foreign_id", "foreign_target", "timeout"])

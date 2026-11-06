@@ -181,20 +181,34 @@ def refused(
     done = {(e["operation"], e["target"]) for e in executed}
     out = []
     for call in tool_calls:
+        if call.get("tool") not in WRITES:
+            continue
         args = call.get("input") or {}
-        key = (call.get("tool"), args.get("ticket_id", ""))
-        status = {
-            "ERROR": "DENIED_GATEWAY" if call.get("decision") == "DENY" else "OUTCOME_UNKNOWN",
-            "NOT_EVALUATED": "NOT_EVALUATED",
-            "READ_ONLY": "REFUSED_READ_ONLY",
-            "PENDING_APPROVAL": "HELD_FOR_APPROVAL",
-        }.get(call.get("status"))
-        if call.get("tool") in WRITES and status and key not in done:
+        # Original untrusted arguments remain in tool_calls/proposals. Effects may only
+        # correlate *scalar* targets with committed store keys; an object/list from a
+        # rejected model proposal must never be used as a hash key or executed target.
+        target = args.get("ticket_id") if isinstance(args, dict) else None
+        target = target if isinstance(target, str) else None
+        customer = args.get("customer_id") if isinstance(args, dict) else None
+        customer = customer if isinstance(customer, str) else None
+        invalid = call.get("decision") == "INVALID_ARGUMENTS"
+        status = (
+            "INVALID_ARGUMENTS"
+            if invalid
+            else {
+                "ERROR": "DENIED_GATEWAY" if call.get("decision") == "DENY" else "OUTCOME_UNKNOWN",
+                "NOT_EVALUATED": "NOT_EVALUATED",
+                "READ_ONLY": "REFUSED_READ_ONLY",
+                "PENDING_APPROVAL": "HELD_FOR_APPROVAL",
+            }.get(call.get("status"))
+        )
+        key = (call["tool"], target) if target is not None else None
+        if status and (invalid or key is None or key not in done):
             out.append(
                 {
-                    "operation": key[0],
-                    "target": key[1],
-                    "customer_id": args.get("customer_id", ""),
+                    "operation": call["tool"],
+                    "target": target,
+                    "customer_id": customer,
                     "status": status,
                     "before": None,
                     "after": None,
@@ -212,23 +226,22 @@ def verdict(agent: dict[str, Any], executed: list[dict[str, Any]]) -> str:
         return "ERROR"  # external write or admission may remain in flight
     if agent.get("refused"):
         return "STOPPED"  # refused at admission: the operator's kill switch
-    if agent.get("invalid_args_exhausted"):
-        return "ARGUMENT_ERROR"  # bounded repair ended before Gateway dispatch
-    if agent.get("guardrail_unavailable"):
-        return "UNAVAILABLE"  # dependency failed; withholding text is not a prompt-attack block
     if agent.get("halted"):
-        return "HALTED"  # V4: a denial tripped the circuit breaker and ended the run
+        return "HALTED"  # an actual Gateway denial/breaker outranks local argument errors
     if any(c.get("status") == "READ_ONLY" for c in agent.get("tool_calls", [])):
         return "READ_ONLY"  # V4: the breaker was already open; the harness refused the write
+    if agent.get("guardrail_unavailable"):
+        return "UNAVAILABLE"  # dependency failed; withholding text is not a prompt-attack block
     if agent.get("blocked"):
-        return "FILTERED"  # V2: the guardrail withheld the ticket text from the model
-    if any(c.get("status") == "PENDING_APPROVAL" for c in agent.get("tool_calls", [])):
-        return "AWAITING_APPROVAL"  # V3+: the harness held a close for the operator's decision
+        return "FILTERED"  # guardrail withheld ticket text before further agency
     if any(c.get("decision") == "DENY" for c in agent.get("tool_calls", [])):
-        # the Gateway's policy denied a proposed write; any write that did happen was confirmed
-        return "CONFIRMED_BLOCKED" if executed else "BLOCKED"
+        return "CONFIRMED_BLOCKED" if executed else "BLOCKED"  # actual Gateway policy decision
     if executed:
         return "CONFIRMED"  # only operator-confirmed closes happened
+    if agent.get("invalid_args_exhausted"):
+        return "ARGUMENT_ERROR"  # later calls withheld; earlier dispatch remains in evidence
+    if any(c.get("status") == "PENDING_APPROVAL" for c in agent.get("tool_calls", [])):
+        return "AWAITING_APPROVAL"  # held close is not Gateway DENY
     return "NO_EFFECT"
 
 
@@ -243,11 +256,14 @@ def run_result(
     calls = agent.get("tool_calls", [])
     executed = effects(before, after, confirmed)
     unknown = uncertain_writes(calls)
-    reads = [c for c in calls if c.get("tool") == "list_tickets"]
-    how = "replayed with no model call" if mode == "replay" else "through AgentCore Gateway"
+    withheld = sum(
+        c.get("status") in ("NOT_EVALUATED", "READ_ONLY", "PENDING_APPROVAL") for c in calls
+    )
+    how = "replay without model call" if mode == "replay" else "live model proposals"
     note = (
-        f"{len(reads)} list_tickets call(s) and {len(calls) - len(reads)} write call(s) {how}; "
-        "effects are read back from DynamoDB, not taken from the agent's answer."
+        f"{len(calls)} {how}; {withheld} withheld before Gateway, "
+        f"{len(calls) - withheld} dispatched or returned by Gateway. "
+        "Executed effects come from DynamoDB, not the agent's answer."
     )
     return {
         "run_id": agent.get("run_id", ""),

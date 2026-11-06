@@ -778,7 +778,7 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 "BLOCKED": "answer returned · write denied by policy",
                 "FILTERED": "guardrail detected a prompt attack; ticket text withheld",
                 "UNAVAILABLE": "guardrail could not screen text; withheld (dependency error)",
-                "ARGUMENT_ERROR": "model's invalid tool arguments exhausted bounded retry; no Gateway dispatch",
+                "ARGUMENT_ERROR": "model argument repair exhausted; later proposals withheld (see Gateway trace)",
                 "AWAITING_APPROVAL": "answer returned · close held for approval",
             }.get(result["status"], "answer returned to " + who["username"]),
             verdict=result["status"],

@@ -281,7 +281,10 @@ v4 engine. On V3+, model-supplied ticket text cannot authorize notes: the Runtim
 unrequested live/captured notes before Gateway. Only the isolated, owner/session/actor/fixture-
 bound eval runner can grant its direct note policy/cap probes; Region and write-cap decisions
 still come from the real Gateway. Malformed tool arguments are repairable local errors, not
-native policy denials. The operator Stop is checked at API and Runtime admission on every build. `customer-a` and `customer-b` are the persisted `customer_id` authorization
+native policy denials. The operator Stop is checked at API and Runtime admission on every build.
+Stop is admission-only: an already-admitted run can finish; its pill is not evidence of
+cancellation or quiescence. Future runs refuse until cleared, without bypassing an owner/
+UNKNOWN recovery fence. `customer-a` and `customer-b` are the persisted `customer_id` authorization
 keys, displayed as **Region A** and **Region B**; these are application scopes, not the AWS
 deployment region `us-east-1`. The Cedar policy, Cognito identity and portal presets retain
 their identities; the eval inputs are a separately versioned measured dataset described in

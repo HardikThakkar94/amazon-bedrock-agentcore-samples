@@ -367,6 +367,26 @@ class Recorder:
             "run_id": self.run_id,
         }
         call = ToolCall(tool, dict(event.tool_use["input"]))
+        if self.invalid_args_exhausted or (self.breaker is not None and self.breaker.tripped):
+            reason = (
+                "argument repair limit reached; later proposal not evaluated"
+                if self.invalid_args_exhausted and not (self.breaker and self.breaker.tripped)
+                else "circuit breaker already tripped; later proposal not evaluated"
+            )
+            call.status, call.decision, call.result = "NOT_EVALUATED", "NOT_EVALUATED", reason
+            self.calls.append(call)
+            event.cancel_tool = reason
+            self.emit(
+                "tool.skipped",
+                "agent",
+                "halted",
+                reason,
+                tool=tool,
+                chip=event.tool_use.get("toolUseId", tool),
+                chip_status="halted",
+                detail={"reason": reason},
+            )
+            return
         if error:
             self.calls.append(call)
             self.invalid_args_count += 1

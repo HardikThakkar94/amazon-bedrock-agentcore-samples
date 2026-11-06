@@ -530,6 +530,50 @@ def test_uncertain_latch_suite_gate_fails_and_cleanup_retains_recovery(runner, m
     assert exc.value.status == 409 and state["breaker_pending"]
 
 
+def test_eval_runner_keeps_malformed_write_no_effect_evidence_without_false_unknown(
+    runner, monkeypatch
+):
+    from dataclasses import asdict
+
+    from sec310_agent.agent import Recorder, ReplayToolEvent
+
+    case = next(c for c in runner.h.DATASET["cases"] if c["id"] == "benign_summary")
+    runner.state.items[("customer-a",)]["busy_owner"] = "eval-suite"
+
+    def rejected(token, run_id, payload):
+        recorder = Recorder(
+            {"user_sub": "alice-sub", "customer_id": "customer-a"},
+            run_id=run_id,
+            stage=payload["stage"],
+        )
+        event = ReplayToolEvent(
+            {
+                "name": "TicketTools___add_note",
+                "toolUseId": "bad-target",
+                "input": {"customer_id": "customer-a", "ticket_id": ["A-41"], "note": "untrusted"},
+            }
+        )
+        recorder.before(event)
+        assert event.cancel_tool
+        return {
+            "run_id": run_id,
+            "model_id": "offline",
+            "answer": "malformed note refused",
+            "tool_calls": [asdict(c) for c in recorder.calls],
+        }
+
+    monkeypatch.setattr(runner.h.app, "invoke_agent", rejected)
+    sample = runner.h.run_case("tok", "v5", case, 0)
+    assert sample["verdict"] == "NO_EFFECT" and sample["local"] == "PASS"
+    assert sample["effects"] == [] and sample["argument_errors"] == 1
+    assert not sample.get("error") and not sample["tool_outcome_uncertain"]
+    assert runner.state.items[("customer-a",)]["busy_owner"] == "eval-suite"
+    assert "exclusion_disposition" not in runner.state.items[("customer-a",)]
+    gate = runner.h.suite.gate([{"id": case["id"], "kind": "benign", "samples": [sample]}])
+    assert gate["safety"] == "PASS" and not gate["passed"]
+    assert gate["cases"][0]["quality"]["status"] == "FAIL"
+
+
 def test_eval_unknown_tool_write_retains_exact_case_owner_and_error_evidence(runner, monkeypatch):
     monkeypatch.setattr(
         runner.h.app,

@@ -402,6 +402,44 @@ def exercise(browser, origin, screenshots):
     expect(page.locator("#capx")).to_contain_text("no trusted operator task")
     expect(page.locator("#capx")).to_contain_text("No Gateway call or policy DENY")
     assert "breaker already ended" not in page.locator("#capx").inner_text()
+    limited = [
+        {
+            "kind": "tool.invalid_arguments",
+            "node": "agent",
+            "status": "error",
+            "label": "customer_id must be a nonempty string",
+        },
+        {
+            "kind": "tool.skipped",
+            "node": "agent",
+            "status": "halted",
+            "label": "later foreign read not evaluated",
+            "detail": {"reason": "argument repair limit reached; later proposal not evaluated"},
+        },
+        {
+            "kind": "run.completed",
+            "node": "agent",
+            "status": "error",
+            "verdict": "ARGUMENT_ERROR",
+            "label": "bounded repair exhausted",
+        },
+    ]
+    state["last_run"] = {
+        "status": "ARGUMENT_ERROR",
+        "effects": [],
+        "answer": "later proposals withheld",
+    }
+    refresh()
+    page.evaluate(
+        "evs => { cancelPlayback(); RUN={run_id:'mock-run',events:evs}; STEPS=toSteps(evs); N=2; renderPanel(); }",
+        limited,
+    )
+    expect(page.locator("#capx")).to_contain_text("not evaluated")
+    expect(page.locator("#capx")).to_contain_text("earlier Gateway results remain")
+    page.evaluate("N=STEPS.length; renderPanel()")
+    expect(page.locator("#verdict")).to_have_text("MODEL ARGUMENT ERROR")
+    expect(page.locator("#capx")).to_contain_text("Later proposals were withheld locally")
+    assert "No Gateway dispatch" not in page.locator("#capx").inner_text()
     state["active_stage"] = "v0"
     state["last_run"] = None
     page.evaluate("cancelPlayback(); RUN = null; STEPS=[]; N=0")
@@ -795,6 +833,9 @@ def exercise(browser, origin, screenshots):
     page.locator("#gearBtn").click()
     page.locator("#mStop").click()
     expect(page.locator("#stopPill")).to_be_visible()
+    expect(page.locator("#stopPill")).to_have_attribute(
+        "title", re.compile("already-admitted work may finish")
+    )
     assert mutations()[-1] == ("POST", "/api/stop", {"stop": True})
     page.locator("#gearBtn").click()
     page.locator("#mStop").click()

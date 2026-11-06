@@ -80,6 +80,7 @@ class Table:
         ExpressionAttributeValues=None,
         ConditionExpression=None,
         ReturnValues=None,
+        ExpressionAttributeNames=None,
     ):
         with self.lock:
             item = self.rows.setdefault(self.key(Key), dict(Key))
@@ -142,6 +143,15 @@ class Table:
                     before_tickets=v[":before"],
                     store_change_source=v[":src"],
                     run_id=v[":id"],
+                )
+            if "#s = :closed" in UpdateExpression and "ticket_id" in Key:
+                if item.get("status") == v[":closed"]:
+                    raise Conflict()
+                item.update(
+                    status=v[":closed"],
+                    closed_by=v[":by"],
+                    closed_reason=v[":why"],
+                    closed_at=v[":at"],
                 )
             if "stop_requested = :on" in UpdateExpression:
                 item["stop_requested"] = v[":on"]
@@ -348,6 +358,46 @@ def test_stop_does_not_dispatch_capture_or_consume_approval(api, monkeypatch, mo
         assert state["policy_session"] == initial_session
 
 
+def test_stop_during_owned_run_does_not_claim_cancellation_then_fences_next(api, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    entered, resume = Event(), Event()
+    invoked = []
+
+    def admitted(token, run_id, payload):
+        invoked.append(run_id)
+        if len(invoked) == 1:
+            entered.set()
+            assert resume.wait(3), "fixture's already-admitted run did not resume"
+        return {
+            "run_id": run_id,
+            "model_id": "offline",
+            "answer": "A-41 delivery and A-42 billing remain open.",
+            "tool_calls": [
+                {"tool": "list_tickets", "status": "OK", "input": {"customer_id": "customer-a"}}
+            ],
+        }
+
+    monkeypatch.setattr(api.app, "invoke_agent", admitted)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(request, api, "/api/run")
+        assert entered.wait(3) and api.app.demo_state("customer-a").get("busy_owner")
+        assert request(api, "/api/stop", {"stop": True})[0] == 200
+        assert api.app.demo_state("customer-a")["stop_requested"] is True
+        resume.set()
+        status, result = first.result(timeout=4)
+    assert status == 200 and result["result"]["status"] == "NO_EFFECT"
+    assert not api.app.demo_state("customer-a").get("busy_owner")
+    stopped_status, stopped = request(api, "/api/run")
+    assert stopped_status == 200 and stopped["result"]["status"] == "STOPPED"
+    assert len(invoked) == 1  # Stop fences *future* admission; it did not cancel first run.
+    assert request(api, "/api/stop", {"stop": False})[0] == 200
+    next_status, resumed = request(api, "/api/run")
+    assert next_status == 200 and resumed["result"]["status"] == "NO_EFFECT"
+    assert len(invoked) == 2 and resumed["result"]["tool_calls"][0]["tool"] == "list_tickets"
+
+
 def test_clear_stop_restores_valid_owned_summary_after_prior_stop(api, monkeypatch):
     state = api.tables["state"].rows[("customer-a",)]
     state["active_stage"] = "v0"
@@ -393,6 +443,81 @@ def test_post_failure_effect_remains_error_and_unknown_diff_is_explicit(api, mon
     assert exposed["recovery"]["run_id"] == out["result"]["run_id"]
     assert "Runtime/approval" in exposed["recovery"]["reason"]
     assert api.app.runs.failed("v0", "x", "runtime", "timeout")["evidence_uncertain"]
+
+
+@pytest.mark.parametrize(
+    "tool,field,value",
+    [
+        ("add_note", "ticket_id", []),
+        ("add_note", "ticket_id", {"id": "A-41"}),
+        ("add_note", "ticket_id", True),
+        ("add_note", "ticket_id", ""),
+        ("add_note", "customer_id", {"customer_id": "customer-a"}),
+        ("add_note", "customer_id", ["customer-a"]),
+        ("add_note", "note", {"text": "customer request"}),
+        ("add_note", "note", False),
+        ("add_note", "note", ""),
+        ("close_ticket", "ticket_id", ["A-41"]),
+        ("close_ticket", "reason", {"reason": "resolved"}),
+        ("close_ticket", "reason", []),
+    ],
+)
+def test_malformed_write_projects_explicit_no_effect_without_unknown_owner(
+    api, monkeypatch, tool, field, value
+):
+    from dataclasses import asdict
+
+    from sec310_agent.agent import Recorder, ReplayToolEvent
+
+    state = api.tables["state"].rows[("customer-a",)]
+    state["active_stage"] = "v4"
+    proposed = {
+        "customer_id": "customer-a",
+        "ticket_id": "A-41",
+        **({"note": "summary"} if tool == "add_note" else {"reason": "resolved"}),
+    }
+    proposed[field] = value
+
+    def no_gateway(*args, **kwargs):
+        pytest.fail("malformed arguments must not be dispatched")
+
+    monkeypatch.setattr(api.app, "gateway_call", no_gateway)
+
+    def runtime(token, run_id, payload):
+        recorder = Recorder(
+            {"user_sub": ALICE["sub"], "customer_id": "customer-a"},
+            run_id=run_id,
+            stage="v4",
+            approvals=True,
+        )
+        event = ReplayToolEvent(
+            {"name": f"TicketTools___{tool}", "toolUseId": "malformed", "input": proposed}
+        )
+        recorder.before(event)
+        assert event.cancel_tool
+        return {
+            "run_id": run_id,
+            "model_id": "offline",
+            "answer": "malformed proposal",
+            "tool_calls": [asdict(c) for c in recorder.calls],
+        }
+
+    monkeypatch.setattr(api.app, "invoke_agent", runtime)
+    status, out = request(api, "/api/run")
+    result = out["result"]
+    assert status == 200 and result["status"] == "NO_EFFECT", result
+    assert result["tool_calls"][0]["decision"] == "INVALID_ARGUMENTS"
+    assert result["proposals"][0]["ticket_id"] == proposed["ticket_id"]
+    assert result["effects"][0]["status"] == "INVALID_ARGUMENTS"
+    assert result["effects"][0]["target"] == (
+        value
+        if field == "ticket_id" and isinstance(value, str)
+        else "A-41"
+        if field != "ticket_id"
+        else None
+    )
+    assert not result["evidence_uncertain"] and not result["tool_outcome_uncertain"]
+    assert not state.get("busy_owner") and state.get("exclusion_disposition") != "UNKNOWN"
 
 
 def test_normal_active_writable_intent_is_not_false_recovery_alarm(api):

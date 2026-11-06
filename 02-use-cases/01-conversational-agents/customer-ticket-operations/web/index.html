@@ -518,10 +518,12 @@ function caption(step){
   if(e0.kind === 'run.read_only') return ['halted', 'The circuit breaker is <b>OPEN</b>: the run is admitted <b>read-only</b>. It may read and summarize; every write is refused.'];
   if(e0.kind === 'run.refused') return ['halted', `The operator’s <b>kill switch</b> is on: the run is refused at admission, with no model call.`];
   if(e0.kind === 'tool.invalid_arguments') return ['error', `The model proposed <b>invalid tool arguments</b>; the runtime refused them before Gateway or Policy. The model may retry with the exact plain-string fields.`];
-  if(e0.kind === 'tool.skipped') return /no trusted operator task/.test(e0.detail?.reason || '')
+  if(e0.kind === 'tool.skipped') return /argument repair limit/.test(e0.detail?.reason || '')
+    ? ['error', `The bounded argument-repair limit was reached. This and later proposals are <b>not evaluated</b>; any earlier Gateway results remain in the trace.`]
+    : /no trusted operator task/.test(e0.detail?.reason || '')
     ? ['denied', `The runtime refused <b>${esc(e0.tool || 'add_note')}</b>: no trusted operator task or suite grant authorized this write. No Gateway call or policy DENY was recorded; the run may still summarize.`]
     : /read-only/.test(e0.detail?.reason || '') ? ['halted', `<b>${esc(e0.label)}</b> is refused: the circuit breaker is open.`]
-    : /breaker tripped/.test(e0.detail?.reason || '') ? ['halted', `<b>${esc(e0.label)}</b>: the breaker already ended the run.`]
+    : /breaker .*tripped/.test(e0.detail?.reason || '') ? ['halted', `<b>${esc(e0.label)}</b>: the breaker already ended the run.`]
     : ['denied', `<b>${esc(e0.label)}</b> was withheld before Gateway; no policy decision was recorded.`];
   if(e0.kind === 'tool.invoked') return ['', B < 2 ? `No policy engine is attached, so the Gateway invokes the TicketTools Lambda directly (${esc(e0.label)}).` : `The Gateway invokes the TicketTools Lambda (${esc(e0.label)}).`];
   if(e0.kind === 'store.read') return ['', `TicketTools reads ${esc(custName())} tickets from DynamoDB: ${esc(e0.label.replace(/^read /,''))}.`];
@@ -537,7 +539,7 @@ function caption(step){
   if(e0.kind === 'run.completed') return e0.verdict === 'CHANGED' ? ['harmful', `Run complete. ${u} gets an answer, and <b>a ticket changed</b> that nobody approved.`]
     : e0.verdict === 'ERROR' ? ['error', `The run failed before it finished: <b>${esc(STATE?.last_run?.note || 'see the trace')}</b>`]
     : e0.verdict === 'BLOCKED' ? ['denied', `Run complete. The Gateway <b>denied the write</b>; nothing changed.`]
-    : e0.verdict === 'ARGUMENT_ERROR' ? ['error', `The model's malformed tool proposals exhausted the bounded repair limit. <b>No policy denial or write was inferred</b> from those invalid arguments.`]
+    : e0.verdict === 'ARGUMENT_ERROR' ? ['error', `Malformed tool proposals exhausted bounded repair. <b>Later proposals were withheld locally</b>; earlier Gateway calls, if any, remain visible in the trace.`]
     : e0.verdict === 'UNAVAILABLE' ? ['error', `The guardrail was <b>unavailable</b>; ticket text was withheld. This is a failed dependency, <b>not</b> a detected prompt attack or a passing control.`]
     : e0.verdict === 'FILTERED' && (legacyRunUnavailable(e0) || STATE?.last_run?.guardrail_unavailable || STATE?.last_run?.controls?.some(c => c.control === 'Bedrock Guardrails' && c.status?.startsWith('UNAVAILABLE'))) ? ['error', `The recorded guardrail was <b>UNAVAILABLE</b>; ticket text was withheld. This older FILTERED verdict was not a detected prompt attack.`]
     : e0.verdict === 'FILTERED' ? ['denied', `The guardrail <b>detected and blocked a prompt attack</b> before the model could act on it.`]
@@ -748,6 +750,7 @@ function renderChrome(){
   $('#nextFix').disabled = B < 5 && !idle;
   $('#nextFix').textContent = B >= 5 ? 'Evaluations architecture' : `Apply ${BUILDS[B + 1][0]} · ${BUILDS[B + 1][1]} →`;
   $('#stopPill').hidden = !STATE?.stop_requested;
+  $('#stopPill').title = STATE?.stop_requested ? 'Refuses future admission; already-admitted work may finish. Not proof of quiescence.' : '';
   $('#breakerPill').hidden = !STATE?.breaker_open; $('#breakerPill').title = STATE?.breaker_reason || '';
   const rec = STATE?.recovery || {};
   $('#recoveryPill').hidden = !rec.required;

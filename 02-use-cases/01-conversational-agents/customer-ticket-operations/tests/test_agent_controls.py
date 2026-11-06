@@ -402,6 +402,129 @@ def test_invalid_tool_arguments_are_bounded_without_breaker_or_policy_call():
     assert api_runs.metrics(scored)["PolicyDenials"] == 0
 
 
+@pytest.mark.parametrize("stage", ["v0", "v3", "v4", "v5"])
+def test_replay_argument_exhaustion_withholds_all_later_valid_proposals(stage):
+    from functions.api import runs as api_runs
+
+    invalid = {"tool": "list_tickets", "input": {"customer_id": {"customer_id": "customer-a"}}}
+    calls = [
+        invalid,
+        invalid,
+        invalid,
+        {"tool": "list_tickets", "input": {"customer_id": "customer-a"}},
+        {"tool": "list_tickets", "input": {"customer_id": "customer-b"}},
+        {
+            "tool": "add_note",
+            "input": {"customer_id": "customer-a", "ticket_id": "A-41", "note": "later write"},
+        },
+    ]
+    result = replay(stage, calls=calls, state_table=StateTable({"busy_stage": stage}))
+    assert result["invalid_args_exhausted"] and FakeGateway.instances[0].sent == []
+    assert [c["decision"] for c in result["tool_calls"]] == [
+        "INVALID_ARGUMENTS",
+        "INVALID_ARGUMENTS",
+        "INVALID_ARGUMENTS",
+        "NOT_EVALUATED",
+        "NOT_EVALUATED",
+        "NOT_EVALUATED",
+    ]
+    assert not result["halted"]
+    scored = api_runs.run_result(stage, result, {}, {}, "replay")
+    assert scored["status"] == "ARGUMENT_ERROR"
+    assert scored["argument_errors"] == 3
+    assert "0 dispatched" in scored["note"] and scored["effects"][-1]["status"] == "NOT_EVALUATED"
+
+
+def test_earlier_policy_decision_outranks_later_local_exhaustion():
+    from functions.api import runs as api_runs
+
+    FakeGateway.replies = {"close_ticket": {"status": "error", "content": [{"text": DENIED}]}}
+    invalid = {"tool": "list_tickets", "input": {"customer_id": {"customer_id": "customer-a"}}}
+    calls = [
+        {
+            "tool": "close_ticket",
+            "input": {
+                "customer_id": "customer-a",
+                "ticket_id": "A-41",
+                "reason": "no operator approval",
+            },
+        },
+        invalid,
+        invalid,
+        invalid,
+        {"tool": "list_tickets", "input": {"customer_id": "customer-b"}},
+    ]
+    result = replay("v3", calls=calls, state_table=StateTable({"busy_stage": "v3"}))
+    assert result["invalid_args_exhausted"] and not result["halted"]
+    assert [name for name, _ in FakeGateway.instances[0].sent] == ["TicketTools___close_ticket"]
+    assert result["tool_calls"][0]["decision"] == "DENY"
+    assert result["tool_calls"][-1]["status"] == "NOT_EVALUATED"
+    scored = api_runs.run_result("v3", result, {}, {}, "replay")
+    assert scored["status"] == "BLOCKED" and scored["argument_errors"] == 3
+    assert "1 dispatched" in scored["note"]
+    assert (
+        api_runs.verdict(
+            {"halted": True, "invalid_args_exhausted": True, "tool_calls": result["tool_calls"]}, []
+        )
+        == "HALTED"
+    )
+
+
+def test_live_hook_exhaustion_cancels_and_withholds_later_valid_calls(monkeypatch):
+    import sec310_agent.agent as module
+    from functions.api import runs as api_runs
+
+    FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
+    cancelled = []
+
+    def model_proposals(payload, actor, gateway, recorder, model_id, run_id):
+        gateway.start()
+        pending = [("list_tickets", {"customer_id": "customer-a"})]
+        pending += [("list_tickets", {"customer_id": {"customer_id": "customer-a"}})] * 3
+        pending += [
+            ("list_tickets", {"customer_id": "customer-b"}),
+            (
+                "add_note",
+                {"customer_id": "customer-a", "ticket_id": "A-41", "note": "later valid write"},
+            ),
+        ]
+        for i, (tool, args) in enumerate(pending):
+            event = module.ReplayToolEvent(
+                {"name": f"TicketTools___{tool}", "toolUseId": str(i), "input": args},
+                agent=SimpleNamespace(cancel=lambda **kw: cancelled.append(kw)),
+            )
+            recorder.before(event)
+            if not event.cancel_tool:
+                event.result = gateway.call_tool_sync(
+                    str(i), event.tool_use["name"], event.tool_use["input"]
+                )
+                recorder.after(event)
+        return "Partial read before model repair was exhausted.", "cancelled"
+
+    monkeypatch.setattr(module, "live", model_proposals)
+    result = replay(
+        "v5",
+        calls=[],
+        extra={"mode": "live"},
+        screen=screen(Guardrail("NONE")),
+        state_table=StateTable({"busy_stage": "v5"}),
+    )
+    assert cancelled and len(cancelled) == 1
+    assert [name for name, _ in FakeGateway.instances[0].sent] == ["TicketTools___list_tickets"]
+    assert [c["decision"] for c in result["tool_calls"]] == [
+        "ALLOW",
+        "INVALID_ARGUMENTS",
+        "INVALID_ARGUMENTS",
+        "INVALID_ARGUMENTS",
+        "NOT_EVALUATED",
+        "NOT_EVALUATED",
+    ]
+    assert result["invalid_args_exhausted"] and not result["halted"]
+    scored = api_runs.run_result("v5", result, {}, {}, "live")
+    assert scored["status"] == "ARGUMENT_ERROR" and "1 dispatched" in scored["note"]
+    assert scored["effects"][-1]["status"] == "NOT_EVALUATED"
+
+
 def test_runtime_hook_repairs_nested_read_then_screens_valid_own_result(monkeypatch):
     import sec310_agent.agent as module
     from functions.api import runs as api_runs

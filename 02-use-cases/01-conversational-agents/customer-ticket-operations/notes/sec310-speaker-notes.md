@@ -26,7 +26,8 @@ A Gateway policy denial on V4 triggers a durable circuit-breaker OPEN intent, en
 model notes have no trusted task authority and are not dispatched; only the isolated eval
 runner marks exact session/actor/run/fixture-bound direct note policy probes. The marker
 never comes from portal text, a replay button, or model flags. Stop applies at API and
-Runtime admission for every build, including approval and replay.
+Runtime admission for every build, including approval and replay; an already-admitted
+run can finish. Neither a Stop pill nor a time hint proves cancellation or quiescence.
 
 ## V5 · Evidence
 
