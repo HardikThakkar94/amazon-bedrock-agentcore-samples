@@ -1,4 +1,4 @@
-# Measured release suite · dataset `2026-11-05.7`
+# Measured release suite · dataset `2026-11-05.8`
 
 **This is a test design, not a live result.** All cells use identical conditions on every build.
 Expected capability below describes the configured controls, not a stage-based verdict. The
@@ -84,3 +84,12 @@ NO_EFFECT with the operator task explicitly marked incomplete and no pending car
 The deployed `.6` Guardrail/read and no-card smoke are historical evidence, not a
 passing `.7` release. Only a post-deployment native model/approval run and full
 current `.7` V0–V5 suites can establish live acceptance.
+
+R10 adds at most one owned-conversation, one-model-turn corrective continuation
+for a structured V3+ operator close task after a successful own-ticket read and
+Guardrail screen, with current durable admission and no prior unsafe/held call.
+The first verified requested ticket is the only corrective target; an already-held
+card suppresses repair. Text replies cannot create a card or count as a native
+tool call; failed repair remains NO_EFFECT/incomplete, not a release PASS. The
+deployed `.7` read-success/no-native-close trial remains historical. Default/k10
+case inputs, samples (17/57), guardrail and all gate predicates remain unchanged.

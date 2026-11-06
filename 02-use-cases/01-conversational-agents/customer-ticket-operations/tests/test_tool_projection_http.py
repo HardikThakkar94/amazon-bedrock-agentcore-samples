@@ -288,9 +288,122 @@ def test_model_schema_json_text_is_not_a_read_or_pending_approval(
     )
 
 
+def test_other_ticket_held_card_does_not_complete_verified_ask_or_trigger_repair(
+    api, local_mcp, monkeypatch
+):
+    import strands.models.bedrock as bedrock_module
+
+    from sec310_agent.events import Events as RuntimeEvents
+    from tests.test_security_regressions import request
+
+    monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
+    model = Bedrock()
+    model.request_close = True
+    model.close_target = "A-42"
+    session = SimpleNamespace(region_name="us-east-1", client=lambda **kw: model)
+    monkeypatch.setattr(bedrock_module.boto3, "Session", lambda: session)
+    monkeypatch.setattr(
+        runtime,
+        "claims_of",
+        lambda token: {"sub": ACTOR["user_sub"], "customer_id": "customer-a", "role": "operator"},
+    )
+    url, server, _, _ = local_mcp
+    server.auth_token = "offline"
+    server.expected_policy_session = "policy-1"
+    monkeypatch.setattr(tools, "_table", api.tables["tickets"])
+    monkeypatch.setattr(tools, "_events", api.tables["events"])
+
+    def invoke(token, run_id, payload):
+        server.expected_run = run_id
+        return runtime.run(
+            payload,
+            token,
+            url,
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            run_id,
+            screen=Guardrail(),
+            state_table=api.tables["state"],
+        )
+
+    monkeypatch.setattr(api.app, "invoke_agent", invoke)
+    status, out = request(api, "/api/run", {"requests": ["A-41"]})
+    result = out["result"]
+    assert status == 200 and result["status"] == "AWAITING_APPROVAL"
+    assert "other pending cards are separate" in result["note"]
+    assert len(model.requests) == 3 and not result["completion_repair_used"]
+    cards = api.app.current_approvals(api.app.demo_state("customer-a"))
+    assert len(cards) == 1 and cards[0]["ticket_id"] == "A-42"
+    assert cards[0]["requested_by"] == "ticket text"
+    assert api.tables["tickets"].rows[("customer-a", "A-41")]["status"] == "OPEN"
+    assert api.tables["tickets"].rows[("customer-a", "A-42")]["status"] == "OPEN"
+    assert [row["params"]["name"] for name, row, _ in server.received if name == "tools/call"] == [
+        "TicketTools___list_tickets"
+    ]
+
+
+def test_ask_one_repair_exhausted_without_native_close_has_no_card_or_effect(
+    api, local_mcp, monkeypatch
+):
+    import strands.models.bedrock as bedrock_module
+
+    from sec310_agent.events import Events as RuntimeEvents
+    from tests.test_security_regressions import request
+    from tests.test_tool_projection_integration import PRINT_AFTER_READ
+
+    monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
+    model = Bedrock()
+    model.text_after_read = model.repair_text = True
+    session = SimpleNamespace(region_name="us-east-1", client=lambda **kw: model)
+    monkeypatch.setattr(bedrock_module.boto3, "Session", lambda: session)
+    monkeypatch.setattr(
+        runtime,
+        "claims_of",
+        lambda token: {"sub": ACTOR["user_sub"], "customer_id": "customer-a", "role": "operator"},
+    )
+    url, server, _, _ = local_mcp
+    server.auth_token = "offline"
+    server.expected_policy_session = "policy-1"
+    monkeypatch.setattr(tools, "_table", api.tables["tickets"])
+    monkeypatch.setattr(tools, "_events", api.tables["events"])
+
+    def invoke(token, run_id, payload):
+        server.expected_run = run_id
+        return runtime.run(
+            payload,
+            token,
+            url,
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            run_id,
+            screen=Guardrail(),
+            state_table=api.tables["state"],
+        )
+
+    monkeypatch.setattr(api.app, "invoke_agent", invoke)
+    status, data = request(api, "/api/run", {"requests": ["A-41"]})
+    result = data["result"]
+    assert status == 200 and result["status"] == "NO_EFFECT"
+    assert result["completion_repair_used"] and result["completion_repair_exhausted"]
+    assert "One owned-conversation native-close completion turn was exhausted" in result["note"]
+    assert "Operator close request incomplete" in result["note"]
+    assert len(model.requests) == 3
+    assert PRINT_AFTER_READ in str(model.requests[2]["messages"][-2])
+    assert result["answer"].startswith("Operator close request incomplete")
+    assert [c["tool"] for c in result["tool_calls"]] == ["list_tickets"]
+    assert not result["effects"] and not api.app.current_approvals(api.app.demo_state("customer-a"))
+    assert api.tables["tickets"].rows[("customer-a", "A-41")]["status"] == "OPEN"
+    assert not api.app.demo_state("customer-a").get("busy_owner")
+    methods = [name for name, _, _ in server.received]
+    assert methods.count("tools/call") == 1
+    events = [e for e in api.tables["events"].rows.values() if e.get("run_id") == result["run_id"]]
+    assert sum(e.get("kind") == "model.completion_repair" for e in events) == 1
+    assert sum(e.get("kind") == "model.task_incomplete" for e in events) == 2
+    assert not any(e.get("kind") == "store.write" for e in events)
+
+
+@pytest.mark.parametrize("late_native", (False, True), ids=("first_native", "native_after_text"))
 @pytest.mark.parametrize("explicit_false", (False, True), ids=("captured_absent", "boolean_false"))
 def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact_store(
-    api, local_mcp, monkeypatch, explicit_false
+    api, local_mcp, monkeypatch, explicit_false, late_native
 ):
     import strands.models.bedrock as bedrock_module
 
@@ -300,7 +413,9 @@ def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact
 
     monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
     model = Bedrock()
-    model.request_close = True
+    model.request_close = not late_native
+    model.text_after_read = late_native
+    model.repair_close = late_native
     session = SimpleNamespace(region_name="us-east-1", client=lambda **kw: model)
     monkeypatch.setattr(bedrock_module.boto3, "Session", lambda: session)
     monkeypatch.setattr(
@@ -340,6 +455,18 @@ def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact
     assert "TicketTools___close_ticket" in first_request["system"][0]["text"]
     assert "TicketTools___list_tickets" in first_request["system"][0]["text"]
     assert len(model.requests) == 3
+    assert held["result"]["completion_repair_used"] is late_native
+    if late_native:
+        assert (
+            model.requests[2]["requestMetadata"]
+            == first_request["requestMetadata"]
+            == {"sec310_run": held["result"]["run_id"]}
+        )
+        assert model.requests[2]["toolConfig"]["toolChoice"] == {"auto": {}}
+        history = model.requests[2]["messages"]
+        assert len(history) >= 5 and 'print("Customer-a' in str(history[-2])
+        assert "TicketTools___close_ticket" in history[-1]["content"][0]["text"]
+        assert "print(" not in history[-1]["content"][0]["text"]
     assert [c["status"] for c in held["result"]["tool_calls"]] == ["OK", "PENDING_APPROVAL"]
     held_call = held["result"]["tool_calls"][1]
     assert held_call["tool"] == "close_ticket"
@@ -358,6 +485,7 @@ def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact
     assert {"model.call_end", "guardrail.checked", "store.read", "approval.requested"} <= set(
         held_events
     )
+    assert ("model.completion_repair" in held_events) is late_native
     assert "store.write" not in held_events
     assert held["result"]["tool_calls"][0]["status"] == "OK"
     assert held["result"]["tool_calls"][0]["input"] == {

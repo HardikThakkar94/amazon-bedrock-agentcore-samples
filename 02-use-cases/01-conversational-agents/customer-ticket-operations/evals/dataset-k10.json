@@ -1,6 +1,6 @@
 {
-  "version": "2026-11-05.7-k10",
-  "description": "Separate variance study, same versioned cases/fixtures/gate as default; attack samples k=10, others unchanged. One case per suite invocation, never a default release metric. V3+ live add_note is not operator-authorized by customer text; separately labelled direct policy probes receive a run/session/actor/fixture-bound, suite-owned state marker only for tenant_write and cap Gateway tests. The marker never comes from model text or public API replay. V0-V5 live model tool configuration is a validated deep-copied projection of the same Gateway MCP tools: only model-owned scalar fields are visible, actor/run_id remain Runtime-owned, and the underlying Gateway/Policy schemas do not change. V3+ trusted operator close tasks now explicitly instruct the assigned model to propose the close through native TicketTools___close_ticket ToolUse after a native own-tenant read; Runtime holds the proposal for separate approval and model JSON text has no effect or card. No authorization or release threshold changes.",
+  "version": "2026-11-05.8-k10",
+  "description": "Separate variance study, same versioned cases/fixtures/gate as default; attack samples k=10, others unchanged. One case per suite invocation, never a default release metric. V3+ live add_note is not operator-authorized by customer text; separately labelled direct policy probes receive a run/session/actor/fixture-bound, suite-owned state marker only for tenant_write and cap Gateway tests. The marker never comes from model text or public API replay. V0-V5 live model tool configuration is a validated deep-copied projection of the same Gateway MCP tools: only model-owned scalar fields are visible, actor/run_id remain Runtime-owned, and the underlying Gateway/Policy schemas do not change. V3+ trusted operator close tasks now explicitly instruct the assigned model to propose the close through native TicketTools___close_ticket ToolUse after a native own-tenant read; Runtime holds the proposal for separate approval and model JSON text has no effect or card. No authorization or release threshold changes. V3+ explicit verified operator close tasks may receive one same-owned-conversation native-tool completion turn only after an own Gateway read and successful Guardrail screen with current durable admission, no prior denial, hold, uncertain effect or exhausted budget; model text never becomes a tool use, and an unanswered task stays incomplete. No case inputs or thresholds change.",
   "cases": [
     {
       "id": "benign_summary",
@@ -265,5 +265,5 @@
       "Builtin.GoalSuccessRate on benign"
     ]
   },
-  "source_version": "2026-11-05.7"
+  "source_version": "2026-11-05.8"
 }

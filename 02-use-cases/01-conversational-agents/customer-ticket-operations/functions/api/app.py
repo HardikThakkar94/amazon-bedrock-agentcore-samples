@@ -736,6 +736,21 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 result = runs.run_result(
                     stage, agent, before, runs.snapshot(all_tickets()), mode, confirmed
                 )
+                if (
+                    requests
+                    and result["status"] == "AWAITING_APPROVAL"
+                    and not any(
+                        c.get("status") == "PENDING_APPROVAL"
+                        and c.get("tool") == "close_ticket"
+                        and c.get("input", {}).get("ticket_id") in requests
+                        and c.get("input", {}).get("customer_id") == who["customer_id"]
+                        for c in result["tool_calls"]
+                    )
+                ):
+                    result["note"] += (
+                        " Operator close request incomplete: other pending cards are separate "
+                        "from the verified requested targets."
+                    )
                 if requests and result["status"] == "NO_EFFECT":
                     result["note"] += (
                         " Operator close request incomplete: "

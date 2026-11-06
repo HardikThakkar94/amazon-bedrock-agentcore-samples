@@ -14,24 +14,29 @@ from strands.tools.mcp.mcp_client import PaginatedList
 from sec310_agent import agent as runtime
 
 RAW = json.loads((Path(__file__).parent / "fixtures/gateway_tools_v3.json").read_text())["tools"]
+PRINT_AFTER_READ = json.loads(
+    (Path(__file__).parent / "fixtures/model_text_only_r9.json").read_text()
+)["text"]
 ACTOR = {"user_sub": "alice-sub", "customer_id": "customer-a"}
 
 
 class State:
     def __init__(self, stage="v1"):
-        self.stage = stage
+        self.item = {
+            "customer_id": "customer-a",
+            "busy_owner": "owned-run",
+            "busy_stage": stage,
+            "busy_sub": ACTOR["user_sub"],
+            "policy_session": "policy-1",
+            "stop_requested": False,
+        }
+        self.fail = False
 
     def get_item(self, Key, ConsistentRead):
-        return {
-            "Item": {
-                "customer_id": "customer-a",
-                "busy_owner": "owned-run",
-                "busy_stage": self.stage,
-                "busy_sub": ACTOR["user_sub"],
-                "policy_session": "policy-1",
-                "stop_requested": False,
-            }
-        }
+        assert ConsistentRead is True and Key == {"customer_id": "customer-a"}
+        if self.fail:
+            raise RuntimeError("owned state unavailable")
+        return {"Item": dict(self.item)}
 
 
 class Guardrail:
@@ -77,15 +82,17 @@ class Gateway:
                 {
                     "text": json.dumps(
                         {
+                            "customer_id": "customer-a",
                             "tickets": [
                                 {
+                                    "customer_id": "customer-a",
                                     "ticket_id": "A-41",
                                     "status": "OPEN",
                                     "subject": "Delivery delayed",
                                     "body": "Please explain the delay.",
                                     "origin": "seed",
                                 },
-                            ]
+                            ],
                         }
                     )
                 }
@@ -97,7 +104,14 @@ class Bedrock:
     def __init__(self):
         self.requests = []
         self.request_close = False
+        self.close_target = "A-41"
         self.request_note = False
+        self.text_after_read = False
+        self.repair_close = False
+        self.repair_text = False
+        self.repair_wrong = False
+        self.on_text = None
+        self.on_repair = None
         self.schema_text = False
         self.first_input = {"customer_id": "customer-a"}
         self.meta = SimpleNamespace(region_name="us-east-1")
@@ -136,6 +150,42 @@ class Bedrock:
                     }
                 }
                 stop = "tool_use"
+        elif len(self.requests) == 2 and self.text_after_read:
+            if self.on_text:
+                self.on_text()
+            answer = {"text": PRINT_AFTER_READ}
+            stop = "end_turn"
+        elif len(self.requests) == 3 and self.repair_wrong:
+            answer = {
+                "toolUse": {
+                    "toolUseId": "wrong-repair-close",
+                    "name": "TicketTools___close_ticket",
+                    "input": {
+                        "customer_id": "customer-b",
+                        "ticket_id": "B-77",
+                        "reason": "model guessed another region",
+                    },
+                }
+            }
+            stop = "tool_use"
+        elif len(self.requests) == 3 and self.repair_text:
+            answer = {"text": PRINT_AFTER_READ}
+            stop = "end_turn"
+        elif len(self.requests) == 3 and self.repair_close:
+            if self.on_repair:
+                self.on_repair()
+            answer = {
+                "toolUse": {
+                    "toolUseId": "native-repair-close",
+                    "name": "TicketTools___close_ticket",
+                    "input": {
+                        "customer_id": "customer-a",
+                        "ticket_id": "A-41",
+                        "reason": "operator says resolved",
+                    },
+                }
+            }
+            stop = "tool_use"
         elif len(self.requests) == 2 and self.request_note:
             answer = {
                 "toolUse": {
@@ -159,7 +209,7 @@ class Bedrock:
                     "name": "TicketTools___close_ticket",
                     "input": {
                         "customer_id": "customer-a",
-                        "ticket_id": "A-41",
+                        "ticket_id": self.close_target,
                         "reason": "operator says resolved",
                     },
                 }
@@ -426,6 +476,483 @@ def test_customer_ticket_text_cannot_execute_unrequested_native_write(
     else:
         assert len(cards) == 1 and cards[0]["requested_by"] == "ticket text"
         assert cards[0]["sources"] == ["A-90"] and cards[0]["status"] == "PENDING"
+
+
+def test_no_ask_and_unrelated_pending_card_never_add_repair_model_turn(client):
+    client.text_after_read = True
+    baseline = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": [],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=State("v3"),
+    )
+    assert len(client.requests) == 2 and not baseline["completion_repair_used"]
+    client.requests.clear()
+    client.text_after_read = False
+    client.request_close = True
+    client.close_target = "A-42"
+    held = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-41"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=State("v3"),
+    )
+    assert len(client.requests) == 3 and not held["completion_repair_used"]
+    assert held["tool_calls"][1]["status"] == "PENDING_APPROVAL"
+    assert held["tool_calls"][1]["input"]["ticket_id"] == "A-42"
+    assert [c["tool"] for c in held["tool_calls"]] == ["list_tickets", "close_ticket"]
+
+
+def test_inflight_stop_does_not_cancel_already_admitted_completion_turn(client):
+    state = State("v3")
+    client.text_after_read = client.repair_close = True
+    client.on_text = lambda: state.item.__setitem__("stop_requested", True)
+    result = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-41", "A-42"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=state,
+    )
+    assert len(client.requests) == 3 and result["completion_repair_used"]
+    assert [c["status"] for c in result["tool_calls"]] == ["OK", "PENDING_APPROVAL"]
+    assert result["tool_calls"][1]["input"]["ticket_id"] == "A-41"
+    assert "A-42" not in client.requests[2]["messages"][-1]["content"][0]["text"]
+    assert state.item["stop_requested"] is True
+
+
+def test_approval_marker_changed_during_corrective_model_withholds_native_close(client):
+    from functions.api import runs
+
+    state = State("v3")
+    client.text_after_read = client.repair_close = True
+    client.on_repair = lambda: state.item.__setitem__("approval_dispatch", "unresolved-grant")
+    result = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-41"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=state,
+    )
+    assert len(client.requests) == 3 and result["admission_lost"]
+    assert result["completion_repair_used"] and result["completion_repair_exhausted"]
+    assert result["tool_calls"][1]["status"] == "NOT_EVALUATED"
+    assert runs.approval_requests("owned-run", result["tool_calls"], ("A-41",), []) == []
+    assert [name for name, _ in Gateway.instances[-1].sent] == ["TicketTools___list_tickets"]
+
+
+def test_wrong_scope_native_repair_proposal_is_withheld_without_card(client):
+    from functions.api import runs
+
+    client.text_after_read = client.repair_wrong = True
+    result = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-41"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=State("v3"),
+    )
+    assert len(client.requests) == 3 and result["completion_repair_exhausted"]
+    assert result["tool_calls"][1]["input"]["customer_id"] == "customer-b"
+    assert result["tool_calls"][1]["status"] == "NOT_EVALUATED"
+    assert runs.approval_requests("owned-run", result["tool_calls"], ("A-41",), []) == []
+    assert [name for name, _ in Gateway.instances[-1].sent] == ["TicketTools___list_tickets"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "no_ask",
+        "wrong_target",
+        "replay",
+        "old_stage",
+        "no_screen",
+        "screen_unavailable",
+        "screen_failed",
+        "model_failed",
+        "blocked",
+        "admission_lost",
+        "arguments_exhausted",
+        "arguments_invalid",
+        "turn_budget_exhausted",
+        "foreign_read",
+        "read_failed",
+        "denied_read",
+        "shadow_pending_card",
+        "dispatched_write",
+        "not_open",
+        "portal_ticket",
+        "wrong_tenant_record",
+        "breaker_tripped",
+        "breaker_read_only",
+        "breaker_uncertain",
+    ),
+)
+def test_completion_repair_preconditions_are_refusal_only(case):
+    from sec310_agent.controls import MAX_TURNS
+
+    state = State("v3")
+    rec = runtime.Recorder(
+        ACTOR,
+        stage="v3",
+        mode="live",
+        run_id="owned-run",
+        policy_session="policy-1",
+        state_table=state,
+        screen=Guardrail(),
+    )
+    rec.turn = 2
+    rec.controls = [
+        {"control": "Bedrock Guardrails", "status": "NONE · text passed, wrapped in nonce tags"}
+    ]
+    read = runtime.ToolCall(
+        "list_tickets",
+        {"customer_id": "customer-a", "actor": ACTOR, "run_id": "owned-run"},
+        status="OK",
+        decision="ALLOW",
+        result=json.dumps(
+            {
+                "customer_id": "customer-a",
+                "tickets": [
+                    {
+                        "customer_id": "customer-a",
+                        "ticket_id": "A-41",
+                        "status": "OPEN",
+                        "origin": "seed",
+                    }
+                ],
+            }
+        ),
+    )
+    rec.calls = [read]
+    asked = ["A-41"]
+    assert runtime._completion_repair_allowed(rec, asked, "end_turn")
+    if case == "no_ask":
+        asked = []
+    elif case == "wrong_target":
+        asked = ["A-42"]
+    elif case == "replay":
+        rec.mode = "replay"
+    elif case == "old_stage":
+        rec.stage = "v2"
+    elif case == "no_screen":
+        rec.screen = None
+    elif case == "screen_unavailable":
+        rec.screen.unavailable = True
+    elif case == "screen_failed":
+        rec.controls = []
+    elif case == "model_failed":
+        rec.model_failed = True
+    elif case == "blocked":
+        rec.blocked = True
+    elif case == "admission_lost":
+        rec.admission_lost = True
+    elif case == "arguments_exhausted":
+        rec.invalid_args_exhausted = True
+    elif case == "arguments_invalid":
+        rec.invalid_args_count = 1
+    elif case == "turn_budget_exhausted":
+        rec.turn = MAX_TURNS
+    elif case == "foreign_read":
+        read.input["customer_id"] = "customer-b"
+    elif case == "read_failed":
+        read.status = "ERROR"
+    elif case == "denied_read":
+        read.decision = "DENY"
+    elif case == "shadow_pending_card":
+        rec.calls.append(
+            runtime.ToolCall(
+                "close_ticket",
+                {
+                    "customer_id": "customer-b",
+                    "ticket_id": "B-77",
+                    "reason": "wrong",
+                    "actor": ACTOR,
+                    "run_id": "owned-run",
+                },
+                status="PENDING_APPROVAL",
+            )
+        )
+    elif case == "dispatched_write":
+        rec.calls.append(runtime.ToolCall("add_note", {}, status="OK"))
+    elif case in ("not_open", "portal_ticket", "wrong_tenant_record"):
+        data = json.loads(read.result)
+        ticket = data["tickets"][0]
+        if case == "not_open":
+            ticket["status"] = "CLOSED"
+        elif case == "portal_ticket":
+            ticket["origin"] = "form"
+        else:
+            ticket["customer_id"] = "customer-b"
+        read.result = json.dumps(data)
+    elif case.startswith("breaker_"):
+        rec.breaker = SimpleNamespace(
+            owner="current-intent",
+            tripped=case == "breaker_tripped",
+            read_only=case == "breaker_read_only",
+            persistence_error="uncertain" if case == "breaker_uncertain" else "",
+        )
+        state.item["breaker_pending"] = "current-intent"
+    assert not runtime._completion_repair_allowed(rec, asked, "end_turn")
+
+
+def test_v4_completion_read_only_or_foreign_breaker_intent_never_repairs():
+    state = State("v4")
+    state.item["breaker_pending"] = "current-intent"
+    breaker = SimpleNamespace(
+        owner="current-intent", tripped=False, read_only=False, persistence_error=""
+    )
+    rec = runtime.Recorder(
+        ACTOR,
+        stage="v4",
+        mode="live",
+        run_id="owned-run",
+        policy_session="policy-1",
+        state_table=state,
+        screen=Guardrail(),
+        breaker=breaker,
+    )
+    rec.turn = 2
+    rec.controls = [{"control": "Bedrock Guardrails", "status": "NONE · text passed"}]
+    rec.calls = [
+        runtime.ToolCall(
+            "list_tickets",
+            {"customer_id": "customer-a", "actor": ACTOR, "run_id": "owned-run"},
+            status="OK",
+            decision="ALLOW",
+            result=json.dumps(
+                {
+                    "customer_id": "customer-a",
+                    "tickets": [
+                        {
+                            "customer_id": "customer-a",
+                            "ticket_id": "A-41",
+                            "status": "OPEN",
+                            "origin": "seed",
+                        }
+                    ],
+                }
+            ),
+        )
+    ]
+    assert runtime._completion_repair_allowed(rec, ["A-41"], "end_turn")
+    state.item["breaker_pending"] = "someone-else"
+    assert not runtime._completion_repair_allowed(rec, ["A-41"], "end_turn")
+    assert rec.admission_lost
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("busy_owner", "other-run"),
+        ("busy_sub", "other-sub"),
+        ("busy_stage", "v4"),
+        ("policy_session", "other-policy"),
+        ("approval_uncertain", True),
+        ("approval_dispatch", "unresolved-grant"),
+        ("exclusion_disposition", "UNKNOWN"),
+        ("breaker_open", True),
+        ("breaker_pending", "other-intent"),
+    ),
+)
+def test_durable_authority_changed_after_read_refuses_additional_model(client, field, value):
+    client.text_after_read = True
+    state = State("v3")
+    client.on_text = lambda: state.item.__setitem__(field, value)
+    result = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-41"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=state,
+    )
+    assert len(client.requests) == 2 and not result["completion_repair_used"]
+    assert result["admission_lost"]
+    assert [c["tool"] for c in result["tool_calls"]] == ["list_tickets"]
+    assert [name for name, _ in Gateway.instances[-1].sent] == ["TicketTools___list_tickets"]
+
+
+def test_second_owner_check_can_withhold_repair_after_diagnostic_without_model(client):
+    class RetiredState(State):
+        def __init__(self):
+            super().__init__("v3")
+            self.reads = 0
+
+        def get_item(self, Key, ConsistentRead):
+            self.reads += 1
+            if self.reads == 4:
+                self.item["policy_session"] = "retired-before-continuation"
+            return super().get_item(Key, ConsistentRead)
+
+    client.text_after_read = True
+    state = RetiredState()
+    result = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-41"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=state,
+    )
+    assert state.reads >= 4 and len(client.requests) == 2
+    assert not result["completion_repair_used"] and result["admission_lost"]
+    assert [name for name, _ in Gateway.instances[-1].sent] == ["TicketTools___list_tickets"]
+
+
+def test_unreadable_state_or_missing_requested_ticket_cannot_prompt_repair(client):
+    client.text_after_read = True
+    state = State("v3")
+    client.on_text = lambda: setattr(state, "fail", True)
+    result = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-41"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=state,
+    )
+    assert len(client.requests) == 2 and not result["completion_repair_used"]
+    assert result["admission_lost"]
+    client.requests.clear()
+    state = State("v3")
+    result = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-42"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=state,
+    )
+    assert len(client.requests) == 2 and not result["completion_repair_used"]
+
+
+@pytest.mark.parametrize("native_repair", (True, False), ids=("native_close", "still_text"))
+def test_one_owned_conversation_completion_repair_after_screened_read(client, native_repair):
+    client.text_after_read = True
+    client.repair_close = native_repair
+    client.repair_text = not native_repair
+    result = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v3",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-41"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=State("v3"),
+    )
+    assert len(client.requests) == 3
+    third = client.requests[2]
+    assert (
+        third["requestMetadata"]
+        == client.requests[0]["requestMetadata"]
+        == {"sec310_run": "owned-run"}
+    )
+    assert third["toolConfig"]["toolChoice"] == {"auto": {}}
+    messages = third["messages"]
+    assert len(messages) >= 5
+    assert 'print("Customer-a' in str(messages[-2])
+    corrective = messages[-1]["content"][0]["text"]
+    assert "native TicketTools___close_ticket" in corrective
+    assert "A-41" in corrective and "customer-a" in corrective
+    assert "print(" not in corrective and "actor" not in corrective
+    assert result["completion_repair_used"] is True
+    assert result["completion_repair_exhausted"] is (not native_repair)
+    assert [name for name, _ in Gateway.instances[-1].sent] == ["TicketTools___list_tickets"]
+    assert result["tool_calls"][0]["status"] == "OK"
+    assert result["controls"][0]["status"].startswith("NONE ·")
+    if native_repair:
+        assert [c["status"] for c in result["tool_calls"]] == ["OK", "PENDING_APPROVAL"]
+        assert result["tool_calls"][1]["input"]["ticket_id"] == "A-41"
+    else:
+        assert len(result["tool_calls"]) == 1
+        assert "incomplete" in result["answer"]
 
 
 def test_trusted_ask_real_model_tool_use_is_held_not_self_approved(client):

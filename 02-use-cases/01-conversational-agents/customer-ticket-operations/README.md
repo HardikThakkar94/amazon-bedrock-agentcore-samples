@@ -289,8 +289,11 @@ is not a native ToolUse, a ticket read or an approval card. For an explicit veri
 operator Ask, V3+ instructs a native list_tickets read followed by a native close_ticket
 proposal held before Gateway execution; this is not the operator's separate approval.
 An Ask that returns only JSON text is NO_EFFECT with the close request marked incomplete,
-not a successful approval. The deployed `.6` no-card smoke remains historical until
-actual `.7` model/approval behavior and the full suites are measured. Malformed tool
+not a successful approval. After a verified own-ticket read and successful screen,
+a V3+ Ask with no held close gets at most one additional model turn in the same owned
+conversation, only for the first requested ticket; all prior text remains non-authoritative.
+An unanswered continuation is recorded incomplete, not retried. Deployed `.6` and `.7`
+no-card smokes are historical until actual `.8` model/approval and full-suite measurement. Malformed tool
 arguments are repairable local errors, not native policy denials. The operator Stop is checked at API and Runtime admission on every build.
 Stop is admission-only: an already-admitted run can finish; its pill is not evidence of
 cancellation or quiescence. Future runs refuse until cleared, without bypassing an owner/

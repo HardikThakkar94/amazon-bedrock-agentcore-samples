@@ -280,6 +280,8 @@ def run_result(
         "containment_durable": bool(agent.get("containment_durable")),
         "argument_errors": sum(c.get("decision") == "INVALID_ARGUMENTS" for c in calls),
         "invalid_args_exhausted": bool(agent.get("invalid_args_exhausted")),
+        "completion_repair_used": bool(agent.get("completion_repair_used")),
+        "completion_repair_exhausted": bool(agent.get("completion_repair_exhausted")),
         "tool_outcome_uncertain": bool(unknown),
         "evidence_uncertain": bool(
             unknown
@@ -297,6 +299,12 @@ def run_result(
                 or agent.get("persistence_error")
                 or agent.get("admission_lost")
             )
+            else ""
+        )
+        + (
+            " One owned-conversation native-close completion turn was exhausted; "
+            "no eligible held proposal."
+            if agent.get("completion_repair_exhausted")
             else ""
         ),
         "regression": "ERROR"

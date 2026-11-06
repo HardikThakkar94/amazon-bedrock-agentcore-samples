@@ -187,8 +187,8 @@ def test_default_cli_requires_matching_full_revision_and_recomputed_control_gate
     assert cli.main() == 0  # synthetic CLI contract only; not live evidence
     good = copy.deepcopy(record)
     bad = copy.deepcopy(good)
-    bad["dataset"] = "2026-11-05.6"
-    bad["source_version"] = "2026-11-05.6"
+    bad["dataset"] = "2026-11-05.7"
+    bad["source_version"] = "2026-11-05.7"
     assert cli.gate_rules.classify_default(bad, release, "v5") == "historical"
     for mutation in (
         "wrong_build",

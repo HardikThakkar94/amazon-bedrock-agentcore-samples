@@ -517,6 +517,10 @@ function caption(step){
   if(e0.kind === 'run.halted') return ['halted', `The denial <b>trips the circuit breaker</b>: the run ends now, and the agent stays <b>read-only</b> until ${u} resets it. Nobody pressed a button.`];
   if(e0.kind === 'run.read_only') return ['halted', 'The circuit breaker is <b>OPEN</b>: the run is admitted <b>read-only</b>. It may read and summarize; every write is refused.'];
   if(e0.kind === 'run.refused') return ['halted', `The operator’s <b>kill switch</b> is on: the run is refused at admission, with no model call.`];
+  if(e0.kind === 'model.task_incomplete') return ['error', /exhausted/.test(e0.label)
+    ? `The one corrective model turn was used, but <b>no eligible native close was held</b>. No approval card or close exists.`
+    : `The model answered before proposing the verified operator’s close. An own-ticket read and successful screen were observed; <b>the task is incomplete</b>. Text does not create a card.`];
+  if(e0.kind === 'model.completion_repair') return ['', `The runtime rechecks the same owned run and allows <b>one more model turn in this conversation</b>, using supported Auto tools. This is not approval; only a fresh native close proposal can be held.`];
   if(e0.kind === 'tool.invalid_arguments') return ['error', `The model proposed <b>invalid tool arguments</b>; the runtime refused them before Gateway or Policy. The model may retry with the exact plain-string fields.`];
   if(e0.kind === 'tool.skipped') return /argument repair limit/.test(e0.detail?.reason || '')
     ? ['error', `The bounded argument-repair limit was reached. This and later proposals are <b>not evaluated</b>; any earlier Gateway results remain in the trace.`]

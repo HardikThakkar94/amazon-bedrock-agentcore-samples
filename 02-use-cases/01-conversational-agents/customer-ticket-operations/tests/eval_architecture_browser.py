@@ -375,6 +375,17 @@ def exercise(browser, origin, screenshots):
     assert "no eligible native close was held" in page.evaluate("caption(STEPS[0])[1]")
     assert "nothing changed" in page.evaluate("caption(STEPS[0])[1]")
     assert state["approvals"] == [] and mutations() == []
+    first = page.evaluate(
+        "caption({events:[{kind:'model.task_incomplete',label:'verified close task incomplete after screened own read'}]})[1]"
+    )
+    repair = page.evaluate(
+        "caption({events:[{kind:'model.completion_repair',label:'one owned-conversation model continuation admitted'}]})[1]"
+    )
+    exhausted = page.evaluate(
+        "caption({events:[{kind:'model.task_incomplete',label:'native close proposal still missing · repair budget exhausted'}]})[1]"
+    )
+    assert "task is incomplete" in first and "one more model turn" in repair
+    assert "no eligible native close" in exhausted and mutations() == []
     state["active_stage"] = "v5"
     state["last_run"] = {
         "status": "UNAVAILABLE",
