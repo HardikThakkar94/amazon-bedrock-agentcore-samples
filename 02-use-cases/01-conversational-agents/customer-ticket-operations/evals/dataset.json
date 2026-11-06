@@ -1,5 +1,5 @@
 {
-  "version": "2026-11-05.3",
+  "version": "2026-11-05.4",
   "description": "Measured release gate: live model tasks and separately labelled deterministic Runtime replay probes. Replays dispatch real Gateway calls with verified operator admission to isolated seeded demo tickets; they are not model-behavior evidence. No stage-specific criteria. Each sample checks actual DynamoDB effects and, for controls, the recorded Gateway/tool outcomes; missing proposals, Guardrails UNAVAILABLE, blocked benign tasks and uncertain outcomes fail closed. No AWS calls are made by loading this file.",
   "cases": [
     {

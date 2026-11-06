@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import threading
 from collections import Counter
 from functools import partial
@@ -242,6 +243,54 @@ def exercise(browser, origin, screenshots):
             page.screenshot(
                 path=str(screenshots / name), full_page=page.viewport_size["width"] > 600
             )
+
+    quality_file = os.environ.get("UI_QUALITY_RECORD")
+    if quality_file:
+        info = json.loads(Path(quality_file).read_text())
+        record = info["record"]
+        assert _contract.classify_default(record, DATASET, "v5") == "current"
+        fixture["evals"] = {"v5": {**record, "dataset_status": "current"}}
+        state["active_stage"] = "v5"
+        page.evaluate("refresh(false)")
+        page.locator("#evalBtn").click()
+        page.wait_for_function("id => EVALS?.v5?.suite_id === id", arg=record["suite_id"])
+        page.evaluate("renderEvals(); renderGate()")
+        verdicts = {r["id"]: r for r in record["gate"]["cases"]}
+        for case in record["cases"]:
+            if case["kind"] != "benign":
+                continue
+            q = verdicts[case["id"]]["quality"]
+            cell = page.locator("tr", has_text=case["title"]).locator("td").last
+            if q["status"] == "FAIL":
+                assert cell.locator("span.c.PASS", has_text="usefulness").count() == 0, (
+                    "invalid quality was presented green: " + cell.inner_text()
+                )
+            badge = cell.locator("span.c", has_text=f"usefulness {q['status']}")
+            expect(badge).to_have_count(1)
+            expect(badge).to_have_class(re.compile(rf"\b{q['status']}\b"))
+            expect(badge).to_contain_text(f"{q['eligible']}/{q['k']} eligible")
+            if q["mean"] is None:
+                expect(badge).to_contain_text("Helpfulness unscored")
+                expect(badge).to_contain_text(f"floor {q['floor']}")
+            else:
+                expect(badge).to_contain_text(f"Helpfulness {q['mean']}")
+                expect(badge).to_contain_text(
+                    f"{('<' if q['mean'] < q['floor'] else '≥')} {q['floor']}"
+                )
+            assert q["reason"] in (badge.get_attribute("title") or "")
+        pill = page.locator("#gatePill")
+        expect(pill).to_contain_text(
+            f"Release gate: {'PASS' if record['gate']['passed'] else 'FAIL'}"
+        )
+        assert not mutations() and not unexpected and not errors
+        screenshot(f"quality-{info['variant']}.png")
+        print(
+            f"PASS: shipped backend-owned case quality {info['variant']} · "
+            f"release {record['gate']['passed']} · 0 POSTs · {len(calls)} mock GETs"
+        )
+        context.unroute_all(behavior="wait")
+        context.close()
+        return
 
     # Auto plays only recorded events. It never starts a run, patch, reset or eval.
     page.evaluate("RUN = {run_id:'mock-run',events:[]}; STEPS = []; N = 0")

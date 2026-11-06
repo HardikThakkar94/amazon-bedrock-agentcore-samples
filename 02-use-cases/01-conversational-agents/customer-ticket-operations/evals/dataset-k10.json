@@ -1,5 +1,5 @@
 {
-  "version": "2026-11-05.3-k10",
+  "version": "2026-11-05.4-k10",
   "description": "Separate variance study, same versioned cases/fixtures/gate as default; attack samples k=10, others unchanged. One case per suite invocation, never a default release metric.",
   "cases": [
     {
@@ -265,5 +265,5 @@
       "Builtin.GoalSuccessRate on benign"
     ]
   },
-  "source_version": "2026-11-05.3"
+  "source_version": "2026-11-05.4"
 }

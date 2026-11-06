@@ -303,7 +303,8 @@ def suite_of(r, build):
 def test_api_marks_stored_pre_upgrade_green_suites_historical(runner):
     old = {
         "status": "DONE",
-        "dataset": "2026-10-26.1",
+        "dataset": "2026-11-05.3",
+        "source_version": "2026-11-05.3",
         "gate": {"passed": True},
         "cases": [{"id": "benign_summary", "samples": []}],
     }
@@ -330,6 +331,7 @@ def test_api_quarantines_current_revision_corruption_not_as_historical(runner):
         "missing_family",
         "wrong_count",
         "false_green",
+        "wrong_quality_case",
     ):
         row = copy.deepcopy(good)
         if mutation == "wrong_build":
@@ -342,6 +344,8 @@ def test_api_quarantines_current_revision_corruption_not_as_historical(runner):
             row["cases"][-1].pop("family")
         elif mutation == "wrong_count":
             row["cases"][0]["samples"] = []
+        elif mutation == "wrong_quality_case":
+            row["gate"]["cases"][0]["quality"]["status"] = "FAIL"
         else:
             row["gate"]["passed"] = True
         runner.state.put_item({"customer_id": "evals#v5", "suite": json.dumps(row)})
@@ -826,6 +830,74 @@ def test_sdk_contexts_through_complete_default_release_gate(
                 s["scores"]["Builtin.Helpfulness"]["label"] == ("SCORED" if release else "ERROR")
                 for s in case["samples"]
             )
+
+
+@pytest.mark.parametrize(
+    "labels,expected,release",
+    [
+        (("fine", "fine"), "SCORED", True),
+        (("PASS", "FAIL"), "MIXED", False),
+        (("FAIL", "FAIL"), "FAIL", False),
+    ],
+)
+def test_sdk_raw_high_helpfulness_labels_to_case_and_full_gate(
+    runner, monkeypatch, labels, expected, release
+):
+    """Matched SDK contexts do not make MIXED/FAIL high numeric labels eligible."""
+
+    def synthetic_case(token, build, case, sample):
+        return {
+            "run_id": f"owned-{case['id']}-{sample}",
+            "sample": sample,
+            "started": 0,
+            "local": "PASS",
+            "verdict": "NO_EFFECT",
+            "screen": {"status": "PASS"},
+            "useful_evidence": True,
+            **(
+                {"control": {"family": case["family"], "status": "PASS"}}
+                if case.get("family")
+                else {}
+            ),
+        }
+
+    def service(evaluatorId, evaluationInput, evaluationTarget=None):
+        traces = (evaluationTarget or {}).get("traceIds") or []
+        if evaluatorId == "Builtin.Helpfulness":
+            raw = [{"label": labels[0], "value": 0.9}, {"label": labels[1], "value": 0.8}]
+        elif evaluatorId == "code-1":
+            raw = [{"label": "PASS", "value": 1.0}]
+        else:
+            raw = [{"label": "PASS"} for _ in traces] if traces else [{"label": "PASS"}]
+        return sdk_reply(evaluatorId, evaluationInput, evaluationTarget, raw)
+
+    monkeypatch.setattr(runner.h, "run_case", synthetic_case)
+    monkeypatch.setattr(
+        runner.h,
+        "spans_for",
+        lambda sample, deadline: [
+            {"traceId": t, "attributes": {"session.id": sample["run_id"]}} for t in ("t1", "t2")
+        ],
+    )
+    monkeypatch.setattr(runner.h, "_agentcore", SimpleNamespace(evaluate=service))
+    done = runner.h.lambda_handler({"build": "v5", "suite_id": "raw-labels"}, None)
+    record = suite_of(runner, "v5")
+    assert done["passed"] is release
+    assert record["gate"]["safety"] == "PASS"
+    assert record["gate"]["controls"]["status"] == "PASS"
+    assert record["gate"]["quality"]["passed"] is release
+    who = {"customer_id": "customer-a", "role": "operator", "sub": "alice-sub"}
+    assert runner.h.app.eval_suites(who)["builds"]["v5"]["dataset_status"] == "current"
+    for case in record["cases"]:
+        if case["kind"] == "benign":
+            q = next(row["quality"] for row in record["gate"]["cases"] if row["id"] == case["id"])
+            assert q["status"] == ("PASS" if release else "FAIL")
+            assert q["eligible"] == (1 if release else 0)
+            assert case["samples"][0]["scores"]["Builtin.Helpfulness"] == {
+                "label": expected,
+                "value": 0.85,
+                "explanation": "Service score recorded; raw explanation withheld",
+            }
 
 
 def test_explicit_foreign_input_session_cannot_be_scored_as_owned_run(runner, monkeypatch):

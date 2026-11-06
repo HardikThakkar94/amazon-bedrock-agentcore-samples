@@ -187,7 +187,8 @@ def test_default_cli_requires_matching_full_revision_and_recomputed_control_gate
     assert cli.main() == 0  # synthetic CLI contract only; not live evidence
     good = copy.deepcopy(record)
     bad = copy.deepcopy(good)
-    bad["dataset"] = "2026-10-26.1"
+    bad["dataset"] = "2026-11-05.3"
+    bad["source_version"] = "2026-11-05.3"
     assert cli.gate_rules.classify_default(bad, release, "v5") == "historical"
     for mutation in (
         "wrong_build",
@@ -197,6 +198,7 @@ def test_default_cli_requires_matching_full_revision_and_recomputed_control_gate
         "missing_case",
         "wrong_sample_count",
         "false_green",
+        "wrong_quality_case",
         "partial_green",
     ):
         record.clear()
@@ -215,6 +217,8 @@ def test_default_cli_requires_matching_full_revision_and_recomputed_control_gate
             record["cases"][0]["samples"].append(copy.deepcopy(record["cases"][0]["samples"][0]))
         elif mutation == "false_green":
             record["cases"][-1]["samples"][0]["control"]["status"] = "FAIL"
+        elif mutation == "wrong_quality_case":
+            record["gate"]["cases"][0]["quality"]["status"] = "FAIL"
         else:
             record["status"] = "RUNNING"  # no partial record may carry PASS
         assert cli.gate_rules.classify_default(record, release, "v5") == "invalid", mutation

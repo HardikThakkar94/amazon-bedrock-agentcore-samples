@@ -953,7 +953,7 @@ function renderGate(){
 function sampleTip(s){
   const sc = s.scores || {}, part = k => sc[k] ? `${k}: ${sc[k].label}${sc[k].value != null ? ' (' + sc[k].value + ')' : ''}` : null;
   return [`${s.control ? 'Runtime replay / Gateway probe' : 'live model run'} · verdict ${s.verdict}`, s.effects?.length ? `writes: ${s.effects.join(', ')}` : 'writes: none',
-    s.control ? `control ${s.control.status}: ${s.control.reason}; tools ${s.control.tool_outcomes?.join(', ') || 'none'}; follow-up ${s.control.followup || 'n/a'}` : `guardrail ${s.screen?.status || (s.guardrail_unavailable ? 'UNAVAILABLE' : 'not measured on this dataset')}; ${s.screen?.reason || 'see run events for provenance'}; checks ${s.screen?.checks ?? 'unknown'}; usefulness evidence ${s.useful_evidence === true ? 'PASS' : 'not proven'}; own-tenant reads ${s.own_reads ?? 'unknown'}; answer characters ${s.answer_chars ?? 'unknown'}`,
+    s.control ? `control ${s.control.status}: ${s.control.reason}; tools ${s.control.tool_outcomes?.join(', ') || 'none'}; follow-up ${s.control.followup || 'n/a'}` : `guardrail ${s.screen?.status || (s.guardrail_unavailable ? 'UNAVAILABLE' : 'not measured on this dataset')}; ${s.screen?.reason || 'see run events for provenance'}; checks ${s.screen?.checks ?? 'unknown'}; functional precheck ${s.useful_evidence === true ? 'met' : 'not proven'} (quality eligibility is scored separately); own-tenant reads ${s.own_reads ?? 'unknown'}; answer characters ${s.answer_chars ?? 'unknown'}`,
     `run ${s.run_id || 'legacy id unavailable'} · ${s.guardrail_unavailable ? 'dependency unavailable, not a detected prompt attack' : s.verdict === 'FILTERED' && !s.screen ? 'historical FILTERED is ambiguous; inspect run events for dependency error vs intervention' : ''}`,
     part('no_forbidden_effect'), sc.no_forbidden_effect?.explanation, part('ticket_text_as_data'), sc.ticket_text_as_data?.explanation,
     part('Builtin.Helpfulness'), part('Builtin.GoalSuccessRate'), part('Builtin.Refusal'), s.error, s.spans === 0 ? 'no spans yet: scored from the DynamoDB diff' : null]
@@ -976,10 +976,12 @@ function renderEvals(){
     const row = st.gate?.cases?.find(x => x.id === c.id), data = st.cases?.find(x => x.id === c.id);
     if(!row) return '<span class="j">—</span>';
     const old = !currentSuite(st), tip = (data?.samples || []).map(sampleTip).join('\n\n');
-    const helpful = (data?.samples || []).filter(s => s.useful_evidence === true && s.verdict !== 'FILTERED' && Number.isFinite(s.scores?.['Builtin.Helpfulness']?.value));
-    const useful = helpful.length === row.k && helpful.length > 0 && helpful.reduce((n,s)=>n+s.scores['Builtin.Helpfulness'].value,0)/helpful.length >= (st.gate?.quality?.floor ?? 0.5);
     const controlDetail = row.control ? `<span class="c ${old ? '' : row.control}">${row.control_family === 'guardrail' ? 'guardrail' : 'control'} ${esc(row.control)} ${row.control_passed}/${row.k}</span>` : '';
-    const detail = controlDetail + (c.kind === 'benign' ? `<span class="c ${old ? '' : useful ? 'PASS' : 'FAIL'}">usefulness ${useful ? 'PASS' : 'FAIL'} ${helpful.length}/${row.k}</span>`
+    const q = row.quality; // shared backend gate eligibility, never a browser re-scoring rule
+    const score = q?.mean == null ? 'unscored' : `${q.mean} ${q.mean < q.floor ? '<' : '≥'} ${q.floor}`;
+    const qualityDetail = !q ? '<span class="j">historical · quality not evaluated</span>'
+      : `<span class="c ${old ? '' : q.status}" title="${esc(q.reason)}">usefulness ${esc(q.status)} ${esc(q.eligible)}/${esc(q.k)} eligible · Helpfulness ${esc(score)}${q.mean == null ? ` (floor ${esc(q.floor)})` : ''}</span>${q.status === 'FAIL' ? `<span class="j">${esc(q.reason)}</span>` : ''}`;
+    const detail = controlDetail + (c.kind === 'benign' ? qualityDetail
       : !row.control ? `<span class="j">judge ${(data?.samples || []).map(s => ({PASS:'✓', FAIL:'✕'})[s.scores?.ticket_text_as_data?.label] || '·').join('')}</span>` : '');
     return `<span class="c ${old ? '' : row.safety}" title="${esc(tip)}">safety ${row.passed}/${row.k}${old ? ' historical' : ''}</span>${detail}`;
   };

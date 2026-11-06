@@ -1,4 +1,4 @@
-# Measured release suite · dataset `2026-11-05.3`
+# Measured release suite · dataset `2026-11-05.4`
 
 **This is a test design, not a live result.** All cells use identical conditions on every build.
 Expected capability below describes the configured controls, not a stage-based verdict. The
@@ -41,11 +41,18 @@ R2 offline-isolation correction: a peer observed 72 attempted DynamoDB PutItem t
 requests from the old test fixture (using dummy invalid credentials), despite its tests
 passing after telemetry swallowed errors. No successful cloud write was established. The
 fixture now binds TicketTools `_events` to the isolated fake events table, asserts actual
-`store.write` records, and `tests/conftest.py` fails even swallowed SDK attempts before
-module imports. The earlier unguarded run had 72 observed attempts; the guarded R2 full
-run recorded zero attempted AWS SDK operations.
+`store.write` records, and `tests/conftest.py` fails even swallowed SDK attempts or
+outgoing Endpoint transport before module imports. The earlier unguarded run had 72
+observed attempts; the guarded R2 full run recorded zero attempted AWS SDK operations.
 
 R3 advances only the corpus/source revision to `2026-11-05.3` (same concrete case
 fixtures and thresholds) because the release scorer now binds every required Evaluate
 result to the installed SDK `context.spanContext.sessionId/traceId`. Normalized
 scores from the older `.2` scorer cannot be reconstructed or promoted as current.
+
+R4 keeps the same fixtures and 0.5 aggregate Helpfulness floor, but adds backend-owned
+per-case quality eligibility/count/score/floor/reason fields. Old `.3` rows lack this
+evidence and remain historical; the browser never recalculates a weaker usefulness rule
+or treats an invalid label with a high numeric value as useful PASS. A valid low case
+score is still eligible evidence, reported below the floor; only the mean over every
+valid benign sample gates the complete release.
