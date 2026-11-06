@@ -27,6 +27,7 @@ _spec = spec_from_file_location("browser_eval_contract", ROOT / "functions/api/e
 _contract = module_from_spec(_spec)
 _spec.loader.exec_module(_contract)
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+OWNED_RUN = "01a1b2bb-9913-7804-8a9b-b70cf4f92260"
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -59,6 +60,7 @@ def exercise(browser, origin, screenshots):
         "approvals": [],
         "store_comparison": {},
         "last_run": None,
+        "recorded_run": None,
     }
     calls, errors, unexpected, pending = [], [], [], {}
     fixture = {
@@ -101,6 +103,7 @@ def exercise(browser, origin, screenshots):
             assert body == {} or body.get("stage") in [f"v{i}" for i in range(6)]
             state["active_stage"] = body.get("stage", f"v{int(state['active_stage'][1]) + 1}")
             state["last_run"] = None
+            state["recorded_run"] = None
             result = {"active_stage": state["active_stage"], "title": "Mock build"}
         elif path == "/api/tickets/delete":
             assert request.method == "POST" and body == {"ticket_id": "A-90"}
@@ -121,7 +124,10 @@ def exercise(browser, origin, screenshots):
                     if approval["id"] == body["approval"]:
                         approval["status"] = "APPROVED"
             state["run_id"] = body["run_id"]
+            state["recorded_run"] = {"run_id": body["run_id"], "stage": state["active_stage"]}
             state["last_run"] = {
+                "run_id": body["run_id"],
+                "stage": state["active_stage"],
                 "status": "NO_EFFECT",
                 "answer": "Mock tickets summarized.",
                 "effects": [],
@@ -145,6 +151,7 @@ def exercise(browser, origin, screenshots):
                 breaker_open=False,
                 capture_available=False,
                 last_run=None,
+                recorded_run=None,
             )
             state.pop("run_id", None)
             result = {"reset": True}
@@ -172,6 +179,7 @@ def exercise(browser, origin, screenshots):
             }
         elif path.startswith("/api/runs/") and path.endswith("/events"):
             result = {
+                "run_id": path.split("/")[3],
                 "events": [
                     {
                         "sk": "000#api#run",
@@ -181,7 +189,7 @@ def exercise(browser, origin, screenshots):
                         "label": "mock completion",
                         "verdict": "NO_EFFECT",
                     }
-                ]
+                ],
             }
         elif path == "/auth/me":
             result = {
@@ -208,6 +216,7 @@ def exercise(browser, origin, screenshots):
                 }
             ]
             state["last_run"] = None
+            state["recorded_run"] = None
             state.pop("run_id", None)
             route.fulfill(status=302, headers={"Location": "/"})
             return
@@ -524,8 +533,15 @@ def exercise(browser, origin, screenshots):
     assert len(mutations()) == 5
 
     # A prior run and pending playback must survive opening and closing the static diagram.
-    state["last_run"] = {"status": "NO_EFFECT", "answer": "Recorded answer", "effects": []}
-    state["run_id"] = "mock-run"
+    state["last_run"] = {
+        "run_id": OWNED_RUN,
+        "stage": "v5",
+        "status": "NO_EFFECT",
+        "answer": "Recorded answer",
+        "effects": [],
+    }
+    state["run_id"] = OWNED_RUN
+    state["recorded_run"] = {"run_id": OWNED_RUN, "stage": "v5"}
     page.evaluate("refresh()")
     page.evaluate("N = 0; renderPanel()")
     history = page.evaluate(
@@ -785,8 +801,9 @@ def exercise(browser, origin, screenshots):
         expect(page.locator("#custTitle")).to_have_text(label)
         page.evaluate("N = STEPS.length; renderPanel()")
         assert page.locator("#custTitle img, #capx img").count() == 0
-        if persona and persona.get("username"):
-            expect(page.locator("#capx")).to_contain_text(persona["username"])
+        # A persona change drops any previous operator's recorded trace, not relabels it.
+        assert page.evaluate("RUN") is None
+        expect(page.locator("#capx")).to_contain_text("Run agent")
         assert page.evaluate("window.pwned") is None
         assert page.evaluate("STATE.persona") == persona
 

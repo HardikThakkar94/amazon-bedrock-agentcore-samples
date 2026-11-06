@@ -984,6 +984,43 @@ def test_invalid_late_target_is_not_dropped_before_api_admission(api, monkeypatc
     assert api.tables["events"].rows == {}
 
 
+def test_public_state_exposes_only_current_tenant_owned_recorded_run(api, monkeypatch):
+    from copy import deepcopy
+
+    assert api.app.public_state(dict(ALICE))["recorded_run"] is None
+    monkeypatch.setattr(
+        api.app,
+        "invoke_agent",
+        lambda token, run_id, payload: {"run_id": run_id, "model_id": "offline", "tool_calls": []},
+    )
+    status, result = request(api, "/api/run")
+    assert status == 200 and result["result"]["status"] == "NO_EFFECT"
+    view = api.app.public_state(dict(ALICE))
+    recorded = view["recorded_run"]
+    assert recorded == {"run_id": result["result"]["run_id"], "stage": "v3"}
+    assert view["last_run"]["run_id"] == recorded["run_id"]
+    assert view["observability"]["sec310_run"] == recorded["run_id"]
+    assert api.app.public_state({**ALICE, "role": "customer"})["recorded_run"] is None
+    assert api.app.run_events(dict(ALICE), recorded["run_id"], "")["events"]
+    state = api.tables["state"].rows[("customer-a",)]
+    saved = deepcopy(state)
+    state["run_id"] = api.app.runs.uuid7()
+    assert api.app.public_state(dict(ALICE))["recorded_run"] is None
+    state.update(saved)
+    state["last_run"] = json.dumps({**view["last_run"], "stage": "untrusted"})
+    assert api.app.public_state(dict(ALICE))["recorded_run"] is None
+    state.update(saved)
+    owner = api.tables["events"].rows[(recorded["run_id"], api.app.OWNER_SK)]
+    owner["customer_id"] = "customer-b"  # corrupt/foreign proof cannot hydrate Alice
+    assert api.app.public_state(dict(ALICE))["recorded_run"] is None
+    with pytest.raises(api.app.HttpError) as exc:
+        api.app.run_events(dict(ALICE), recorded["run_id"], "")
+    assert exc.value.status == 404
+    owner["customer_id"] = "customer-a"
+    api.tables["events"].rows.pop((recorded["run_id"], api.app.OWNER_SK))
+    assert api.app.public_state(dict(ALICE))["recorded_run"] is None
+
+
 def test_complete_five_target_operator_request_boundary(api, monkeypatch):
     from copy import deepcopy
 

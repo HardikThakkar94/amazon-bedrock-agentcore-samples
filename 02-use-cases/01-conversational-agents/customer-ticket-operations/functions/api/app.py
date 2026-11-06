@@ -371,6 +371,21 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
             "changed": bool(changed),
             "changed_fields": changed,
         }
+    last_run = json.loads(st["last_run"]) if st.get("last_run") else None
+    recorded_run = None
+    if isinstance(last_run, dict) and who.get("role") == "operator":
+        recorded_id = last_run.get("run_id")
+        if (
+            isinstance(recorded_id, str)
+            and RUN_ID.fullmatch(recorded_id)
+            and recorded_id == st.get("run_id")
+            and last_run.get("stage") in STAGES
+        ):
+            proof = _events.get_item(
+                Key={"run_id": recorded_id, "sk": OWNER_SK}, ConsistentRead=True
+            ).get("Item")
+            if proof and proof.get("customer_id") == who["customer_id"]:
+                recorded_run = {"run_id": recorded_id, "stage": last_run.get("stage")}
     owner = str(st.get("busy_owner") or "")
     pending = bool(st.get("breaker_pending"))
     uncertain = bool(st.get("approval_uncertain") or st.get("approval_dispatch"))
@@ -442,7 +457,8 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
         "store_comparison": comparison,
         "other_tickets": other_tickets(who, st),
         "store_change_source": st.get("store_change_source", "Clean reset"),
-        "last_run": json.loads(st["last_run"]) if st.get("last_run") else None,
+        "last_run": last_run,
+        "recorded_run": recorded_run,  # tenant-owned event-owner proof, never an action authority
         "decisions": json.loads(st.get("decisions", "[]")),
         "observability": {
             "sec310_run": st.get("run_id"),

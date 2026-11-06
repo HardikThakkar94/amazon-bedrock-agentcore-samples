@@ -446,7 +446,7 @@ const SEG = { 'ingress>acid':[['a1',1]], 'acid>runtime':[['a2',1]], 'runtime>bed
   'gateway>lambda':[['a4',1],['a5',1]], 'lambda>ddb':[['a6',1]], 'runtime>guardrail':[['g1',1]] };
 
 /* ── state ── */
-let STATE = null, RUN = null, STEPS = [], N = 0, mode = 'auto', busy = false, timer = 0, polling = null, playbackEpoch = 0;
+let STATE = null, RUN = null, STEPS = [], N = 0, mode = 'auto', busy = false, timer = 0, polling = null, playbackEpoch = 0, viewEpoch = 0, traceLoading = 0, traceError = '';
 function cancelPlayback(){ clearTimeout(timer); playbackEpoch++; busy = false; }
 const MAX_ASKS = 5;
 const ASKS = new Set(); // V3+: up to five exact tickets for the next live run; the API validates all
@@ -458,6 +458,7 @@ const cust = () => STATE?.persona?.customer_id || 'customer-a';
 const regionName = id => id === 'customer-a' ? 'Region A' : id === 'customer-b' ? 'Region B' : 'assigned Region';
 const custName = () => regionName(cust());
 const build = () => Math.max(0, ['v0','v1','v2','v3','v4','v5'].indexOf(STATE?.active_stage || 'v0'));
+const traceBuild = () => RUN?.stage && /^v[0-5]$/.test(RUN.stage) ? Number(RUN.stage[1]) : build();
 
 /* group events into steps: a step opens on an event with an edge (or a new node); it absorbs the
    model reply to its own model call and edgeless follow-ups. */
@@ -491,7 +492,7 @@ function legacyRunUnavailable(ev){ try { const p = JSON.parse(ev?.payload || '{}
 /* captions: plain words for each step, from its own events */
 function caption(step){
   const k = step.events.map(e => e.kind), e0 = step.events[0], has = x => k.includes(x), get = x => step.events.find(e => e.kind === x);
-  const B = build(), u = esc(who()), t = e0.detail?.ticket_id || e0.effect?.ticket_id || '';
+  const B = traceBuild(), u = esc(who()), t = e0.detail?.ticket_id || e0.effect?.ticket_id || '';
   if(has('auth.verified')) return ['', `${u} signed in with Cognito. CloudFront checks the token at the edge; the API checks it again.`];
   if(has('identity.validated')) return ['', `AgentCore Identity validates ${u}’s access token before the Runtime accepts the request.`];
   if(has('runtime.entered')) return ['', `AgentCore Runtime starts a Strands agent session for ${u}’s request.`];
@@ -565,7 +566,7 @@ function fold(n){
   for(const id of ['ingress','acid','agent','bedrock','guardrail','gateway','policy','lambda','ddb','cw']) st.n[id] = {s:'idle', text:''};
   st.n.ingress.text = `${who()} · Cognito session`; st.n.acid.text = 'inbound JWT authorizer · Cognito';
   st.n.agent.text = 'waiting for a request'; st.n.bedrock.text = STATE?.model_label || 'Llama 4 Maverick';
-  st.n.policy.text = POLICY_TEXT(build()); st.n.cw.text = 'model, gateway, runtime logs';
+  st.n.policy.text = POLICY_TEXT(traceBuild()); st.n.cw.text = 'model, gateway, runtime logs';
   st.n.guardrail.text = 'prompt-attack screen · HIGH';
   st.n.gateway.text = 'MCP tools'; st.n.lambda.text = 'idle'; st.n.ddb.text = 'tickets table';
   for(const step of STEPS.slice(0, n)) for(const ev of step.events){
@@ -578,7 +579,7 @@ function fold(n){
     if(ev.kind === 'store.write') st.effects.add(ev.effect?.ticket_id);
     if(ev.kind === 'run.completed' && st.n.agent.s === 'active') st.n.agent.s = ['harmful','halted','denied'].includes(ev.status) ? ev.status : 'ok';
   }
-  if(build() > 0) st.n.policy.text = policyReach(STEPS.slice(0, n).flatMap(step => step.events), build());
+  if(traceBuild() > 0) st.n.policy.text = policyReach(STEPS.slice(0, n).flatMap(step => step.events), traceBuild());
   // the node the current step lands on is the one the audience should look at
   const last = STEPS[n - 1]?.events.at(-1);
   if(last && st.n[last.node] && st.n[last.node].s === 'ok') st.n[last.node].s = 'active';
@@ -661,14 +662,14 @@ function renderPanel(){
   const st = fold(N);
   for(const id in st.n){ const el = nodeEl(id), x = st.n[id]; el.dataset.s = x.s; el.querySelector('[data-st]').textContent = x.text;
     el.setAttribute('aria-label', `${el.querySelector('.t').textContent}: ${x.s}. ${x.text}. Open trace.`); }
-  nodeEl('policy').classList.toggle('off', build() < 2);
-  panel.querySelectorAll('[data-gr]').forEach(el => el.hidden = build() < 1); // Guardrails from V1 on
+  nodeEl('policy').classList.toggle('off', traceBuild() < 2);
+  panel.querySelectorAll('[data-gr]').forEach(el => el.hidden = traceBuild() < 1); // Guardrails from V1 on
   $('#stamp').classList.toggle('on', st.stamp);
   $('#capA1').textContent = `${who()}’s access token → AgentCore Runtime`;
   panel.querySelectorAll('[data-a]').forEach(el => { const a = st.arrows[el.dataset.a]; if(a) el.dataset.s = a.s; else delete el.dataset.s; });
   $('#chips').innerHTML = Object.values(st.chips).map(c => `<span class="tc" data-s="${c.s}">${esc(c.label)}${c.s==='ok'?' ✓':c.s==='denied'?' ✕':c.s==='error'?' ↻':c.s==='held'?' ⏸':''}</span>`).join('') || '<span class="tc ghost">tool calls appear here</span>';
   const [cs, text] = N === 0
-    ? ['', !RUN ? 'Press <b>Run agent</b> to record hops; playback starts automatically. Switch to <b>Step</b> to inspect one at a time.'
+    ? ['', traceError ? esc(traceError) : !RUN ? 'Press <b>Run agent</b> to record hops; playback starts automatically. Switch to <b>Step</b> to inspect one at a time.'
         : STEPS.length ? `<b>${STEPS.length} hops recorded</b>${polling ? ' so far' : ''}. ${mode === 'auto' ? 'Playing as they arrive.' : 'Press <b>Next step</b> (→) to inspect them.'}` : 'The agent is starting…']
     : caption(STEPS[N - 1]);
   $('#caption').dataset.s = cs; $('#capx').innerHTML = text;
@@ -735,7 +736,7 @@ function renderLines(st){
   $('#tried').innerHTML = writes.length ? writes.map(p => `<code>${esc(p.operation)} ${esc(p.ticket_id)}</code>`).join(', ') : 'only read the tickets';
   $('#tried').className = writes.length ? '' : 'ok';
   const executed = (run.effects || []).filter(e => e.status === 'EXECUTED');
-  const B = build(), ctl = run.controls || [];
+  const B = traceBuild(), ctl = run.controls || [];
   const tone = c => /DENY|BLOCK|INTERVEN|HALT|REFUS|STOP|OPEN/.test(c.status) ? (/HALT|REFUS|STOP|OPEN/.test(c.status) ? 'halt' : 'held') : /ALLOW|PASS|NONE/.test(c.status) ? '' : 'hit';
   $('#boundary').innerHTML = ctl.length ? ctl.map(c => `${esc(c.control)}: <span class="${tone(c)}">${esc(c.status)}</span>`).join(' · ')
     : B === 0 ? (executed.length ? 'none in this build · the call went through' : 'none in this build') : 'no write was proposed';
@@ -810,7 +811,8 @@ async function runAgent(mode = 'live', extra = {}){
   if(polling) return;
   if(mode !== 'approve') APPROVING = '';
   closeTrace();
-  cancelPlayback(); RUN = {run_id: uuid7(), events: []}; STEPS = []; N = 0;
+  viewEpoch++; traceLoading = 0; traceError = '';
+  cancelPlayback(); RUN = {run_id: uuid7(), stage: STATE?.active_stage, events: []}; STEPS = []; N = 0;
   $('#runBtn').disabled = true; $('#runBtn').textContent = 'Running…';
   polling = setInterval(() => pollOnce().catch(() => {}), 500); renderPanel();
   const body = {run_id: RUN.run_id, mode, ...extra};
@@ -825,12 +827,32 @@ async function runAgent(mode = 'live', extra = {}){
   }
 }
 async function refresh(loadRun = true){
-  STATE = await api('/api/state');
+  if(loadRun) traceLoading = 0;
+  const epoch = ++viewEpoch, state = await api('/api/state');
+  if(epoch !== viewEpoch) return; // a Run/Reset/persona/stage refresh superseded this GET
+  const previous = STATE;
+  STATE = state;
   STATE.model_label = (STATE.model.match(/llama4-maverick/) ? 'Llama 4 Maverick' : (STATE.model.split('·')[1] || 'model').trim());
-  if(loadRun && STATE.last_run && STATE.run_id && !polling){
-    cancelPlayback(); RUN = {run_id: STATE.run_id, events: []};
-    try { const r = await api(`/api/runs/${RUN.run_id}/events`); RUN.events = r.events; } catch(_) { RUN.events = []; }
-    STEPS = toSteps(RUN.events); N = STEPS.length;
+  if(previous && (previous.persona?.customer_id !== STATE.persona?.customer_id ||
+      (!polling && RUN?.run_id === previous.recorded_run?.run_id && RUN?.run_id !== STATE.recorded_run?.run_id))){
+    cancelPlayback(); RUN = null; STEPS = []; N = 0; traceError = '';
+  }
+  if(loadRun && !polling){
+    const record = STATE.recorded_run, id = record?.run_id;
+    if(typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id) &&
+       STATE.last_run?.run_id === id && /^v[0-5]$/.test(record.stage)){
+      traceLoading = epoch;
+      let events = null;
+      try { const r = await api(`/api/runs/${id}/events`); if(r.run_id === id && Array.isArray(r.events)) events = r.events; } catch(_) {}
+      if(traceLoading === epoch) traceLoading = 0;
+      if(epoch !== viewEpoch || polling || STATE !== state) return;
+      cancelPlayback(); RUN = events ? {run_id:id, stage:record.stage, events} : null;
+      STEPS = events ? toSteps(events) : []; N = STEPS.length;
+      traceError = events ? (events.length ? '' : 'No recorded events for this run yet.') : 'Recorded trace unavailable or not authorized.';
+    } else if(!record || STATE.last_run){
+      cancelPlayback(); RUN = null; STEPS = []; N = 0;
+      traceError = STATE.last_run ? 'Recorded trace unavailable or expired.' : '';
+    }
   }
   renderChrome(); renderPanel();
   if(build() === 5 && (!EVALS || !loadEvals.at || Date.now() - loadEvals.at > 15000)){ loadEvals.at = Date.now(); loadEvals(); } else renderGate();
@@ -843,7 +865,7 @@ function openTrace(id){
   if(polling) return; // keep the live view in sight while a run is in flight
   const keys = HOPS[id], evs = (RUN?.events || []).filter(e => keys.includes(e.node) || (e.edge && e.edge.split('>').some(x => keys.includes(x))));
   $('#drTitle').textContent = 'Trace · ' + nodeEl(id).querySelector('.t').textContent;
-  const policy = id === 'policy' ? `<div class="ev"><div class="k">Policy reachability · app-recorded</div><p>${esc(policyReach(RUN?.events || [], build()))}</p></div>` : '';
+  const policy = id === 'policy' ? `<div class="ev"><div class="k">Policy reachability · app-recorded</div><p>${esc(policyReach(RUN?.events || [], traceBuild()))}</p></div>` : '';
   $('#drBody').innerHTML = policy + (evs.map(e => `<div class="ev"><div class="k">${esc(e.kind)} · ${esc(e.source)}</div><pre>${esc(JSON.stringify({edge:e.edge, status:e.status, label:e.label, ...(e.kind.startsWith('guardrail.') ? {'recorded Guardrail action': recordedGuardrailAction(e) || 'unknown', 'safe service metadata': recordedGuardrailMeta(e)} : {}), tool:e.tool, effect:e.effect, detail:e.detail}, null, 2))}</pre></div>`).join('') || '<p class="empty">No events for this hop yet.</p>');
   const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; $('#drClose').focus();
   if(id === 'cw' && RUN) cloudTrace(RUN.run_id);
@@ -900,7 +922,7 @@ async function cloudTrace(run){
     + (sources.model ? cloudSource(sources.model) : '')
     + appTracePanel('Guardrails', 'Agent-recorded ApplyGuardrail action (UNAVAILABLE is not intervention); not native Guardrails service logs.', ['guardrail.checked','guardrail.intervened','guardrail.unavailable'])
     + (sources.gateway ? cloudSource(sources.gateway) : '')
-    + `<div class="ev"><div class="k">Policy reachability · app-recorded</div><p>${esc(policyReach(RUN?.events || [], build()))}</p></div>`
+    + `<div class="ev"><div class="k">Policy reachability · app-recorded</div><p>${esc(policyReach(RUN?.events || [], traceBuild()))}</p></div>`
     + appTracePanel('Policy (agent inference)', 'Agent infers these decisions from Gateway replies; Gateway policy fields above are AWS application logs.', ['policy.decision']);
 }
 
@@ -918,9 +940,11 @@ async function deleteTicket(ticketId){
   } catch(e){ toast(e.message, true); await refresh(false).catch(() => {}); }
 }
 async function resetDemo(){ if(polling) return; if(!confirm('Reset to a clean V0? Portal tickets are removed and seed tickets reopened.')) return;
-  try { await api('/api/reset', {}); cancelPlayback(); RUN = null; STEPS = []; N = 0; await refresh(false); toast('Demo reset to a clean V0.'); } catch(e){ toast(e.message, true); } }
+  viewEpoch++; traceLoading = 0;
+  try { await api('/api/reset', {}); cancelPlayback(); RUN = null; STEPS = []; N = 0; traceError = ''; await refresh(false); toast('Demo reset to a clean V0.'); } catch(e){ toast(e.message, true); } }
 async function patch(stage){
   if(polling) return;
+  viewEpoch++; traceLoading = 0;
   ASKS.clear();
   try { const r = await api('/api/patch', stage ? {stage} : {}); cancelPlayback(); RUN = null; STEPS = []; N = 0; await refresh(false); toast(`${r.active_stage.toUpperCase()} · ${r.title}. Effects reopened; run or replay.`); }
   catch(e){ toast(e.message, true); }
@@ -1121,7 +1145,7 @@ addEventListener('keydown', e => {
 });
 addEventListener('resize', () => { renderPanel(); document.querySelectorAll('#payloads .pl').forEach(fitPayload); });
 refresh().catch(e => toast(e.message, true));
-setInterval(() => { if(!polling && document.visibilityState === 'visible') refresh(false).catch(() => {}); }, 8000);
+setInterval(() => { if(!polling && !traceLoading && document.visibilityState === 'visible') refresh(false).catch(() => {}); }, 8000);
 </script>
 </body>
 </html>

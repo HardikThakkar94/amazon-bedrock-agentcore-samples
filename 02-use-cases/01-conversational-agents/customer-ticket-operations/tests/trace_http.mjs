@@ -11,7 +11,7 @@ const drawer = html.split('const TRACE_COLS = ')[1].split('\nfunction closeTrace
 const body = {innerHTML: ''}, panel = {dataset: {from: 'cw'}};
 const ctx = vm.createContext({
   $: selector => selector === '#drBody' ? body : panel,
-  RUN: {run_id: run, events: []}, build: () => 5,
+  RUN: {run_id: run, events: []}, build: () => 5, traceBuild: () => 5,
   api: async path => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`);
     assert.equal(response.status, 200);

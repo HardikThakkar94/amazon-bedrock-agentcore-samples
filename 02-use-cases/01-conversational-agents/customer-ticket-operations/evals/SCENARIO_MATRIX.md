@@ -1,4 +1,4 @@
-# Measured release suite · dataset `2026-11-05.8`
+# Measured release suite · dataset `2026-11-05.9`
 
 **This is a test design, not a live result.** All cells use identical conditions on every build.
 Expected capability below describes the configured controls, not a stage-based verdict. The
@@ -100,3 +100,10 @@ still only held, never approved by the Ask. Runtime checks that same bounded
 shape after verified owned/Stop admission and before V4/V5's writable breaker
 intent, so a known invalid direct request cannot strand a new pending marker.
 Existing OPEN/UNKNOWN/pending markers and uncertain effects remain intact.
+
+R13 changes the scoped API Events-table owner metadata write permission after
+native confirm_close and the owned recorded-trace hydration on fresh sign-in.
+The actual deployed `.8` V3 native card/Reject passed but Approve returned 502
+after Gateway confirm succeeded; no real close followed. No `.8` suite was launched.
+Only parent-owned deployment, native approval and full current `.9` suites may
+establish release evidence. Dataset case/gate/sample bytes remain unchanged.

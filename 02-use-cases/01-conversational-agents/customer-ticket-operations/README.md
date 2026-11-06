@@ -299,7 +299,11 @@ Runtime checks the same request shape after verified owner/Stop admission but be
 writable breaker intent; known bad input cannot strand a pending intent or make the
 next valid run spuriously read-only. Genuine uncertain effects keep their exclusion.
 An unanswered continuation is recorded incomplete, not retried. Deployed `.6` and `.7`
-no-card smokes are historical until actual `.8` model/approval and full-suite measurement. Malformed tool
+no-card smokes, and the deployed `.8` native held-card/Approve-502 smoke, are historical;
+no current `.9` model/approval success or full-suite PASS is claimed. The API's newly
+scoped Events-table UpdateItem permission permits its post-grant owner receipt;
+unknown outcomes still retire/fence the policy session. Fresh sign-in may replay only
+a tenant-owned recorded run verified by the event owner, never mint approval authority. Malformed tool
 arguments are repairable local errors, not native policy denials. The operator Stop is checked at API and Runtime admission on every build.
 Stop is admission-only: an already-admitted run can finish; its pill is not evidence of
 cancellation or quiescence. Future runs refuse until cleared, without bypassing an owner/

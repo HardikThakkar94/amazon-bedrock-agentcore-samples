@@ -319,8 +319,8 @@ def suite_of(r, build):
 def test_api_marks_stored_pre_upgrade_green_suites_historical(runner):
     old = {
         "status": "DONE",
-        "dataset": "2026-11-05.7",
-        "source_version": "2026-11-05.7",
+        "dataset": "2026-11-05.8",
+        "source_version": "2026-11-05.8",
         "gate": {"passed": True},
         "cases": [{"id": "benign_summary", "samples": []}],
     }

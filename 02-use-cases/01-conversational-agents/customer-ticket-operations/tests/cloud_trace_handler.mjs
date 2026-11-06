@@ -14,7 +14,7 @@ const body = {innerHTML: ''};
 const ctx = vm.createContext({
   $: selector => selector === '#drBody' ? body : {dataset:{from:'cw'}},
   RUN:{run_id:response.run_id,events:[{kind:'policy.decision',tool:'list_tickets',decision:'ALLOW',source:'runtime',status:'ok'}]},
-  build:() => 5,
+  build:() => 5, traceBuild:() => 5,
   api:async () => response,
 });
 vm.runInContext(`${esc} const POLICY_TEXT = ${reach} const TRACE_COLS = ${drawer}\nthis.cloudTrace = cloudTrace`, ctx);
