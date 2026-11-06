@@ -10,8 +10,10 @@ import copy
 import json
 import os
 import threading
+from collections import Counter
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -20,6 +22,9 @@ from playwright.sync_api import expect, sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 DATASET = json.loads((ROOT / "evals/dataset.json").read_text())
 VERSION = DATASET["version"]
+_spec = spec_from_file_location("browser_eval_contract", ROOT / "functions/api/eval_contract.py")
+_contract = module_from_spec(_spec)
+_spec.loader.exec_module(_contract)
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
@@ -497,9 +502,22 @@ def exercise(browser, origin, screenshots):
             "id": c["id"],
             "title": c["title"],
             "kind": c["kind"],
+            **({"family": c["family"]} if c.get("family") else {}),
             "samples": [
                 {
+                    "run_id": f"browser-{c['id']}-{i}",
                     "verdict": "NO_EFFECT",
+                    "local": "PASS",
+                    "screen": {"status": "PASS"},
+                    "useful_evidence": True,
+                    "scores": {
+                        "no_forbidden_effect": {"label": "PASS", "value": 1.0},
+                        **(
+                            {"Builtin.Helpfulness": {"label": "SCORED", "value": 0.0}}
+                            if c["kind"] == "benign"
+                            else {}
+                        ),
+                    },
                     **(
                         {
                             "control": {
@@ -513,43 +531,27 @@ def exercise(browser, origin, screenshots):
                         else {}
                     ),
                 }
-                for _ in range(c["samples"])
+                for i in range(c["samples"])
             ],
         }
         for c in DATASET["cases"]
     ]
-    current_rows = [
-        {
-            "id": c["id"],
-            "safety": "PASS",
-            "passed": c["samples"],
-            "k": c["samples"],
-            **(
-                {"control": "FAIL", "control_passed": 0, "control_reason": "no Gateway denial"}
-                if c.get("family")
-                else {}
-            ),
-        }
-        for c in DATASET["cases"]
-    ]
+    current_gate = _contract.gate(current_cases)
     fixture["evals"] = {
         "v2": fixture["evals"]["v5"],
         "v5": {
             "status": "DONE",
+            "build": "v5",
+            "source_version": VERSION,
             "dataset": VERSION,
             "dataset_name": "default",
             "dataset_status": "current",
             "suite_id": "new",
-            "gate": {
-                "passed": False,
-                "safety": "PASS",
-                "controls": {"status": "FAIL", "passed": 0, "total": 1},
-                "quality": {"helpfulness_mean": 0.0, "scored": 1, "total": 1, "floor": 0.5},
-                "cases": current_rows,
-            },
+            "gate": current_gate,
             "cases": current_cases,
         },
     }
+    assert _contract.classify_default(fixture["evals"]["v5"], DATASET, "v5") == "current"
     fixture["hold_evals"] = True
     page.locator("#evalBtn").click()
     proof = page.evaluate(
@@ -565,6 +567,18 @@ def exercise(browser, origin, screenshots):
         "title"
     )
     assert "no Gateway denial" in case_cell.locator("span[title]").get_attribute("title")
+    corrupt = copy.deepcopy(fixture["evals"])
+    corrupt["v5"]["cases"][-1]["family"] = "wrong-probe"
+    corrupt["v5"]["gate"]["passed"] = True
+    assert _contract.classify_default(corrupt["v5"], DATASET, "v5") == "invalid"
+    corrupt["v5"]["dataset_status"] = "invalid"  # exact API classification
+    invalid = page.evaluate(
+        "rows => { EVALS=rows; renderEvals(); renderGate(); return {body:document.querySelector('#drBody').textContent,pill:document.querySelector('#gatePill').textContent}; }",
+        corrupt,
+    )
+    assert "invalid · no case evidence" in invalid["body"]
+    assert "invalid · no release evidence" in invalid["pill"]
+    assert "Release gate: PASS" not in invalid["pill"]
     page.keyboard.press("Escape")
     fixture["hold_evals"] = False
     for route in pending.pop("evals", []):
@@ -824,8 +838,22 @@ def exercise(browser, origin, screenshots):
     print(
         "Evals confirmation, deletion, desktop/small screenshots; no external requests or JS errors."
     )
+    observed_posts = mutations()
+    by_path = Counter(path for _, path, _ in observed_posts)
+    run_modes = Counter(body["mode"] for _, path, body in observed_posts if path == "/api/run")
+    assert set(by_path) <= {
+        "/api/patch",
+        "/api/evals/run",
+        "/api/tickets/delete",
+        "/api/run",
+        "/api/stop",
+        "/api/breaker/reset",
+        "/api/reset",
+        "/api/approvals/reject",
+    }
     print(
-        f"Mock API calls: {len(calls)}; mutations: 5 explicit patches, 1 explicit eval, 1 explicit delete."
+        f"Mock API calls: {len(calls)}; mutations: {len(observed_posts)} explicit POSTs; "
+        f"by endpoint: {dict(sorted(by_path.items()))}; run modes: {dict(sorted(run_modes.items()))}."
     )
     context.unroute_all(behavior="wait")
     context.close()

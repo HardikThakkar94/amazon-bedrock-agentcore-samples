@@ -1,10 +1,13 @@
 """Mock the k10 CLI's account boundary; do not start Lambda or read credentials."""
 
+import copy
 import importlib.util
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("sec310_eval_gate_cli", ROOT / "scripts/eval_gate.py")
@@ -49,9 +52,11 @@ def setup(monkeypatch, incomplete=False):
             }
             for _ in range(n)
         ]
-        return {
+        record = {
             "status": "DONE",
+            "build": payload["build"],
             "dataset": case_data["version"],
+            "dataset_name": "k10",
             "source_version": case_data["source_version"],
             "cases": [
                 {
@@ -63,6 +68,8 @@ def setup(monkeypatch, incomplete=False):
                 }
             ],
         }
+        record["gate"] = cli.gate_rules.gate(record["cases"])
+        return record
 
     monkeypatch.setattr(cli, "run_one", run_one)
     monkeypatch.setattr(sys, "argv", ["eval_gate.py", "--build", "v5", "--dataset", "k10"])
@@ -122,11 +129,68 @@ def test_default_cli_requires_matching_full_revision_and_recomputed_control_gate
     monkeypatch.setattr(cli, "run_one", lambda *args: record)
     monkeypatch.setattr(sys, "argv", ["eval_gate.py", "--build", "v5"])
     assert cli.main() == 0  # synthetic CLI contract only; not live evidence
-    record["dataset"] = "2026-10-26.1"
-    assert cli.main() == 2
-    record["dataset"] = release["version"]
-    record["cases"][-1]["samples"][0]["control"]["status"] = "FAIL"
-    assert cli.main() == 2  # green stored verdict disagrees with actual rows
+    good = copy.deepcopy(record)
+    bad = copy.deepcopy(good)
+    bad["dataset"] = "2026-10-26.1"
+    assert cli.gate_rules.classify_default(bad, release, "v5") == "historical"
+    for mutation in (
+        "wrong_build",
+        "duplicate_case",
+        "wrong_kind",
+        "missing_family",
+        "missing_case",
+        "wrong_sample_count",
+        "false_green",
+        "partial_green",
+    ):
+        record.clear()
+        record.update(copy.deepcopy(good))
+        if mutation == "wrong_build":
+            record["build"] = "v4"
+        elif mutation == "duplicate_case":
+            record["cases"][1] = copy.deepcopy(record["cases"][0])
+        elif mutation == "wrong_kind":
+            record["cases"][0]["kind"] = "attack"
+        elif mutation == "missing_family":
+            record["cases"][-1].pop("family")
+        elif mutation == "missing_case":
+            record["cases"].pop()
+        elif mutation == "wrong_sample_count":
+            record["cases"][0]["samples"].append(copy.deepcopy(record["cases"][0]["samples"][0]))
+        elif mutation == "false_green":
+            record["cases"][-1]["samples"][0]["control"]["status"] = "FAIL"
+        else:
+            record["status"] = "RUNNING"  # no partial record may carry PASS
+        assert cli.gate_rules.classify_default(record, release, "v5") == "invalid", mutation
+        assert cli.main() == 2, mutation
+    record.clear()
+    record.update(good)
+    assert cli.main() == 0
+
+
+@pytest.mark.parametrize(
+    "mutation", ["wrong_build", "wrong_kind", "wrong_family", "bad_gate", "wrong_dataset_name"]
+)
+def test_k10_cli_rejects_mislabeled_or_stale_case(monkeypatch, mutation):
+    calls = setup(monkeypatch)
+    original = cli.run_one
+
+    def corrupt(*args):
+        record = original(*args)
+        if mutation == "wrong_build":
+            record["build"] = "v4"
+        elif mutation == "wrong_kind":
+            record["cases"][0]["kind"] = "attack"
+        elif mutation == "wrong_family":
+            record["cases"][0]["family"] = "substituted"
+        elif mutation == "bad_gate":
+            record["gate"]["passed"] = not record["gate"]["passed"]
+        else:
+            record["dataset_name"] = "default"
+        return record
+
+    monkeypatch.setattr(cli, "run_one", corrupt)
+    assert cli.main() == 2 and len(calls) == 1
 
 
 def test_k10_cli_rejects_missing_sample_without_a_green_gate(monkeypatch):

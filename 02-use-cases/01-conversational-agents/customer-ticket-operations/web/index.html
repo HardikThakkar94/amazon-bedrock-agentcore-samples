@@ -937,6 +937,7 @@ let EVALS = null, EVAL_VERSION = '', evalTimer = 0;
 const ACTIVE = ['QUEUED','RUNNING','SCORING'];
 async function loadEvals(){ try { const result = await api('/api/evals'); EVALS = result.builds; EVAL_VERSION = result.dataset || ''; } catch(_) { EVALS = EVALS || null; } renderGate(); return EVALS; }
 function currentSuite(s){ return s && s.dataset_status === 'current' && s.dataset === EVAL_VERSION && s.dataset_name === 'default'; }
+function staleSuiteLabel(s){ return s?.dataset_status === 'invalid' ? 'invalid · no release evidence' : 'historical · not current'; }
 function gateReason(s){ const g = s?.gate, q = g?.quality, ctrl = g?.controls;
   if(!g) return 'no current measured gate';
   return `safety ${g.safety} ${g.cases?.reduce((n,r)=>n+r.passed,0) ?? 0}/${g.cases?.reduce((n,r)=>n+r.k,0) ?? 0}; helpfulness ${q?.helpfulness_mean ?? 'unscored'} ${q?.passed ? 'PASS' : 'FAIL'} ${q?.scored ?? 0}/${q?.total ?? 0} (floor ${q?.floor ?? 0.5}); controls ${ctrl?.status || 'not evaluated'} ${ctrl?.passed ?? 0}/${ctrl?.total ?? 0}`;
@@ -947,7 +948,7 @@ function renderGate(){
   if(pill.hidden) return;
   const current = currentSuite(v5), live = current && ACTIVE.includes(v5.status), ok = current && v5.status === 'DONE' && v5.gate?.passed;
   pill.classList.toggle('fail', !live && !ok);
-  pill.lastChild.textContent = live ? `Release gate: evaluating · ${v5.progress || v5.status}` : !current ? 'Release gate: not current · historical suite' : v5.status === 'DONE' ? `Release gate: ${ok ? 'PASS' : 'FAIL'} · ${gateReason(v5)}` : 'Release gate: error';
+  pill.lastChild.textContent = live ? `Release gate: evaluating · ${v5.progress || v5.status}` : !current ? `Release gate: ${staleSuiteLabel(v5)}` : v5.status === 'DONE' ? `Release gate: ${ok ? 'PASS' : 'FAIL'} · ${gateReason(v5)}` : 'Release gate: error';
 }
 function sampleTip(s){
   const sc = s.scores || {}, part = k => sc[k] ? `${k}: ${sc[k].label}${sc[k].value != null ? ' (' + sc[k].value + ')' : ''}` : null;
@@ -963,14 +964,15 @@ function renderEvals(){
   const focused = document.activeElement?.id;
   const builds = ['v0','v1','v2','v3','v4','v5'], B = build();
   const ref = builds.map(b => EVALS?.[b]).find(x => currentSuite(x) && x.cases?.length)
-    || builds.map(b => EVALS?.[b]).find(x => x?.cases?.length);
+    || builds.map(b => EVALS?.[b]).find(x => x?.dataset_status === 'historical' && x.cases?.length);
   const cases = ref ? ref.cases.map(c => ({id: c.id, title: c.title, kind: c.kind})) : [];
   const matrixVersion = ref?.dataset;
   const cell = (b, c) => {
     const st = EVALS?.[b];
     if(!st) return '<span class="j">—</span>';
+    if(st.dataset_status === 'invalid') return '<span class="c FAIL">invalid · no case evidence</span>';
     if(st.dataset !== matrixVersion) return '<span class="j" title="Different dataset revision; never mix case rows">other revision</span>';
-    if(ACTIVE.includes(st.status)) return currentSuite(st) ? '<span class="c RUN">…</span>' : '<span class="j">historical · not current</span>';
+    if(ACTIVE.includes(st.status)) return currentSuite(st) ? '<span class="c RUN">…</span>' : `<span class="j">${staleSuiteLabel(st)}</span>`;
     const row = st.gate?.cases?.find(x => x.id === c.id), data = st.cases?.find(x => x.id === c.id);
     if(!row) return '<span class="j">—</span>';
     const old = !currentSuite(st), tip = (data?.samples || []).map(sampleTip).join('\n\n');
@@ -982,7 +984,7 @@ function renderEvals(){
     return `<span class="c ${old ? '' : row.safety}" title="${esc(tip)}">safety ${row.passed}/${row.k}${old ? ' historical' : ''}</span>${detail}`;
   };
   const gate = b => { const st = EVALS?.[b]; if(!st) return '<span class="j">not run</span>';
-    if(!currentSuite(st)) return `<span class="j" title="${esc(`suite ${st.suite_id || '?'} · dataset ${st.dataset || 'unknown'} · current ${EVAL_VERSION}`)}">historical · not current</span>`;
+    if(!currentSuite(st)) return `<span class="${st.dataset_status === 'invalid' ? 'c FAIL' : 'j'}" title="${esc(`suite ${st.suite_id || '?'} · dataset ${st.dataset || 'unknown'} · current ${EVAL_VERSION}`)}">${staleSuiteLabel(st)}</span>`;
     if(ACTIVE.includes(st.status)) return `<span class="c RUN" title="${esc(st.progress || '')}">${esc(st.status)}</span>`;
     if(st.status === 'ERROR') return `<span class="c FAIL" title="${esc(st.error || '')}">ERROR</span>`;
     return `<span class="c ${st.gate?.passed ? 'PASS' : 'FAIL'}" title="${esc(`suite ${st.suite_id} · dataset ${st.dataset}`)}">${st.gate?.passed ? 'PASS' : 'FAIL'} · ${esc(gateReason(st))}</span>`; };
@@ -993,7 +995,7 @@ function renderEvals(){
     + (cases.length ? `<table class="em"><tr><th>Case</th>${builds.map((b, i) => `<th class="${i === B ? 'on' : ''}">${b.toUpperCase()}</th>`).join('')}</tr>
       <tr class="gate"><td><b>Release gate</b></td>${builds.map(b => `<td>${gate(b)}</td>`).join('')}</tr>
       ${cases.map(c => `<tr><td>${esc(c.title)} <span class="j">${esc(c.kind)}</span></td>${builds.map(b => `<td>${cell(b, c)}</td>`).join('')}</tr>`).join('')}</table>`
-      : `<p class="empty">No suite has finished yet${busyNow ? ' (one is running)' : ''}. Run one here or with <code>make eval BUILD=v5</code>.</p>`);
+      : `<p class="empty">${builds.some(b => EVALS?.[b]?.dataset_status === 'invalid') ? 'Invalid current-version suite withheld; rerun a complete evaluation.' : `No suite has finished yet${busyNow ? ' (one is running)' : ''}. Run one here or with <code>make eval BUILD=v5</code>.`}</p>`);
   $('#evalRun').onclick = runEvals;
   $('#evalArchBtn').onclick = () => openEvalArch('evalArchBtn');
   if(['evalRun','evalArchBtn'].includes(focused)) $('#' + focused).focus();

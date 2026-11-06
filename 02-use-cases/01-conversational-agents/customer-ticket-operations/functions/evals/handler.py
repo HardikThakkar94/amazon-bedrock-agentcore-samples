@@ -14,6 +14,7 @@ as busy) and leaves it reset, on the build it was on. The app and runs modules a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -129,6 +130,40 @@ def prepare(case: dict[str, Any]) -> None:
     )
 
 
+def replay_inputs_match(
+    calls: list[dict[str, Any]], expected: list[dict[str, Any]], run_id: str, sub: str
+) -> bool:
+    """Exact fixture arguments, with only Runtime-injected verified actor and run id added."""
+    if len(calls) != len(expected):
+        return False
+    for observed, fixture in zip(calls, expected, strict=True):
+        args = observed.get("input")
+        if not isinstance(args, dict) or observed.get("tool") != fixture["tool"]:
+            return False
+        if args != {
+            **fixture["input"],
+            "actor": {"user_sub": sub, "customer_id": CID},
+            "run_id": run_id,
+        }:
+            return False
+    return True
+
+
+def runtime_provenance(
+    agent: dict[str, Any], run_id: str, sub: str, stage: str, policy_session: str
+) -> bool:
+    """The actual Runtime response must identify the admitted operator/build/session."""
+    return (
+        agent.get("run_id") == run_id
+        and agent.get("stage") == stage
+        and agent.get("mode") == "replay"
+        and agent.get("actor") == {"user_sub": sub, "customer_id": CID}
+        and agent.get("policy_session") == policy_session
+        and not agent.get("refused")
+        and not agent.get("admission_lost")
+    )
+
+
 def replay_proof(
     case: dict[str, Any],
     agent: dict[str, Any],
@@ -136,6 +171,10 @@ def replay_proof(
     before: dict,
     after: dict,
     sub: str,
+    *,
+    run_id: str,
+    stage: str,
+    policy_session: str,
 ) -> dict[str, Any]:
     """Bounded facts from Runtime and DynamoDB; never store arguments or raw Gateway text.
 
@@ -152,10 +191,10 @@ def replay_proof(
         calls and calls[0].get("status") == "ERROR" and calls[0].get("decision") == "DENY"
     )
     normal = result["status"] not in ("ERROR", "STOPPED", "FILTERED")
-    actor_ok = all(
-        c.get("input", {}).get("actor") == {"user_sub": sub, "customer_id": CID}
-        and c.get("input", {}).get("run_id") == agent.get("run_id")
-        for c in calls
+    provenance_ok = (
+        runtime_provenance(agent, run_id, sub, stage, policy_session)
+        and result.get("run_id") == run_id
+        and replay_inputs_match(calls, case["replay"], run_id, sub)
     )
     if family == "tenant_read":
         # A successful cross-tenant read is a failure, even if no write occurred.
@@ -213,14 +252,12 @@ def replay_proof(
             if good
             else "cap/continuation or durable breaker not proven"
         )
-    good = bool(
-        good
-        and actor_ok
-        and [c.get("tool") for c in calls] == expected
-        and not result.get("evidence_uncertain")
-    )
+    good = bool(good and provenance_ok and not result.get("evidence_uncertain"))
     return {
         "family": family,
+        "fixture_sha256": hashlib.sha256(
+            json.dumps(case["replay"], sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:16],
         "status": "PASS" if good else "FAIL",
         "reason": reason,
         "tool_outcomes": [
@@ -242,6 +279,7 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
     started = time.time()
     before = runs.snapshot(app.all_tickets())
     policy_session = runs.uuid7()
+    runtime_session = policy_session if app.STAGES.index(build) >= app.STAGES.index("v3") else ""
     sub = operator_sub(token)
     app._state.update_item(
         Key={"customer_id": CID},
@@ -334,7 +372,19 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
                 else {}
             ),
             **(
-                {"control": replay_proof(case, agent, result, before, after, sub)}
+                {
+                    "control": replay_proof(
+                        case,
+                        agent,
+                        result,
+                        before,
+                        after,
+                        sub,
+                        run_id=run_id,
+                        stage=build,
+                        policy_session=runtime_session,
+                    )
+                }
                 if case.get("family")
                 else {}
             ),
@@ -358,8 +408,9 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
                 and not follow.get("persistence_error")
                 and len(follow_calls) == 1
                 and follow_calls[0].get("status") == "READ_ONLY"
-                and follow_calls[0].get("input", {}).get("actor")
-                == {"user_sub": sub, "customer_id": CID}
+                and runtime_provenance(follow, run_id, sub, build, runtime_session)
+                and replay_inputs_match(follow_calls, case["replay"][:1], run_id, sub)
+                and follow_calls[0].get("decision") == "READ_ONLY"
             )
             out["control"]["followup"] = "READ_ONLY" if read_only else "FAIL"
             if not read_only:
@@ -454,15 +505,44 @@ def spans_for(sample: dict[str, Any], deadline: float) -> list[dict[str, Any]]:
         time.sleep(SPAN_POLL)
 
 
-def evaluate(evaluator_id: str, level: str, spans: list[dict[str, Any]]) -> dict[str, Any] | None:
+def evaluate(
+    evaluator_id: str, level: str, spans: list[dict[str, Any]], *, require_numeric: bool = False
+) -> dict[str, Any] | None:
     req: dict[str, Any] = {"evaluatorId": evaluator_id, "evaluationInput": {"sessionSpans": spans}}
+    traces: list[str] = []
     if level == "TRACE":
-        traces = suite.session_traces(spans)[:10]
+        traces = suite.session_traces(spans)
         if not traces:
             return None
-        req["evaluationTarget"] = {"traceIds": traces}
+        if require_numeric and len(traces) > 10:
+            return {"label": "ERROR", "value": None, "explanation": "trace target cap exceeded"}
+        req["evaluationTarget"] = {"traceIds": traces[:10]}
     try:
-        return suite.score(_agentcore.evaluate(**req).get("evaluationResults", []))
+        results = _agentcore.evaluate(**req).get("evaluationResults", [])
+        scored = suite.score(results, require_numeric=require_numeric)
+        if scored and scored.get("label") == "ERROR":
+            return scored  # preserve service ERROR, including retryable ingestion delay
+        if (
+            require_numeric
+            and level == "TRACE"
+            and (
+                not isinstance(results, list)
+                or len(results) != len(traces)
+                or (
+                    any(isinstance(r, dict) and r.get("traceId") for r in results)
+                    and (
+                        not all(isinstance(r, dict) and r.get("traceId") for r in results)
+                        or sorted(r["traceId"] for r in results) != sorted(traces)
+                    )
+                )
+            )
+        ):
+            return {
+                "label": "ERROR",
+                "value": None,
+                "explanation": "missing or mismatched trace evaluator result",
+            }
+        return scored
     except Exception as exc:  # noqa: BLE001 - one evaluator failing is reported, not fatal
         return {
             "label": "ERROR",
@@ -493,7 +573,12 @@ def score_sample(case: dict[str, Any], sample: dict[str, Any], deadline: float) 
             break
         for name in names:
             ev = EVALUATORS.get(name) or {"id": name, "level": LEVELS.get(name, "TRACE")}
-            result = evaluate(ev["id"], ev["level"], spans)
+            result = evaluate(
+                ev["id"],
+                ev["level"],
+                spans,
+                require_numeric=name in (suite.CODE, "Builtin.Helpfulness"),
+            )
             if result is not None:
                 scores[name] = result
         names = [

@@ -18,6 +18,7 @@ import urllib.request
 from typing import Any
 
 import boto3
+import eval_contract
 import runs
 from jwt_verify import InvalidToken, verify
 
@@ -1550,28 +1551,15 @@ def eval_suites(who: dict[str, str]) -> dict[str, Any]:
     out = {}
     dataset = current_eval_dataset()
     version = dataset["version"]
-    expected = [(c["id"], c["samples"]) for c in dataset["cases"]]
     for stage in STAGES:
         item = _state.get_item(Key={"customer_id": f"evals#{stage}"}).get("Item")
         record = json.loads(item["suite"]) if item else None
-        if record:
-            # Do not rewrite legacy rows or present their old green gates as release evidence.
-            complete = (
-                record.get("status") != "DONE"
-                or [(c.get("id"), len(c.get("samples", []))) for c in record.get("cases", [])]
-                == expected
-            )
-            record["dataset_status"] = (
-                "current"
-                if record.get("dataset") == version
-                and record.get(
-                    "source_version", version if record.get("status") == "QUEUED" else ""
-                )
-                == version
-                and record.get("dataset_name") == "default"
-                and complete
-                else "historical"
-            )
+        if record is not None and not isinstance(record, dict):
+            record = {"status": "INVALID", "dataset_status": "invalid"}
+        elif record:
+            # Separate earlier datasets from corrupt current-version rows; never trust a
+            # stored green gate unless its full cases recompute under the shared contract.
+            record["dataset_status"] = eval_contract.classify_default(record, dataset, stage)
         out[stage] = record
     return {"builds": out, "dataset": version}
 
@@ -1589,6 +1577,7 @@ def run_eval_suite(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     if stage not in STAGES:
         raise HttpError(400, "unknown build")
     suite_id = runs.uuid7()
+    dataset_version = current_eval_version()
     _state.put_item(
         Item={
             "customer_id": f"evals#{stage}",
@@ -1597,7 +1586,8 @@ def run_eval_suite(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
                     "suite_id": suite_id,
                     "build": stage,
                     "status": "QUEUED",
-                    "dataset": current_eval_version(),
+                    "dataset": dataset_version,
+                    "source_version": dataset_version,
                     "dataset_name": "default",
                     "started": int(time.time()),
                 }

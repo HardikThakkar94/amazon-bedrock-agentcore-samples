@@ -3,6 +3,7 @@
 The fake varies *service* policy by build, never evaluator expectations. No AWS calls occur.
 """
 
+import copy
 import json
 from types import SimpleNamespace
 
@@ -16,10 +17,15 @@ def measured(runner, monkeypatch):
     r = runner
     from strands.tools import mcp
 
+    from functions.ticket_tools import handler as tools
     from sec310_agent import agent
     from sec310_agent.events import Events
 
     monkeypatch.setattr(Events, "_tbl", lambda self: None)
+    # TicketTools has a separate best-effort telemetry table from its tickets table.
+    # Bind it BEFORE any tool dispatch; swallowed telemetry errors are not zero egress.
+    monkeypatch.setattr(tools, "_events", r.h.app._events)
+    assert tools._events is r.h.app._events
     monkeypatch.setattr(
         agent,
         "claims_of",
@@ -75,8 +81,6 @@ def measured(runner, monkeypatch):
             ]
 
         def call_tool_sync(self, call_id, name, args):
-            from functions.ticket_tools import handler as tools
-
             tool = name.split("___")[-1]
             gateway_seen.append((self.stage, tool, args.copy(), self.session))
             assert args["actor"] == {"customer_id": "customer-a", "user_sub": "alice-sub"}
@@ -167,6 +171,12 @@ def test_actual_runner_runtime_gateway_tool_and_store_matrix(measured, stage, ex
             ],
         )
     assert found == expected
+    writes = [item for item in r.h.app._events.items.values() if item.get("kind") == "store.write"]
+    assert writes  # Actual TicketTools emission reached the isolated event table.
+    assert all(
+        item.get("source") == "tools" and item.get("tool") in ("add_note", "close_ticket")
+        for item in writes
+    )
     assert seen and all(sub for _, _, _, sub in seen if int(stage[1:]) >= 3)
 
 
@@ -178,34 +188,138 @@ def test_missing_verified_actor_or_unresolved_gateway_result_fails_probe(measure
         "status": "ERROR",
         "decision": "DENY",
         "input": {
-            "ticket_id": "A-41",
-            "actor": {"customer_id": "customer-a", "user_sub": "forged"},
+            **case["replay"][0]["input"],
+            "actor": {"customer_id": "customer-a", "user_sub": "alice-sub"},
             "run_id": "r",
         },
     }
-    result = {"status": "BLOCKED", "effects": [], "evidence_uncertain": False}
-    assert (
-        r.h.replay_proof(case, {"run_id": "r", "tool_calls": [call]}, result, {}, {}, "alice-sub")[
-            "status"
-        ]
-        == "FAIL"
-    )
+    agent = {
+        "run_id": "r",
+        "stage": "v5",
+        "mode": "replay",
+        "actor": {"user_sub": "alice-sub", "customer_id": "customer-a"},
+        "policy_session": "ps",
+        "tool_calls": [call],
+    }
+    result = {"run_id": "r", "status": "BLOCKED", "effects": [], "evidence_uncertain": False}
+
+    def verdict():
+        return r.h.replay_proof(
+            case, agent, result, {}, {}, "alice-sub", run_id="r", stage="v5", policy_session="ps"
+        )["status"]
+
+    assert verdict() == "PASS"
+    call["input"]["actor"]["user_sub"] = "forged"
+    assert verdict() == "FAIL"
     call["input"]["actor"]["user_sub"] = "alice-sub"
-    call["decision"] = ""  # a service error is not an authoritative policy denial
-    assert (
-        r.h.replay_proof(case, {"run_id": "r", "tool_calls": [call]}, result, {}, {}, "alice-sub")[
-            "status"
-        ]
-        == "FAIL"
-    )
+    call["decision"] = ""  # service error is not an authoritative policy denial
+    assert verdict() == "FAIL"
     call["decision"] = "DENY"
     result["evidence_uncertain"] = True
-    assert (
-        r.h.replay_proof(case, {"run_id": "r", "tool_calls": [call]}, result, {}, {}, "alice-sub")[
+    assert verdict() == "FAIL"
+
+
+@pytest.mark.parametrize("stage", ["v4", "v5"])
+@pytest.mark.parametrize("family", ["tenant_read", "tenant_write", "approval", "cap"])
+def test_replay_proof_rejects_substituted_fixture_or_provenance(
+    measured, monkeypatch, stage, family
+):
+    r, _ = measured
+    case = next(c for c in r.h.DATASET["cases"] if c.get("family") == family)
+    r.state.items[("customer-a",)]["busy_owner"] = "eval-suite"
+    original = r.h.app.invoke_agent
+    observed = []
+
+    def capture(token, run_id, payload):
+        before = r.h.runs.snapshot(r.h.app.all_tickets())
+        agent = original(token, run_id, payload)
+        after = r.h.runs.snapshot(r.h.app.all_tickets())
+        observed.append((payload, agent, before, after))
+        return agent
+
+    monkeypatch.setattr(r.h.app, "invoke_agent", capture)
+    sample = r.h.run_case("tok", stage, case, 0)
+    assert sample["control"]["status"] == "PASS"
+    payload, agent, before, after = observed[0]
+    result = r.h.runs.run_result(stage, agent, before, after, "replay")
+    context = {
+        "run_id": sample["run_id"],
+        "stage": stage,
+        "policy_session": agent["policy_session"],
+    }
+
+    def proof(response, store=result):
+        return r.h.replay_proof(case, response, store, before, after, "alice-sub", **context)[
             "status"
         ]
-        == "FAIL"
-    )
+
+    assert proof(agent) == "PASS"
+    for key in case["replay"][0]["input"]:
+        changed = copy.deepcopy(agent)
+        old = changed["tool_calls"][0]["input"][key]
+        changed["tool_calls"][0]["input"][key] = (
+            "customer-a"
+            if old == "customer-b"
+            else "customer-b"
+            if key == "customer_id"
+            else "A-42"
+            if key == "ticket_id"
+            else "substituted fixture value"
+        )
+        assert proof(changed) == "FAIL", (stage, family, key)
+    substitutions = [
+        ("tool_calls", 0, "input", "unexpected"),
+        ("tool_calls", 0, "input", "run_id"),
+        ("actor", "user_sub"),
+        ("policy_session",),
+        ("stage",),
+        ("mode",),
+        ("run_id",),
+    ]
+    for path in substitutions:
+        changed = copy.deepcopy(agent)
+        field = changed
+        for name in path[:-1]:
+            field = field[name]
+        field[path[-1]] = "substituted"
+        assert proof(changed) == "FAIL", (stage, family, path)
+    changed_result = {**result, "run_id": "wrong-run"}
+    assert proof(agent, changed_result) == "FAIL"
+
+
+@pytest.mark.parametrize("stage", ["v4", "v5"])
+@pytest.mark.parametrize("field", ["note", "run_id", "actor", "session", "decision"])
+def test_read_only_followup_must_match_same_fixture_and_session(
+    measured, monkeypatch, stage, field
+):
+    r, _ = measured
+    case = next(c for c in r.h.DATASET["cases"] if c.get("family") == "cap")
+    r.state.items[("customer-a",)]["busy_owner"] = "eval-suite"
+    original = r.h.app.invoke_agent
+    invoked = 0
+
+    def tamper(token, run_id, payload):
+        nonlocal invoked
+        agent = original(token, run_id, payload)
+        invoked += 1
+        if invoked == 2:
+            if field == "session":
+                agent["policy_session"] = "wrong-session"
+            elif field == "decision":
+                agent["tool_calls"][0]["decision"] = "DENY"
+            else:
+                agent["tool_calls"][0]["input"][field] = (
+                    {"user_sub": "forged", "customer_id": "customer-a"}
+                    if field == "actor"
+                    else "wrong-fixture"
+                )
+        return agent
+
+    monkeypatch.setattr(r.h.app, "invoke_agent", tamper)
+    sample = r.h.run_case("tok", stage, case, 0)
+    assert invoked == 2 and sample["local"] == "PASS"
+    assert sample["control"]["status"] == "FAIL"
+    assert sample["control"]["followup"] == "FAIL"
 
 
 def test_missing_gateway_call_and_block_all_cannot_pass(measured, monkeypatch):

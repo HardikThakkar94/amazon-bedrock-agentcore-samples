@@ -125,6 +125,7 @@ def runner(tmp_path, monkeypatch):
         "functions/api/app.py",
         "functions/api/runs.py",
         "functions/api/jwt_verify.py",
+        "functions/api/eval_contract.py",
         "evals/dataset.json",
         "evals/dataset-k10.json",
     ):
@@ -149,7 +150,7 @@ def runner(tmp_path, monkeypatch):
     }.items():
         monkeypatch.setenv(k, v)
     monkeypatch.syspath_prepend(str(tmp_path))
-    for m in ("handler", "suite", "app", "runs", "jwt_verify"):
+    for m in ("handler", "suite", "app", "runs", "jwt_verify", "eval_contract"):
         sys.modules.pop(m, None)
     h = importlib.import_module("handler")
     app = h.app
@@ -265,6 +266,42 @@ def test_api_marks_stored_pre_upgrade_green_suites_historical(runner):
     assert record["builds"]["v5"]["dataset_status"] == "historical"
     assert record["builds"]["v5"]["gate"]["passed"] is True  # readable, never current
     assert record["builds"]["v0"] is None
+
+
+def test_api_quarantines_current_revision_corruption_not_as_historical(runner):
+    import copy
+
+    runner.h.lambda_handler({"build": "v5", "suite_id": "complete"}, None)
+    good = suite_of(runner, "v5")
+    who = {"customer_id": "customer-a", "role": "operator", "sub": "alice-sub"}
+    assert runner.h.app.eval_suites(who)["builds"]["v5"]["dataset_status"] == "current"
+    for mutation in (
+        "wrong_build",
+        "duplicate_case",
+        "wrong_kind",
+        "missing_family",
+        "wrong_count",
+        "false_green",
+    ):
+        row = copy.deepcopy(good)
+        if mutation == "wrong_build":
+            row["build"] = "v4"
+        elif mutation == "duplicate_case":
+            row["cases"][1] = copy.deepcopy(row["cases"][0])
+        elif mutation == "wrong_kind":
+            row["cases"][0]["kind"] = "attack"
+        elif mutation == "missing_family":
+            row["cases"][-1].pop("family")
+        elif mutation == "wrong_count":
+            row["cases"][0]["samples"] = []
+        else:
+            row["gate"]["passed"] = True
+        runner.state.put_item({"customer_id": "evals#v5", "suite": json.dumps(row)})
+        assert runner.h.app.eval_suites(who)["builds"]["v5"]["dataset_status"] == "invalid", (
+            mutation
+        )
+    runner.state.put_item({"customer_id": "evals#v5", "suite": json.dumps(good)})
+    assert runner.h.app.eval_suites(who)["builds"]["v5"]["dataset_status"] == "current"
 
 
 def test_v0_suite_fails_the_gate_and_leaves_the_demo_reset(runner, monkeypatch):
@@ -574,6 +611,124 @@ def test_k10_safe_attack_only_cannot_publish_default_release_fail(runner, capsys
     assert len(record["cases"][0]["samples"]) == 10
     assert ("evals#v5",) not in runner.state.items
     assert release_emf(capsys) == []  # no partial-study Build-only release FAIL
+
+
+@pytest.mark.parametrize(
+    "helpfulness,passed",
+    [
+        ([{"label": "ERROR", "value": 0.9}], False),
+        ([{"label": "unknown", "value": 0.9}], False),
+        ([{"label": "fine", "value": True}], False),
+        ([{"label": "fine", "value": 0.9}, {"label": "fine"}], False),
+        ([{"label": "fine", "value": 0.9}], True),
+    ],
+)
+def test_raw_service_results_through_score_sample_and_complete_gate(
+    runner, monkeypatch, helpfulness, passed
+):
+    """Synthetic *scorer plumbing*, never a simulated production policy decision."""
+
+    def synthetic_case(token, build, case, sample):
+        return {
+            "run_id": f"sample-{case['id']}-{sample}",
+            "sample": sample,
+            "started": 0,
+            "local": "PASS",
+            "verdict": "NO_EFFECT",
+            "screen": {"status": "PASS"},
+            "useful_evidence": True,
+            **(
+                {"control": {"family": case["family"], "status": "PASS"}}
+                if case.get("family")
+                else {}
+            ),
+        }
+
+    def service(evaluatorId, evaluationInput, evaluationTarget=None):
+        if evaluatorId == "code-1":
+            results = [{"label": "PASS", "value": 1.0}]
+        elif evaluatorId == "Builtin.Helpfulness":
+            results = helpfulness
+        else:
+            results = [{"label": "PASS"}]  # advisory label-only scores are valid
+        return {"evaluationResults": results}
+
+    monkeypatch.setattr(runner.h, "run_case", synthetic_case)
+    monkeypatch.setattr(
+        runner.h,
+        "spans_for",
+        lambda sample, deadline: [
+            {
+                "traceId": "t1",
+                "attributes": {"session.id": sample["run_id"]},
+                "scope": {"name": "strands.telemetry.tracer"},
+            }
+        ],
+    )
+    monkeypatch.setattr(runner.h, "_agentcore", SimpleNamespace(evaluate=service))
+    result = runner.h.lambda_handler({"build": "v5", "suite_id": "raw-service"}, None)
+    stored = suite_of(runner, "v5")
+    assert result["passed"] is passed
+    assert stored["gate"]["safety"] == "PASS"
+    assert stored["gate"]["controls"]["status"] == "PASS"
+    assert stored["gate"]["quality"]["passed"] is passed
+    assert stored["gate"]["quality"]["scored"] == (3 if passed else 0)
+    for case in stored["cases"]:
+        for sample in case["samples"]:
+            scores = sample["scores"]
+            assert scores["no_forbidden_effect"]["label"] == "PASS"
+            if case["kind"] == "benign":
+                assert scores["Builtin.Helpfulness"]["label"] == ("SCORED" if passed else "ERROR")
+            elif case["kind"] == "attack":
+                assert scores["Builtin.Refusal"]["value"] is None
+
+
+def test_raw_code_error_with_numeric_value_does_not_fall_back_to_diff(runner, monkeypatch):
+    def service(evaluatorId, evaluationInput, evaluationTarget=None):
+        if evaluatorId == "code-1":
+            return {"evaluationResults": [{"label": "ERROR", "value": 1.0}]}
+        return {"evaluationResults": [{"label": "fine", "value": 0.9}]}
+
+    monkeypatch.setattr(runner.h, "_agentcore", SimpleNamespace(evaluate=service))
+    sample = {
+        "run_id": "r",
+        "started": 0,
+        "local": "PASS",
+        "screen": {"status": "PASS"},
+        "useful_evidence": True,
+        "verdict": "NO_EFFECT",
+    }
+    runner.h.score_sample({"kind": "benign"}, sample, deadline=1e12)
+    assert sample["scores"]["no_forbidden_effect"]["label"] == "ERROR"
+    gate = runner.h.suite.gate([{"id": "benign", "kind": "benign", "samples": [sample]}])
+    assert gate["safety"] == "FAIL" and gate["quality"]["passed"]
+    assert not gate["passed"]
+
+
+def test_required_trace_result_cannot_hide_an_unscored_second_trace(runner, monkeypatch):
+    def two_traces(sample, deadline):
+        return [
+            {"traceId": t, "attributes": {"session.id": sample["run_id"]}} for t in ("t1", "t2")
+        ]
+
+    def partial(evaluatorId, evaluationInput, evaluationTarget=None):
+        assert evaluationTarget is None or evaluationTarget == {"traceIds": ["t1", "t2"]}
+        return {"evaluationResults": [{"label": "PASS", "value": 1.0}]}
+
+    monkeypatch.setattr(runner.h, "spans_for", two_traces)
+    monkeypatch.setattr(runner.h, "_agentcore", SimpleNamespace(evaluate=partial))
+    sample = {
+        "run_id": "r",
+        "started": 0,
+        "local": "PASS",
+        "screen": {"status": "PASS"},
+        "useful_evidence": True,
+        "verdict": "NO_EFFECT",
+    }
+    runner.h.score_sample({"kind": "benign"}, sample, deadline=1e12)
+    assert sample["scores"]["Builtin.Helpfulness"]["label"] == "ERROR"
+    gate = runner.h.suite.gate([{"id": "benign", "kind": "benign", "samples": [sample]}])
+    assert gate["safety"] == "PASS" and not gate["quality"]["passed"] and not gate["passed"]
 
 
 def test_complete_default_without_control_proof_publishes_failure_emf(runner, capsys):

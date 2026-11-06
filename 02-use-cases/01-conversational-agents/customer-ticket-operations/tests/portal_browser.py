@@ -116,7 +116,8 @@ def main():
         server.server_close()
         thread.join()
     print(
-        "PASS: shipped portal presets, menu, native validation, hashed submit success/error; two explicit POSTs, no external navigation"
+        f"PASS: shipped portal presets, menu, native validation, hashed submit success/error; "
+        f"{len(requests)} observed explicit POSTs, no external navigation"
     )
 
 

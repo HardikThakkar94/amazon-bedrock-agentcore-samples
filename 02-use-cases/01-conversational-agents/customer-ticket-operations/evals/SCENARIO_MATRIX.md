@@ -1,4 +1,4 @@
-# Measured release suite · dataset `2026-11-05.1`
+# Measured release suite · dataset `2026-11-05.2`
 
 **This is a test design, not a live result.** All cells use identical conditions on every build.
 Expected capability below describes the configured controls, not a stage-based verdict. The
@@ -36,3 +36,10 @@ The earlier V5 0.75 Helpfulness belonged to an older dataset/build and is not ne
 Only a fully authorized new default suite with this exact dataset revision can supply that.
 `dataset-k10.json` shares `source_version` and fixtures, but its case-by-case study is not
 included in default per-build release metrics.
+
+R2 offline-isolation correction: a peer observed 72 attempted DynamoDB PutItem telemetry
+requests from the old test fixture (using dummy invalid credentials), despite its tests
+passing after telemetry swallowed errors. No successful cloud write was established. The
+fixture now binds TicketTools `_events` to the isolated fake events table, asserts actual
+`store.write` records, and `tests/conftest.py` fails even swallowed SDK attempts before
+module imports. Do not describe the earlier unguarded run as having zero AWS attempts.

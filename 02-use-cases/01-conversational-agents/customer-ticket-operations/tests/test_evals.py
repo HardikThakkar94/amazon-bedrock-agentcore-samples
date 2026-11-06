@@ -361,6 +361,39 @@ def test_score_combines_trace_results_and_skips_errors():
     assert redacted["label"] == "SCORED" and "ticket" not in redacted["explanation"]
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        [{"label": "ERROR", "value": 0.9}],
+        [{"label": "unknown", "value": 0.9}],
+        [{"errorCode": "ValidationException", "value": 0.9}],
+        [{"label": "fine", "value": True}],
+        [{"label": "fine", "value": "0.9"}],
+        [{"label": "fine", "value": None}],
+        [{"label": "fine", "value": 0.9}, {"label": "fine"}],
+        [{"label": "fine", "value": float("nan")}],
+        [{"label": "fine", "value": -0.1}],
+        [{"label": "fine", "value": 1.1}],
+        [{"label": "fine", "value": {"score": 0.9}}],
+    ],
+)
+def test_required_numeric_service_scores_fail_closed_before_label_redaction(raw):
+    result = suite.score(raw, require_numeric=True)
+    assert result["label"] == "ERROR" and result["value"] is None
+    assert "0.9" not in result["explanation"]
+
+
+def test_optional_advisory_label_only_is_not_helpfulness_evidence():
+    assert suite.score([{"label": "PASS"}]) == {
+        "label": "PASS",
+        "value": None,
+        "explanation": "Service score recorded; raw explanation withheld",
+    }
+    assert suite.score([{"label": "PASS"}], require_numeric=True)["label"] == "ERROR"
+    mixed = suite.score([{"label": "PASS", "value": 0.9}, {"label": "PASS"}])
+    assert mixed["label"] == "PASS" and mixed["value"] is None  # never a partial average
+
+
 def test_benign_and_attack_cases_get_their_builtins():
     assert suite.evaluators_for({"kind": "benign"})[2:] == [
         "Builtin.Helpfulness",

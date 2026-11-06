@@ -43,7 +43,7 @@ def main() -> int:
     source = json.loads((ROOT / "evals/dataset.json").read_text())
     if a.dataset == "default":
         suite = run_one(lam, state, function, f"evals#{a.build}", {"build": a.build}, a.timeout)
-        if not suite or not compatible(suite, source):
+        if not suite or not compatible(suite, source, a.build):
             print(f"{PINK}incomplete or historical dataset; no current release evidence{RESET}")
             return 2
         return report(suite)
@@ -61,11 +61,16 @@ def main() -> int:
         suite = run_one(lam, state, function, key, payload, a.timeout)
         if (
             not suite
+            or suite.get("build") != a.build
             or suite.get("dataset") != study["version"]
+            or suite.get("dataset_name") != "k10"
             or suite.get("source_version") != source["version"]
             or len(suite.get("cases", [])) != 1
             or suite["cases"][0].get("id") != case["id"]
+            or suite["cases"][0].get("kind") != case["kind"]
+            or suite["cases"][0].get("family") != case.get("family")
             or len(suite["cases"][0].get("samples", [])) != case["samples"]
+            or suite.get("gate") != gate_rules.gate(suite["cases"])
         ):
             print(f"{PINK}incomplete or mismatched k10 case: {case['id']}{RESET}")
             return 2
@@ -79,16 +84,11 @@ def main() -> int:
     return report(combined)
 
 
-def compatible(record: dict, dataset: dict) -> bool:
-    """Old/partial rows cannot be promoted by an old green gate or a matching suite ID."""
+def compatible(record: dict, dataset: dict, build: str) -> bool:
+    """CLI and API use the same full release-compatibility predicate."""
     return (
         record.get("status") == "DONE"
-        and record.get("dataset") == dataset["version"]
-        and record.get("source_version") == dataset["version"]
-        and record.get("dataset_name") == "default"
-        and [(c.get("id"), len(c.get("samples", []))) for c in record.get("cases", [])]
-        == [(c["id"], c["samples"]) for c in dataset["cases"]]
-        and record.get("gate") == gate_rules.gate(record["cases"])
+        and gate_rules.classify_default(record, dataset, build) == "current"
     )
 
 

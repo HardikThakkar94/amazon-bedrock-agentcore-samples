@@ -762,6 +762,7 @@ def run(
         "stage": stage,
         "mode": mode,
         "actor": actor,
+        "policy_session": recorder.policy_session,
         "answer": "",
         "links": [],
         "stop_reason": "",
