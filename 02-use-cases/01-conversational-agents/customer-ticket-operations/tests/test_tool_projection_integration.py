@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +40,28 @@ class State:
         return {"Item": dict(self.item)}
 
 
+class WritableState(State):
+    """Isolated matching-intent writes from the real CircuitBreaker, no AWS SDK calls."""
+
+    def __init__(self, stage):
+        super().__init__(stage)
+        self.updates = []
+
+    def update_item(self, Key, UpdateExpression, ExpressionAttributeValues, ConditionExpression):
+        assert Key == {"customer_id": "customer-a"}
+        values = ExpressionAttributeValues
+        self.updates.append(UpdateExpression)
+        if UpdateExpression == "SET breaker_pending = :owner":
+            assert not self.item.get("breaker_pending") and not self.item.get("breaker_open")
+            self.item["breaker_pending"] = values[":owner"]
+        elif "breaker_receipt" in UpdateExpression:
+            assert self.item.get("breaker_pending") == values[":owner"]
+            self.item["breaker_receipt"] = values[":receipt"]
+            self.item.pop("breaker_pending", None)
+        else:
+            raise AssertionError("unexpected breaker mutation")
+
+
 class Guardrail:
     guardrail_id = "offline"
     version = "DRAFT"
@@ -74,7 +97,11 @@ class Gateway:
     async def call_tool_async(self, tool_use_id, name, arguments, **_):
         self.sent.append((name, dict(arguments)))
         assert name == "TicketTools___list_tickets"
-        assert arguments == {"customer_id": "customer-a", "actor": ACTOR, "run_id": "owned-run"}
+        assert arguments == {
+            "customer_id": "customer-a",
+            "actor": ACTOR,
+            "run_id": getattr(self, "expected_run", "owned-run"),
+        }
         return {
             "status": "success",
             "toolUseId": tool_use_id,
@@ -404,10 +431,190 @@ def test_runtime_refuses_noncanonical_request_shape_before_gateway_or_model(clie
             screen=Guardrail(),
             state_table=State("v3"),
         )
-    assert client.requests == []
-    assert len(Gateway.instances) == 1
-    assert Gateway.instances[0].starts == Gateway.instances[0].lists == 0
-    assert Gateway.instances[0].sent == []
+    assert client.requests == [] and Gateway.instances == []
+
+
+@pytest.mark.parametrize("stage", ("v3", "v4", "v5"))
+@pytest.mark.parametrize(
+    "bad",
+    (
+        ["A-41", "A-42", "A-43", True],
+        ["A-41", "A-42", "A-43", "A-44", {"ticket_id": "A-45"}],
+        ["A-41", "A-42", "A-43", "A-44", "A-45", "A-46"],
+        ["A-41", ""],
+        ["A-41", "A-41"],
+        None,
+        "A-41",
+    ),
+)
+def test_invalid_owned_live_request_never_latches_breaker_or_calls_model(client, stage, bad):
+    state = WritableState(stage)
+    before = copy.deepcopy(state.item)
+    with pytest.raises(ValueError, match="bounded operator request targets"):
+        runtime.run(
+            {
+                "run_id": "owned-run",
+                "stage": stage,
+                "mode": "live",
+                "policy_session": "policy-1",
+                "operator": "alice",
+                "requests": bad,
+            },
+            "local",
+            "https://gateway.invalid",
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            "owned-run",
+            screen=Guardrail(),
+            state_table=state,
+        )
+    assert state.item == before and state.updates == []
+    assert client.requests == [] and not Gateway.instances
+
+
+@pytest.mark.parametrize("stage", ("v4", "v5"))
+def test_fresh_valid_owned_run_after_invalid_target_is_writable_not_read_only(
+    client, monkeypatch, stage
+):
+    state = WritableState(stage)
+    before = copy.deepcopy(state.item)
+    with pytest.raises(ValueError, match="bounded operator request targets"):
+        runtime.run(
+            {
+                "run_id": "owned-run",
+                "stage": stage,
+                "mode": "live",
+                "policy_session": "policy-1",
+                "operator": "alice",
+                "requests": ["A-41", "A-42", "A-43", True],
+            },
+            "local",
+            "https://gateway.invalid",
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            "owned-run",
+            screen=Guardrail(),
+            state_table=state,
+        )
+    assert state.item == before and state.updates == []
+    state.item["busy_owner"] = "next-run"
+    monkeypatch.setattr(Gateway, "expected_run", "next-run", raising=False)
+    client.request_close = True
+    result = runtime.run(
+        {
+            "run_id": "next-run",
+            "stage": stage,
+            "mode": "live",
+            "policy_session": "policy-1",
+            "operator": "alice",
+            "requests": ["A-41"],
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "next-run",
+        screen=Guardrail(),
+        state_table=state,
+    )
+    assert not result["read_only"] and not result["halted"] and not result["refused"]
+    assert [c["status"] for c in result["tool_calls"]] == ["OK", "PENDING_APPROVAL"]
+    assert [name for name, _ in Gateway.instances[-1].sent] == ["TicketTools___list_tickets"]
+    assert "breaker_pending" not in state.item and not state.item.get("breaker_open")
+    assert state.item["breaker_receipt"].startswith("CLEAN_COMPLETED:")
+    assert len(state.updates) == 2  # only this fresh run acquired and completed its own intent
+
+
+def test_stop_or_unreadable_admission_precedes_invalid_live_request(client, monkeypatch):
+    invalid = ["A-41", "A-42", "A-43", True]
+    state = WritableState("v4")
+    state.item["stop_requested"] = True
+    before = copy.deepcopy(state.item)
+    refused = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v4",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "requests": invalid,
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=state,
+    )
+    assert refused["refused"] and "stopped" in refused["refused"]
+    assert state.item == before and state.updates == []
+    assert not Gateway.instances and not client.requests
+
+    state = WritableState("v4")
+    state.fail = True
+    before = copy.deepcopy(state.item)
+    refused = runtime.run(
+        {
+            "run_id": "owned-run",
+            "stage": "v4",
+            "mode": "live",
+            "policy_session": "policy-1",
+            "requests": invalid,
+        },
+        "local",
+        "https://gateway.invalid",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "owned-run",
+        screen=Guardrail(),
+        state_table=state,
+    )
+    assert refused["refused"] and "state unavailable" in refused["refused"]
+    assert state.item == before and state.updates == []
+    assert not Gateway.instances and not client.requests
+
+    monkeypatch.setattr(
+        runtime, "claims_of", lambda token: (_ for _ in ()).throw(PermissionError("invalid JWT"))
+    )
+    with pytest.raises(PermissionError, match="invalid JWT"):
+        runtime.run(
+            {
+                "run_id": "owned-run",
+                "stage": "v4",
+                "mode": "live",
+                "policy_session": "policy-1",
+                "requests": invalid,
+            },
+            "local",
+            "https://gateway.invalid",
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            "owned-run",
+            screen=Guardrail(),
+            state_table=state,
+        )
+    assert state.item == before and state.updates == []
+    assert not Gateway.instances and not client.requests
+
+
+@pytest.mark.parametrize("existing", ("breaker_pending", "breaker_open", "exclusion_disposition"))
+def test_invalid_live_input_preserves_preexisting_exclusion(client, existing):
+    state = WritableState("v4")
+    state.item[existing] = "prior-intent" if existing != "breaker_open" else True
+    before = copy.deepcopy(state.item)
+    with pytest.raises(ValueError, match="bounded operator request targets"):
+        runtime.run(
+            {
+                "run_id": "owned-run",
+                "stage": "v4",
+                "mode": "live",
+                "policy_session": "policy-1",
+                "operator": "alice",
+                "requests": ["A-41", "A-42", "A-43", "A-44", "A-45", "A-46"],
+            },
+            "local",
+            "https://gateway.invalid",
+            "us.meta.llama4-maverick-17b-instruct-v1:0",
+            "owned-run",
+            screen=Guardrail(),
+            state_table=state,
+        )
+    assert state.item == before and state.updates == []
+    assert not Gateway.instances and not client.requests
 
 
 def test_default_v0_model_still_uses_native_read_with_projected_schema(client):

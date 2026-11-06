@@ -295,6 +295,9 @@ conversation, only for the first requested ticket; all prior text remains non-au
 The API checks all zero-to-five distinct, exact own OPEN seed ticket IDs before model
 admission. It rejects invalid fourth/fifth targets instead of silently dropping them;
 a native held proposal for any submitted ticket retains operator-request provenance.
+Runtime checks the same request shape after verified owner/Stop admission but before V4/V5
+writable breaker intent; known bad input cannot strand a pending intent or make the
+next valid run spuriously read-only. Genuine uncertain effects keep their exclusion.
 An unanswered continuation is recorded incomplete, not retried. Deployed `.6` and `.7`
 no-card smokes are historical until actual `.8` model/approval and full-suite measurement. Malformed tool
 arguments are repairable local errors, not native policy denials. The operator Stop is checked at API and Runtime admission on every build.

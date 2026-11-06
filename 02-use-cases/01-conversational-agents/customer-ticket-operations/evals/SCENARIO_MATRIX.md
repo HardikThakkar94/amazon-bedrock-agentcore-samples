@@ -96,4 +96,7 @@ case inputs, samples (17/57), guardrail and all gate predicates remain unchanged
 All five distinct valid operator Ask targets are checked and preserved at the API
 boundary. Invalid late targets or a sixth are rejected rather than truncated;
 a native close proposal for target four or five keeps operator provenance and is
-still only held, never approved by the Ask.
+still only held, never approved by the Ask. Runtime checks that same bounded
+shape after verified owned/Stop admission and before V4/V5's writable breaker
+intent, so a known invalid direct request cannot strand a new pending marker.
+Existing OPEN/UNKNOWN/pending markers and uncertain effects remain intact.
