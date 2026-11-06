@@ -349,6 +349,32 @@ def exercise(browser, origin, screenshots):
     expect(page.locator("#drBody")).to_contain_text("ValidationException")
     assert "internal detail withheld" not in page.locator("#drBody").inner_text()
     page.keyboard.press("Escape")
+    # A trusted Ask that returned function JSON as text is incomplete, not a held close.
+    state["active_stage"] = "v3"
+    state["approvals"] = []
+    state["last_run"] = {
+        "status": "NO_EFFECT",
+        "note": "Operator close request incomplete: the model made no native tool call; no approval card or ticket change.",
+        "answer": json.loads((ROOT / "tests/fixtures/model_text_only_r8.json").read_text())["text"],
+        "proposals": [],
+        "effects": [],
+    }
+    refresh()
+    incomplete = {
+        "kind": "run.completed",
+        "node": "agent",
+        "status": "error",
+        "verdict": "NO_EFFECT",
+        "label": "operator close request incomplete · no held close or approval card",
+    }
+    page.evaluate(
+        "e => { cancelPlayback(); RUN = {run_id:'mock-ask',events:[e]}; STEPS=toSteps([e]); N=STEPS.length; renderPanel(); }",
+        incomplete,
+    )
+    expect(page.locator("#verdict")).to_have_text("NO EFFECT")
+    assert "no eligible native close was held" in page.evaluate("caption(STEPS[0])[1]")
+    assert "nothing changed" in page.evaluate("caption(STEPS[0])[1]")
+    assert state["approvals"] == [] and mutations() == []
     state["active_stage"] = "v5"
     state["last_run"] = {
         "status": "UNAVAILABLE",

@@ -736,6 +736,16 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 result = runs.run_result(
                     stage, agent, before, runs.snapshot(all_tickets()), mode, confirmed
                 )
+                if requests and result["status"] == "NO_EFFECT":
+                    result["note"] += (
+                        " Operator close request incomplete: "
+                        + (
+                            "the model made no native tool call"
+                            if not result["tool_calls"]
+                            else "no eligible native close was held"
+                        )
+                        + "; no approval card or ticket change. Model text is not a tool call."
+                    )
         except Exception as exc:  # noqa: BLE001 - failure can follow a committed tool write
             try:
                 after = runs.snapshot(all_tickets()) if before is not None else None
@@ -767,6 +777,8 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 "denied"
                 if result["status"]
                 in ("BLOCKED", "FILTERED", "CONFIRMED_BLOCKED", "AWAITING_APPROVAL")
+                else "error"
+                if requests and result["status"] == "NO_EFFECT"
                 else "ok",
             ),
             {
@@ -781,7 +793,12 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
                 "UNAVAILABLE": "guardrail could not screen text; withheld (dependency error)",
                 "ARGUMENT_ERROR": "model argument repair exhausted; later proposals withheld (see Gateway trace)",
                 "AWAITING_APPROVAL": "answer returned · close held for approval",
-            }.get(result["status"], "answer returned to " + who["username"]),
+            }.get(
+                result["status"],
+                "operator close request incomplete · no held close or approval card"
+                if requests and result["status"] == "NO_EFFECT"
+                else "answer returned to " + who["username"],
+            ),
             verdict=result["status"],
             payload=json.dumps(
                 {

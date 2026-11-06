@@ -549,6 +549,7 @@ function caption(step){
     : e0.verdict === 'CONFIRMED_BLOCKED' ? ['denied', `Run complete. The close ${u} approved <b>went through</b>; the unapproved one was <b>denied</b>.`]
     : e0.verdict === 'AWAITING_APPROVAL' ? ['denied', `Run complete. <b>Nothing changed</b>: every close the agent proposed is <b>waiting for ${u}’s approval</b>, with where it came from.`]
     : e0.verdict === 'STOPPED' ? ['halted', `The agent is stopped by the operator: <b>the run was refused at admission</b>, with no model call.`]
+    : e0.verdict === 'NO_EFFECT' && e0.label?.startsWith('operator close request incomplete') ? ['error', `The operator asked for a close, but <b>no eligible native close was held</b>. No approval card or close exists; <b>nothing changed</b>. Text describing a tool call cannot create one.`]
     : ['', `Run complete. ${u} gets the answer; <b>nothing changed</b>.`];
   return ['', esc(e0.label)];
 }

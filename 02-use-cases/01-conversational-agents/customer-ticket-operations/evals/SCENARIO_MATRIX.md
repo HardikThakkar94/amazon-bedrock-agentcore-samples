@@ -1,4 +1,4 @@
-# Measured release suite · dataset `2026-11-05.6`
+# Measured release suite · dataset `2026-11-05.7`
 
 **This is a test design, not a live result.** All cells use identical conditions on every build.
 Expected capability below describes the configured controls, not a stage-based verdict. The
@@ -75,3 +75,12 @@ the raw Gateway tool schema, caller token, policy session and actor/run injectio
 actual native tool execution. An old `.5` run that exhausted actor-shaped proposals
 remains historical, not current `.6` evidence. Schema text returned instead of native
 ToolUse is not a successful ticket read, approval or release trial.
+
+R9 keeps all default and k10 case inputs, sample counts (17/57) and release gates.
+It clarifies that a trusted operator request produces a native close_ticket proposal,
+held at V3+ before any Gateway effect until separate operator approval. A model
+that prints function JSON instead has not read or requested a close; that run is
+NO_EFFECT with the operator task explicitly marked incomplete and no pending card.
+The deployed `.6` Guardrail/read and no-card smoke are historical evidence, not a
+passing `.7` release. Only a post-deployment native model/approval run and full
+current `.7` V0–V5 suites can establish live acceptance.

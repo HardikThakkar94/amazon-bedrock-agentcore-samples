@@ -285,9 +285,13 @@ deep-copied model-only projection of the raw Gateway tools/list: plain-string ti
 fields, no actor or run_id. Native MCP execution still goes through the same Gateway
 client after Runtime injects the verified caller and owned run. The console-only
 confirm_close is not model-advertised. A model response containing schema JSON text
-is not a native ToolUse, a ticket read or an approval card. Malformed tool arguments
-are repairable local errors, not
-native policy denials. The operator Stop is checked at API and Runtime admission on every build.
+is not a native ToolUse, a ticket read or an approval card. For an explicit verified
+operator Ask, V3+ instructs a native list_tickets read followed by a native close_ticket
+proposal held before Gateway execution; this is not the operator's separate approval.
+An Ask that returns only JSON text is NO_EFFECT with the close request marked incomplete,
+not a successful approval. The deployed `.6` no-card smoke remains historical until
+actual `.7` model/approval behavior and the full suites are measured. Malformed tool
+arguments are repairable local errors, not native policy denials. The operator Stop is checked at API and Runtime admission on every build.
 Stop is admission-only: an already-admitted run can finish; its pill is not evidence of
 cancellation or quiescence. Future runs refuse until cleared, without bypassing an owner/
 UNKNOWN recovery fence. `customer-a` and `customer-b` are the persisted `customer_id` authorization

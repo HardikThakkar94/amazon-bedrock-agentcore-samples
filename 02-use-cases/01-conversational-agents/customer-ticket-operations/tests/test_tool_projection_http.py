@@ -220,7 +220,10 @@ def test_initialized_mcp_rejects_unsupported_raw_schema_before_model_or_effect(
     assert not any(event.get("kind") in ("store.read", "store.write") for event in events.items)
 
 
-def test_model_schema_json_text_is_not_a_read_or_pending_approval(api, local_mcp, monkeypatch):
+@pytest.mark.parametrize("fixture_name", ("model_schema_text_v3.json", "model_text_only_r8.json"))
+def test_model_schema_json_text_is_not_a_read_or_pending_approval(
+    api, local_mcp, monkeypatch, fixture_name
+):
     import strands.models.bedrock as bedrock_module
 
     from sec310_agent.events import Events as RuntimeEvents
@@ -229,9 +232,7 @@ def test_model_schema_json_text_is_not_a_read_or_pending_approval(api, local_mcp
     monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
 
     model = Bedrock()
-    captured = json.loads(
-        (Path(__file__).parent / "fixtures/model_schema_text_v3.json").read_text()
-    )["text"]
+    captured = json.loads((Path(__file__).parent / "fixtures" / fixture_name).read_text())["text"]
     model.schema_text = captured
     session = SimpleNamespace(region_name="us-east-1", client=lambda **kw: model)
     monkeypatch.setattr(bedrock_module.boto3, "Session", lambda: session)
@@ -259,6 +260,8 @@ def test_model_schema_json_text_is_not_a_read_or_pending_approval(api, local_mcp
     status, data = request(api, "/api/run", {"requests": ["A-41"]})
     assert status == 200 and data["result"]["status"] == "NO_EFFECT"
     assert data["result"]["tool_calls"] == [] and data["result"]["effects"] == []
+    assert "Operator close request incomplete" in data["result"]["note"]
+    assert "the model made no native tool call" in data["result"]["note"]
     assert len(model.requests) == 1
     assert data["result"]["answer"] == captured
     assert not api.app.current_approvals(api.app.demo_state("customer-a"))
@@ -271,6 +274,17 @@ def test_model_schema_json_text_is_not_a_read_or_pending_approval(api, local_mcp
     ]
     assert len(ends) == 1 and ends[0]["label"] == (
         "wrote tool schemas as text (no toolUse or ticket read)"
+    )
+    completed = [
+        entry
+        for entry in api.tables["events"].rows.values()
+        if entry.get("run_id") == run_id and entry.get("kind") == "run.completed"
+    ]
+    assert len(completed) == 1 and completed[0]["status"] == "error"
+    assert completed[0]["verdict"] == "NO_EFFECT"
+    assert (
+        completed[0]["label"]
+        == "operator close request incomplete · no held close or approval card"
     )
 
 
@@ -320,22 +334,44 @@ def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact
     monkeypatch.setattr(api.app, "invoke_agent", invoke)
     status, held = request(api, "/api/run", {"requests": ["A-41"]})
     assert status == 200 and held["result"]["status"] == "AWAITING_APPROVAL"
-    assert (
-        "operator asks you to close A-41" in model.requests[0]["messages"][0]["content"][0]["text"]
-    )
+    first_request = model.requests[0]
+    assert "operator asks you to close A-41" in first_request["messages"][0]["content"][0]["text"]
+    assert "native TicketTools___close_ticket" in first_request["messages"][0]["content"][0]["text"]
+    assert "TicketTools___close_ticket" in first_request["system"][0]["text"]
+    assert "TicketTools___list_tickets" in first_request["system"][0]["text"]
     assert len(model.requests) == 3
     assert [c["status"] for c in held["result"]["tool_calls"]] == ["OK", "PENDING_APPROVAL"]
+    held_call = held["result"]["tool_calls"][1]
+    assert held_call["tool"] == "close_ticket"
+    assert held_call["input"] == {
+        "customer_id": "customer-a",
+        "ticket_id": "A-41",
+        "reason": "operator says resolved",
+        "actor": ACTOR,
+        "run_id": held["result"]["run_id"],
+    }
     held_events = [
         entry.get("kind")
         for entry in api.tables["events"].rows.values()
         if entry.get("run_id") == held["result"]["run_id"]
     ]
-    assert "model.call_end" in held_events and "approval.requested" in held_events
+    assert {"model.call_end", "guardrail.checked", "store.read", "approval.requested"} <= set(
+        held_events
+    )
+    assert "store.write" not in held_events
+    assert held["result"]["tool_calls"][0]["status"] == "OK"
+    assert held["result"]["tool_calls"][0]["input"] == {
+        "customer_id": "customer-a",
+        "actor": ACTOR,
+        "run_id": held["result"]["run_id"],
+    }
     assert held["result"]["effects"][0]["status"] == "HELD_FOR_APPROVAL"
     assert api.tables["tickets"].rows[("customer-a", "A-41")]["status"] == "OPEN"
     cards = api.app.current_approvals(api.app.demo_state("customer-a"))
     assert len(cards) == 1 and cards[0]["status"] == "PENDING"
     assert cards[0]["ticket_id"] == "A-41" and cards[0]["requested_by"] == "operator"
+    assert cards[0]["customer_id"] == ACTOR["customer_id"]
+    assert cards[0]["reason"] == held_call["input"]["reason"]
     methods = [name for name, _, _ in server.received]
     assert methods.count("initialize") == 1 and methods.count("tools/list") == 1
     assert [row["params"]["name"] for name, row, _ in server.received if name == "tools/call"] == [
