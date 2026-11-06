@@ -53,20 +53,20 @@ TFBACKEND := $(CURDIR)/infra/iac/envs/$(ENV).tfbackend
 # ── Terraform wrappers ────────────────────────────────────────────────────
 define tf_plan
 	@echo "══ Plan $(1) [$(ENV)] ══"
-	cd $(1) && terraform init -input=false -reconfigure $(BACKEND_ARGS) \
-	         && terraform plan -var-file="$(TFVARS)"
+	cd $(1) && env -u AWS_BEARER_TOKEN_BEDROCK terraform init -input=false -reconfigure $(BACKEND_ARGS) \
+	         && env -u AWS_BEARER_TOKEN_BEDROCK terraform plan -var-file="$(TFVARS)"
 endef
 
 define tf_apply
 	@echo "══ Apply $(1) [$(ENV)] ══"
-	cd $(1) && terraform init -input=false -reconfigure $(BACKEND_ARGS) \
-	         && terraform apply -input=false $(AUTO_APPROVE) -var-file="$(TFVARS)"
+	cd $(1) && env -u AWS_BEARER_TOKEN_BEDROCK terraform init -input=false -reconfigure $(BACKEND_ARGS) \
+	         && env -u AWS_BEARER_TOKEN_BEDROCK terraform apply -input=false $(AUTO_APPROVE) -var-file="$(TFVARS)"
 endef
 
 define tf_destroy
 	@echo "══ Destroy $(1) [$(ENV)] ══"
-	cd $(1) && terraform init -input=false -reconfigure $(BACKEND_ARGS) \
-	         && terraform destroy -input=false $(AUTO_APPROVE) -var-file="$(TFVARS)"
+	cd $(1) && env -u AWS_BEARER_TOKEN_BEDROCK terraform init -input=false -reconfigure $(BACKEND_ARGS) \
+	         && env -u AWS_BEARER_TOKEN_BEDROCK terraform destroy -input=false $(AUTO_APPROVE) -var-file="$(TFVARS)"
 endef
 
 ROOTS := infra/iac/roots/foundation/build infra/iac/roots/foundation/observability infra/iac/roots/guardrails infra/iac/roots/identity infra/iac/roots/app infra/iac/roots/web infra/iac/roots/agent infra/iac/roots/evals

@@ -2,6 +2,13 @@ resource "aws_ssm_parameter" "guardrail_id" {
   name  = "/${var.project}/${var.environment}/guardrails/prompt_attack_id"
   type  = "String"
   value = aws_bedrock_guardrail.prompt_attack.guardrail_id
+
+  lifecycle {
+    precondition {
+      condition     = aws_bedrock_guardrail.prompt_attack.guardrail_arn == "arn:aws:bedrock:${var.region}:${var.account_id}:guardrail/${aws_bedrock_guardrail.prompt_attack.guardrail_id}"
+      error_message = "Do not publish a Guardrail ID from a different account or region."
+    }
+  }
 }
 
 resource "aws_ssm_parameter" "ar_guardrail_id" {

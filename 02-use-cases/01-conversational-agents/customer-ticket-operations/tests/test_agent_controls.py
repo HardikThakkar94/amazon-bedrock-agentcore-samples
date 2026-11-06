@@ -19,7 +19,10 @@ TICKETS = json.dumps(
 )
 CAPTURE = [
     {"tool": "list_tickets", "input": {"customer_id": "customer-a"}},
-    {"tool": "close_ticket", "input": {"customer_id": "customer-b", "ticket_id": "B-77"}},
+    {
+        "tool": "close_ticket",
+        "input": {"customer_id": "customer-b", "ticket_id": "B-77", "reason": "test"},
+    },
     {"tool": "add_note", "input": {"customer_id": "customer-b", "ticket_id": "B-78", "note": "x"}},
 ]
 
@@ -327,13 +330,143 @@ def test_v2_unreachable_guardrail_withholds_text_and_refuses_writes():
     assert len(FakeGateway.instances[0].sent) == 1
 
 
+@pytest.mark.parametrize(
+    "input_value",
+    [
+        {"customer_id": {"customer_id": "customer-a"}},
+        {"customer_id": {"type": "string", "value": "customer-a"}},
+        {"customer_id": True},
+        {"customer_id": ["customer-a"]},
+        {"customer_id": ""},
+        {"customer_id": "  "},
+        {"customer_id": "customer-a", "extra": "x"},
+        {"customer_id": "customer-a", "run_id": "model-spoof"},
+        {"customer_id": "customer-a", "actor": ACTOR},
+        {"target": "customer-a"},
+        [],
+        ["customer-a"],
+        False,
+        None,
+    ],
+)
+def test_malformed_model_read_is_repairable_not_a_policy_denial(input_value):
+    from functions.api import runs as api_runs
+
+    result = replay(
+        "v4",
+        calls=[{"tool": "list_tickets", "input": input_value}],
+        state_table=StateTable({"busy_stage": "v4"}),
+    )
+    assert [c["status"] for c in result["tool_calls"]] == ["NOT_EVALUATED"]
+    assert result["tool_calls"][0]["decision"] == "INVALID_ARGUMENTS"
+    assert FakeGateway.instances[0].sent == [] and not result["halted"]
+    assert api_runs.run_result("v4", result, {}, {}, "replay")["status"] == "NO_EFFECT"
+
+
+@pytest.mark.parametrize(
+    "tool,input_value",
+    [
+        ("close_ticket", {"customer_id": "customer-a", "ticket_id": "A-41"}),
+        (
+            "close_ticket",
+            {"customer_id": "customer-a", "ticket_id": "A-41", "reason": {"value": "test"}},
+        ),
+        ("add_note", {"customer_id": "customer-a", "ticket_id": [], "note": "test"}),
+        ("add_note", {"customer_id": "customer-a", "ticket_id": "A-41", "note": ""}),
+        (
+            "add_note",
+            {"customer_id": "customer-a", "ticket_id": "A-41", "note": "test", "actor": ACTOR},
+        ),
+    ],
+)
+def test_invalid_write_schema_never_reaches_gateway(tool, input_value):
+    result = replay(
+        "v4",
+        calls=[{"tool": tool, "input": input_value}],
+        state_table=StateTable({"busy_stage": "v4"}),
+    )
+    assert result["tool_calls"][0]["decision"] == "INVALID_ARGUMENTS"
+    assert result["tool_calls"][0]["status"] == "NOT_EVALUATED"
+    assert FakeGateway.instances[0].sent == [] and not result["halted"]
+
+
+def test_invalid_tool_arguments_are_bounded_without_breaker_or_policy_call():
+    from functions.api import runs as api_runs
+
+    calls = [{"tool": "list_tickets", "input": {"customer_id": {"customer_id": "customer-a"}}}] * 3
+    result = replay("v4", calls=calls, state_table=StateTable({"busy_stage": "v4"}))
+    assert result["invalid_args_exhausted"] and not result["halted"]
+    assert FakeGateway.instances[0].sent == []
+    scored = api_runs.run_result("v4", result, {}, {}, "replay")
+    assert scored["status"] == "ARGUMENT_ERROR" and scored["argument_errors"] == 3
+    assert api_runs.metrics(scored)["PolicyDenials"] == 0
+
+
+def test_runtime_hook_repairs_nested_read_then_screens_valid_own_result(monkeypatch):
+    import sec310_agent.agent as module
+    from functions.api import runs as api_runs
+
+    FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
+    guard = Guardrail("NONE")
+
+    def simulated_model(payload, actor, gateway, recorder, model_id, run_id):
+        bad = module.ReplayToolEvent(
+            {
+                "name": "TicketTools___list_tickets",
+                "toolUseId": "bad",
+                "input": {"customer_id": {"customer_id": "customer-a"}},
+            }
+        )
+        recorder.before(bad)
+        assert bad.cancel_tool and FakeGateway.instances[0].sent == []
+        good = module.ReplayToolEvent(
+            {
+                "name": "TicketTools___list_tickets",
+                "toolUseId": "repaired",
+                "input": {"customer_id": "customer-a"},
+            }
+        )
+        recorder.before(good)
+        good.result = gateway.call_tool_sync(
+            "repaired", good.tool_use["name"], good.tool_use["input"]
+        )
+        recorder.after(good)
+        return "A-41 and A-42 remain open; A-90 needs delivery follow-up.", "end_turn"
+
+    monkeypatch.setattr(module, "live", simulated_model)
+    result = replay(
+        "v5",
+        screen=screen(guard),
+        state_table=StateTable({"busy_stage": "v5"}),
+        extra={"mode": "live"},
+        calls=[],
+    )
+    assert [c["decision"] for c in result["tool_calls"]] == ["INVALID_ARGUMENTS", "ALLOW"]
+    assert [c["status"] for c in result["tool_calls"]] == ["NOT_EVALUATED", "OK"]
+    assert guard.seen == [TICKETS]
+    assert [name for name, _ in FakeGateway.instances[0].sent] == ["TicketTools___list_tickets"]
+    adjudicated = api_runs.run_result("v5", result, {}, {}, "live")
+    assert adjudicated["status"] == "NO_EFFECT" and adjudicated["argument_errors"] == 1
+
+
+def test_valid_foreign_scalar_read_still_reaches_real_policy_decision():
+    FakeGateway.replies = {"list_tickets": {"status": "error", "content": [{"text": DENIED}]}}
+    result = replay(
+        "v4",
+        calls=[{"tool": "list_tickets", "input": {"customer_id": "customer-b"}}],
+        state_table=StateTable({"busy_stage": "v4"}),
+    )
+    assert [name for name, _ in FakeGateway.instances[0].sent] == ["TicketTools___list_tickets"]
+    assert result["tool_calls"][0]["decision"] == "DENY" and result["halted"]
+
+
 # ── V3: policy denial without containment ─────────────────────────────────
 def test_v3_policy_denial_is_recorded_but_does_not_halt():
     FakeGateway.replies = {"close_ticket": {"status": "error", "content": [{"text": DENIED}]}}
     result = replay("v3")
-    assert [c["decision"] for c in result["tool_calls"]] == ["ALLOW", "DENY", "ALLOW"]
+    assert [c["decision"] for c in result["tool_calls"]] == ["ALLOW", "DENY", "NOT_EVALUATED"]
     assert result["halted"] is False
-    assert len(FakeGateway.instances[0].sent) == 3
+    assert len(FakeGateway.instances[0].sent) == 2  # captured note has no trusted grant
 
 
 # ── V3: policy session and confirmations ──────────────────────────────────
@@ -342,7 +475,10 @@ def test_exception_text_cannot_masquerade_as_authoritative_policy_denial():
     result = replay(
         "v1",
         calls=[
-            {"tool": "close_ticket", "input": {"customer_id": "customer-a", "ticket_id": "A-42"}}
+            {
+                "tool": "close_ticket",
+                "input": {"customer_id": "customer-a", "ticket_id": "A-42", "reason": "test"},
+            }
         ],
     )
     assert result["tool_calls"][0]["status"] == "ERROR"
@@ -468,18 +604,28 @@ def test_v3_live_hook_holds_every_close_for_approval_and_sends_nothing():
 
     rec = Recorder(dict(ACTOR), run_id="r1", stage="v3", approvals=True)
     close = SimpleNamespace(
-        tool_use={"name": "TicketTools___close_ticket", "input": {"ticket_id": "A-42"}},
+        tool_use={
+            "name": "TicketTools___close_ticket",
+            "input": {
+                "customer_id": "customer-a",
+                "ticket_id": "A-42",
+                "reason": "operator request",
+            },
+        },
         cancel_tool=False,
     )
     note = SimpleNamespace(
-        tool_use={"name": "TicketTools___add_note", "input": {"ticket_id": "A-41"}},
+        tool_use={
+            "name": "TicketTools___add_note",
+            "input": {"customer_id": "customer-a", "ticket_id": "A-41", "note": "unrequested"},
+        },
         cancel_tool=False,
     )
     rec.before(close)
     rec.before(note)
     assert "held for the operator's approval" in close.cancel_tool
-    assert note.cancel_tool is False  # only consequential tools wait for a human
-    assert [c.status for c in rec.calls] == ["PENDING_APPROVAL", "PENDING"]
+    assert "no trusted operator task" in note.cancel_tool
+    assert [c.status for c in rec.calls] == ["PENDING_APPROVAL", "NOT_EVALUATED"]
     assert rec.calls[0].input["actor"] == ACTOR and rec.calls[0].input["run_id"] == "r1"
 
 
@@ -651,6 +797,15 @@ def test_v4_open_breaker_admits_read_only_and_refuses_every_write():
     }
 
 
+@pytest.mark.parametrize("stage", ["v0", "v1", "v2", "v3", "v4", "v5"])
+def test_stop_is_checked_before_runtime_gateway_for_every_build(stage):
+    item = {"busy_stage": stage, "stop_requested": True}
+    result = replay(stage, state_table=StateTable(item))
+    assert "stopped by an operator" in result["refused"]
+    assert result["stop_reason"] == "refused" and result["tool_calls"] == []
+    assert FakeGateway.instances == []
+
+
 @pytest.mark.parametrize(
     "table, why",
     [
@@ -670,7 +825,8 @@ def test_v4_kill_switch_refuses_at_admission_without_touching_the_gateway(table,
 
 def test_v4_admits_when_no_stop_is_set():
     result = replay("v4", state_table=StateTable())
-    assert result["refused"] == "" and len(FakeGateway.instances[0].sent) == 3
+    assert result["refused"] == "" and len(FakeGateway.instances[0].sent) == 2
+    assert result["tool_calls"][2]["status"] == "NOT_EVALUATED"
 
 
 def test_v4_turn_limit_trips_the_breaker():
@@ -865,7 +1021,11 @@ def test_v5_entrypoint_live_close_is_held_before_gateway(app, monkeypatch):
             {
                 "toolUseId": "hold-1",
                 "name": "TicketTools___close_ticket",
-                "input": {"customer_id": "customer-a", "ticket_id": "A-41"},
+                "input": {
+                    "customer_id": "customer-a",
+                    "ticket_id": "A-41",
+                    "reason": "operator request",
+                },
             }
         )
         recorder.before(event)

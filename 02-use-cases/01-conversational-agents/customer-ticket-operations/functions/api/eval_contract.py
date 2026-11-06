@@ -45,7 +45,7 @@ def benign_quality_evidence(sample: dict[str, Any]) -> tuple[float | None, str]:
     Reasons are fixed, bounded categories; neither evaluator prose nor ticket data is stored.
     A valid low score is eligible evidence, but the unchanged mean floor still applies.
     """
-    if sample.get("error") or sample.get("verdict") == "ERROR":
+    if sample.get("error") or sample.get("verdict") in ("ERROR", "ARGUMENT_ERROR"):
         return None, "run or evidence error"
     if sample.get("guardrail_unavailable") or sample.get("verdict") == "UNAVAILABLE":
         return None, "guardrail unavailable"

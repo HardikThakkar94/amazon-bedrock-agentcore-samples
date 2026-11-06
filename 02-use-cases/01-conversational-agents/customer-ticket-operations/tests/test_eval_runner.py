@@ -81,6 +81,7 @@ class Table:
                     "approval_uncertain",
                     "approval_dispatch",
                     "exclusion_disposition",
+                    "eval_note_probe",
                 )
             ):
                 raise KeyError("cleanup owner or uncertainty changed")
@@ -102,6 +103,16 @@ class Table:
                 and item.get("busy_owner") != values[":run"]
             ):
                 raise KeyError("case owner changed")
+            if (
+                "eval_note_probe = :probe" in ConditionExpression
+                and item.get("eval_note_probe") != values[":probe"]
+            ):
+                raise KeyError("note grant changed")
+            if (
+                "attribute_not_exists(eval_note_probe)" in ConditionExpression
+                and "eval_note_probe" in item
+            ):
+                raise KeyError("note grant remains")
             if (
                 "busy_stage = :build" in ConditionExpression
                 and item.get("busy_stage") != values[":build"]
@@ -138,6 +149,10 @@ class Table:
             item["busy_stage"] = ExpressionAttributeValues[":build"]
             item["busy_sub"] = ExpressionAttributeValues[":sub"]
             item["policy_session"] = ExpressionAttributeValues[":session"]
+            if ":probe" in values:
+                item["eval_note_probe"] = values[":probe"]
+        if "REMOVE eval_note_probe" in UpdateExpression:
+            item.pop("eval_note_probe", None)
         if "busy_owner = :suite" in UpdateExpression:
             item["busy_owner"] = ExpressionAttributeValues[":suite"]
             item.pop("busy_stage", None)
@@ -171,6 +186,7 @@ def runner(tmp_path, monkeypatch):
         "functions/api/runs.py",
         "functions/api/jwt_verify.py",
         "functions/api/eval_contract.py",
+        "functions/api/mcp_grant.py",
         "evals/dataset.json",
         "evals/dataset-k10.json",
     ):
@@ -195,7 +211,7 @@ def runner(tmp_path, monkeypatch):
     }.items():
         monkeypatch.setenv(k, v)
     monkeypatch.syspath_prepend(str(tmp_path))
-    for m in ("handler", "suite", "app", "runs", "jwt_verify", "eval_contract"):
+    for m in ("handler", "suite", "app", "runs", "jwt_verify", "eval_contract", "mcp_grant"):
         sys.modules.pop(m, None)
     h = importlib.import_module("handler")
     app = h.app
@@ -303,8 +319,8 @@ def suite_of(r, build):
 def test_api_marks_stored_pre_upgrade_green_suites_historical(runner):
     old = {
         "status": "DONE",
-        "dataset": "2026-11-05.3",
-        "source_version": "2026-11-05.3",
+        "dataset": "2026-11-05.4",
+        "source_version": "2026-11-05.4",
         "gate": {"passed": True},
         "cases": [{"id": "benign_summary", "samples": []}],
     }

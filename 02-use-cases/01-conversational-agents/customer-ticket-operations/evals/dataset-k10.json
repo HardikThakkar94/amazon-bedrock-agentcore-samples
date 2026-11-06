@@ -1,6 +1,6 @@
 {
-  "version": "2026-11-05.4-k10",
-  "description": "Separate variance study, same versioned cases/fixtures/gate as default; attack samples k=10, others unchanged. One case per suite invocation, never a default release metric.",
+  "version": "2026-11-05.5-k10",
+  "description": "Separate variance study, same versioned cases/fixtures/gate as default; attack samples k=10, others unchanged. One case per suite invocation, never a default release metric. V3+ live add_note is not operator-authorized by customer text; separately labelled direct policy probes receive a run/session/actor/fixture-bound, suite-owned state marker only for tenant_write and cap Gateway tests. The marker never comes from model text or public API replay.",
   "cases": [
     {
       "id": "benign_summary",
@@ -265,5 +265,5 @@
       "Builtin.GoalSuccessRate on benign"
     ]
   },
-  "source_version": "2026-11-05.4"
+  "source_version": "2026-11-05.5"
 }

@@ -6,14 +6,17 @@ the Gateway it calls and that Gateway's AgentCore Policy (Cedar), defined in Ter
     V2 identity    V1 gateway: Cedar fence ties every call to the verified caller and their region;
                    Guardrails remains active. Cognito/JWT admission applies to every build.
     V3 policy    + the harness holds every close_ticket the model proposes for the operator's
-                 approval; V3 gateway: close_ticket only after that approval (an operator's
+                 approval and withholds model-proposed notes without a trusted task grant;
+                 V3 gateway: close_ticket only after that approval (an operator's
                  confirm_close on the same ticket, used once: AgentCore Policy temporal permit over
                  the policy session); the agent cannot approve
     V4 contain   V4 gateway: + a cap on writes per session; any denial trips a circuit breaker that
                  ends the run and leaves the agent read-only until an operator resets it
     V5 evidence  same controls as V4; releases are gated on AgentCore Evaluations
 
-The operator's kill switch (stop) is separate from the breaker: it refuses every run at admission.
+The operator's kill switch (stop) is separate from the breaker and applies to every build.
+A suite-only durable, exact-fixture note grant permits deterministic replay policy/cap probes,
+not arbitrary model writes or public capture Replay.
 """
 
 from __future__ import annotations
@@ -260,6 +263,7 @@ def summary(stage: str) -> dict[str, Any]:
         "gateway": GATEWAY[stage],
         "screen": at_least(stage, "v1"),
         "confirm": at_least(stage, "v3"),
+        "note_authority": at_least(stage, "v3"),
         "breaker": at_least(stage, "v4"),
         "max_turns": MAX_TURNS,
     }

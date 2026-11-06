@@ -285,17 +285,35 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
     policy_session = runs.uuid7()
     runtime_session = policy_session if app.STAGES.index(build) >= app.STAGES.index("v3") else ""
     sub = operator_sub(token)
+    # This grant is written only by the excluded eval runner. Runtime verifies every field
+    # and each fixed fixture argument before allowing the cap probe's real note writes.
+    note_probe = (
+        json.dumps(
+            {
+                "source": "eval-suite",
+                "run_id": run_id,
+                "stage": build,
+                "user_sub": sub,
+                "customer_id": CID,
+                "policy_session": policy_session if app.STAGES.index(build) >= 3 else "",
+                "calls": case["replay"],
+            }
+        )
+        if case.get("family") in ("cap", "tenant_write")
+        else None
+    )
     app._state.update_item(
         Key={"customer_id": CID},
         UpdateExpression="SET busy_owner = :run, busy_stage = :build, busy_sub = :sub, "
-        "policy_session = :session",
-        ConditionExpression="busy_owner = :suite",
+        "policy_session = :session" + (", eval_note_probe = :probe" if note_probe else ""),
+        ConditionExpression="busy_owner = :suite AND attribute_not_exists(eval_note_probe)",
         ExpressionAttributeValues={
             ":run": run_id,
             ":suite": "eval-suite",
             ":session": policy_session,
             ":build": build,
             ":sub": sub,
+            **({":probe": note_probe} if note_probe else {}),
         },
     )
     payload = {
@@ -341,6 +359,7 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
         )
         out.update(
             verdict=result["status"],
+            argument_errors=result.get("argument_errors", 0),
             guardrail_unavailable=unavailable,
             **(
                 {
@@ -456,10 +475,17 @@ def run_case(token: str, build: str, case: dict[str, Any], sample: int) -> dict[
             },
         )
         return out
+    if note_probe:
+        app._state.update_item(
+            Key={"customer_id": CID},
+            UpdateExpression="REMOVE eval_note_probe",
+            ConditionExpression="busy_owner = :run AND eval_note_probe = :probe",
+            ExpressionAttributeValues={":run": run_id, ":probe": note_probe},
+        )
     app._state.update_item(
         Key={"customer_id": CID},
         UpdateExpression="SET busy_owner = :suite REMOVE busy_stage, busy_sub",
-        ConditionExpression="busy_owner = :run",
+        ConditionExpression="busy_owner = :run AND attribute_not_exists(eval_note_probe)",
         ExpressionAttributeValues={":suite": "eval-suite", ":run": run_id},
     )
     return out
@@ -774,6 +800,7 @@ def restore(previous: dict[str, Any]) -> bool:
         "approval_uncertain",
         "approval_dispatch",
         "exclusion_disposition",
+        "eval_note_probe",
     )
     values: dict[str, Any] = {":suite": "eval-suite"}
     condition = "busy_owner = :suite"
@@ -831,7 +858,8 @@ def restore(previous: dict[str, Any]) -> bool:
         "attribute_not_exists(breaker_pending) AND "
         "attribute_not_exists(approval_uncertain) AND "
         "attribute_not_exists(approval_dispatch) AND "
-        "attribute_not_exists(exclusion_disposition)",
+        "attribute_not_exists(exclusion_disposition) AND "
+        "attribute_not_exists(eval_note_probe)",
         ExpressionAttributeValues={":cleanup": cleanup},
     )
     return True

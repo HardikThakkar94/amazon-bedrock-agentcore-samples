@@ -1,4 +1,4 @@
-# Measured release suite · dataset `2026-11-05.4`
+# Measured release suite · dataset `2026-11-05.5`
 
 **This is a test design, not a live result.** All cells use identical conditions on every build.
 Expected capability below describes the configured controls, not a stage-based verdict. The
@@ -56,3 +56,14 @@ evidence and remain historical; the browser never recalculates a weaker usefulne
 or treats an invalid label with a high numeric value as useful PASS. A valid low case
 score is still eligible evidence, reported below the floor; only the mean over every
 valid benign sample gates the complete release.
+
+R5 maintains all previous case inputs, sample counts and the 0.5 mean floor. The
+runner alone seeds a durable, owner/session/actor/exact-fixture marker for the two
+`add_note` policy probes (`tenant_write` and `cap`) while its exclusive tenant lock
+is held; normal live requests and public capture Replay cannot set that marker. V3+
+model-proposed notes without trusted operator task authority are withheld before
+Gateway, while explicit synthetic replay notes still exercise native Region policy
+and the real V4/V5 cap (2–3 observed allowed writes, then DENY, durable OPEN and
+read-only follow-up). A malformed model list target is rejected before Gateway
+without changing the target value or mislabelling it as Policy DENY. Stop is an
+all-build admission control. Old `.4` live failures stay historical, not a new PASS.

@@ -277,15 +277,19 @@ Cognito access-token verification and Runtime/Gateway JWT admission apply to **e
 V2 is the first Gateway *region/caller scope* policy, not the first login check. V1 uses the
 broad v0 Gateway with Guardrails screening of tool output; V2 uses the tenant-fenced v1
 Gateway and keeps Guardrails enabled. V3 uses its own approval engine, while V4/V5 use the
-v4 engine. `customer-a` and `customer-b` are the persisted `customer_id` authorization
+v4 engine. On V3+, model-supplied ticket text cannot authorize notes: the Runtime refuses
+unrequested live/captured notes before Gateway. Only the isolated, owner/session/actor/fixture-
+bound eval runner can grant its direct note policy/cap probes; Region and write-cap decisions
+still come from the real Gateway. Malformed tool arguments are repairable local errors, not
+native policy denials. The operator Stop is checked at API and Runtime admission on every build. `customer-a` and `customer-b` are the persisted `customer_id` authorization
 keys, displayed as **Region A** and **Region B**; these are application scopes, not the AWS
 deployment region `us-east-1`. The Cedar policy, Cognito identity and portal presets retain
 their identities; the eval inputs are a separately versioned measured dataset described in
 `evals/SCENARIO_MATRIX.md`. Older suite rows are historical and cannot prove the current gate.
 
 Approval is a safe application-level hold, **not** a native Strands interrupt: the API
-validates and owns a run before recording a confirmation through the Gateway, then
-replays only the exact approved proposal. Ambiguous grants or Runtime effects retain
+validates and owns a run before an initialized MCP handshake and exactly one
+`confirm_close` through the Gateway, then replays only the exact approved proposal. Ambiguous grants or Runtime effects retain
 UNKNOWN fencing and rotate the policy session for future dispatch; an expired Runtime
 session is never an excuse to replay a write without reconciliation. The console's
 CloudWatch drawer projects verified run spans and structured Gateway policy decisions,
@@ -294,7 +298,11 @@ not native service audit events. `make eval-k10 BUILD=v5` is an optional 10-tria
 study kept outside the console release-gate matrix; it is not a replacement for the
 full V5 release gate. Current release requires real successful Guardrails screening, forbidden-
 effect safety, useful benign answers with the existing Helpfulness floor, and direct Runtime/
-Gateway probes; a failed ApplyGuardrail dependency is UNAVAILABLE, never a prompt-attack hit. `scripts/console_link.py` is a source-only helper for a separately
+Gateway probes; a failed ApplyGuardrail dependency is UNAVAILABLE, never a prompt-attack hit.
+Named-profile Terraform recipes remove an ambient Bedrock bearer token only in each child
+process; the prompt Guardrail resource and SSM pointer require an exact target-account ARN
+before downstream Runtime pointer acceptance. They do not change a caller's global provider
+environment. `scripts/console_link.py` is a source-only helper for a separately
 authorized operator and is never run by this build or its tests against real credentials.
 See `notes/sec310-speaker-notes.md` for the current presenter route.
 

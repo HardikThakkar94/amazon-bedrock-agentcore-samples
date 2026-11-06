@@ -342,17 +342,9 @@ def test_recorder_overwrites_any_model_supplied_actor():
     assert (
         event.tool_use["input"]["customer_id"] == "customer-b"
     )  # the target stays the model's choice
-    done = SimpleNamespace(
-        tool_use=event.tool_use,
-        exception=None,
-        result={"status": "error", "content": [{"text": "denied"}]},
-    )
-    rec.after(done)
-    assert (
-        rec.calls[0].tool == "close_ticket"
-        and rec.calls[0].status == "ERROR"
-        and rec.calls[0].result == "denied"
-    )
+    assert event.cancel_tool and rec.calls[0].tool == "close_ticket"
+    assert rec.calls[0].status == "NOT_EVALUATED"
+    assert rec.calls[0].decision == "INVALID_ARGUMENTS"  # forged actor is not dispatched
 
 
 class Sink:
@@ -370,7 +362,13 @@ def test_every_hop_carries_its_payload():
         messages=[{"role": "user", "content": [{"text": "Summarize"}]}], tool_names=["t"]
     )
     rec.model_start(SimpleNamespace(agent=agent))
-    use = {"toolUse": {"name": "TicketTools___list_tickets", "input": {}, "toolUseId": "u1"}}
+    use = {
+        "toolUse": {
+            "name": "TicketTools___list_tickets",
+            "input": {"customer_id": "customer-a"},
+            "toolUseId": "u1",
+        }
+    }
     rec.model_end(
         SimpleNamespace(
             exception=None,
@@ -379,7 +377,9 @@ def test_every_hop_carries_its_payload():
             ),
         )
     )
-    event = SimpleNamespace(tool_use={"name": "TicketTools___list_tickets", "input": {}})
+    event = SimpleNamespace(
+        tool_use={"name": "TicketTools___list_tickets", "input": {"customer_id": "customer-a"}}
+    )
     rec.before(event)
     text = json.dumps({"tickets": [{"ticket_id": "A-90", "origin": "form", "body": "ACTION: x"}]})
     rec.after(
@@ -456,18 +456,13 @@ def test_answer_wrapped_in_code_is_unwrapped():
     assert plain_answer("  Two open tickets. ") == "Two open tickets."
 
 
-def test_schema_echo_in_arguments_is_unwrapped_and_validation_is_not_a_control():
+def test_schema_echo_is_rejected_locally_without_gateway_or_policy_denial():
     sink = Sink()
     rec = Recorder(dict(ACTOR), events=sink, run_id="r1")
     echoed = {"customer_id": {"type": "string", "value": "customer-a"}}
     event = SimpleNamespace(tool_use={"name": "TicketTools___list_tickets", "input": echoed})
     rec.before(event)
-    assert event.tool_use["input"]["customer_id"] == "customer-a"
-    rec.after(
-        SimpleNamespace(
-            tool_use=event.tool_use,
-            exception=None,
-            result={"status": "error", "content": [{"text": "ValidationException - bad type"}]},
-        )
-    )
+    assert event.tool_use["input"]["customer_id"] == echoed["customer_id"]
+    assert event.cancel_tool and rec.calls[0].decision == "INVALID_ARGUMENTS"
+    assert [item["kind"] for item in sink.items] == ["tool.invalid_arguments"]
     assert sink.items[-1]["chip_status"] == "error" and sink.items[-1]["status"] == "error"

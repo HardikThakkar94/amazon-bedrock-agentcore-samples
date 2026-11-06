@@ -74,7 +74,7 @@ header .sp{flex:1}
 .main h2{display:flex;align-items:center;gap:14px;font:650 24px var(--sans);font-stretch:108%;margin-bottom:12px}
 .verdict{margin-left:auto;font:750 15px var(--sans);font-stretch:110%;letter-spacing:.07em;padding:7px 14px;border-radius:999px;border:1px solid var(--line);color:var(--ink-3)}
 .verdict[data-v=NO_EFFECT]{border-color:var(--ink-2);color:var(--ink)}
-.verdict[data-v=CHANGED],.verdict[data-v=ERROR],.verdict[data-v=UNAVAILABLE]{background:var(--pink);border-color:var(--pink);color:#07070f}
+.verdict[data-v=CHANGED],.verdict[data-v=ERROR],.verdict[data-v=UNAVAILABLE],.verdict[data-v=ARGUMENT_ERROR]{background:var(--pink);border-color:var(--pink);color:#07070f}
 .verdict[data-v=BLOCKED]{background:var(--green);border-color:var(--green);color:#07070f}
 .verdict[data-v=FILTERED]{background:var(--green);border-color:var(--green);color:#07070f}
 .verdict[data-v=HALTED],.verdict[data-v=STOPPED],.verdict[data-v=READ_ONLY]{background:var(--yellow);border-color:var(--yellow);color:#07070f}
@@ -431,10 +431,11 @@ function policyReach(events, b){
   if(b < 2) return 'No policy engine on this build’s Gateway. Cognito/JWT admission still applies.';
   const decisions = events.filter(e => e.kind === 'policy.decision' && ['ALLOW','DENY'].includes(e.decision));
   const last = decisions.at(-1), write = e => ['close_ticket','add_note','confirm_close'].includes(e.tool);
-  const notReached = events.filter(e => ['approval.requested','tool.skipped'].includes(e.kind) && write(e)).at(-1);
+  const notReached = events.filter(e => ['approval.requested','tool.skipped','tool.invalid_arguments'].includes(e.kind) && write(e)).at(-1);
   const prior = last ? `${last.decision} ${last.tool || 'tool'} recorded by agent from Gateway reply` : 'No Gateway Policy decision recorded';
   if(!notReached) return last ? prior + ' · ENFORCE Gateway configured' : 'ENFORCE Gateway configured · awaiting a Gateway call; no decision recorded';
   const reason = notReached.kind === 'approval.requested' ? 'held for operator approval'
+    : notReached.kind === 'tool.invalid_arguments' ? 'invalid arguments rejected before Gateway'
     : /read-only/.test(notReached.label || '') ? 'OPEN breaker refused write' : 'agent refused write';
   return `${prior}. ${notReached.tool} ${reason} before Gateway; Policy did not evaluate that write.`;
 }
@@ -516,7 +517,12 @@ function caption(step){
   if(e0.kind === 'run.halted') return ['halted', `The denial <b>trips the circuit breaker</b>: the run ends now, and the agent stays <b>read-only</b> until ${u} resets it. Nobody pressed a button.`];
   if(e0.kind === 'run.read_only') return ['halted', 'The circuit breaker is <b>OPEN</b>: the run is admitted <b>read-only</b>. It may read and summarize; every write is refused.'];
   if(e0.kind === 'run.refused') return ['halted', `The operator’s <b>kill switch</b> is on: the run is refused at admission, with no model call.`];
-  if(e0.kind === 'tool.skipped') return ['halted', /read-only/.test(e0.label) ? `<b>${esc(e0.label.replace(/ refused · read-only$/,''))}</b> is refused by the harness: the circuit breaker is open.` : `<b>${esc(e0.label)}</b>: the breaker already ended the run.`];
+  if(e0.kind === 'tool.invalid_arguments') return ['error', `The model proposed <b>invalid tool arguments</b>; the runtime refused them before Gateway or Policy. The model may retry with the exact plain-string fields.`];
+  if(e0.kind === 'tool.skipped') return /no trusted operator task/.test(e0.detail?.reason || '')
+    ? ['denied', `The runtime refused <b>${esc(e0.tool || 'add_note')}</b>: no trusted operator task or suite grant authorized this write. No Gateway call or policy DENY was recorded; the run may still summarize.`]
+    : /read-only/.test(e0.detail?.reason || '') ? ['halted', `<b>${esc(e0.label)}</b> is refused: the circuit breaker is open.`]
+    : /breaker tripped/.test(e0.detail?.reason || '') ? ['halted', `<b>${esc(e0.label)}</b>: the breaker already ended the run.`]
+    : ['denied', `<b>${esc(e0.label)}</b> was withheld before Gateway; no policy decision was recorded.`];
   if(e0.kind === 'tool.invoked') return ['', B < 2 ? `No policy engine is attached, so the Gateway invokes the TicketTools Lambda directly (${esc(e0.label)}).` : `The Gateway invokes the TicketTools Lambda (${esc(e0.label)}).`];
   if(e0.kind === 'store.read') return ['', `TicketTools reads ${esc(custName())} tickets from DynamoDB: ${esc(e0.label.replace(/^read /,''))}.`];
   if(e0.kind === 'store.write') return e0.status !== 'harmful' ? ['', `TicketTools adds a note in DynamoDB (${esc(t)}).`]
@@ -531,6 +537,7 @@ function caption(step){
   if(e0.kind === 'run.completed') return e0.verdict === 'CHANGED' ? ['harmful', `Run complete. ${u} gets an answer, and <b>a ticket changed</b> that nobody approved.`]
     : e0.verdict === 'ERROR' ? ['error', `The run failed before it finished: <b>${esc(STATE?.last_run?.note || 'see the trace')}</b>`]
     : e0.verdict === 'BLOCKED' ? ['denied', `Run complete. The Gateway <b>denied the write</b>; nothing changed.`]
+    : e0.verdict === 'ARGUMENT_ERROR' ? ['error', `The model's malformed tool proposals exhausted the bounded repair limit. <b>No policy denial or write was inferred</b> from those invalid arguments.`]
     : e0.verdict === 'UNAVAILABLE' ? ['error', `The guardrail was <b>unavailable</b>; ticket text was withheld. This is a failed dependency, <b>not</b> a detected prompt attack or a passing control.`]
     : e0.verdict === 'FILTERED' && (legacyRunUnavailable(e0) || STATE?.last_run?.guardrail_unavailable || STATE?.last_run?.controls?.some(c => c.control === 'Bedrock Guardrails' && c.status?.startsWith('UNAVAILABLE'))) ? ['error', `The recorded guardrail was <b>UNAVAILABLE</b>; ticket text was withheld. This older FILTERED verdict was not a detected prompt attack.`]
     : e0.verdict === 'FILTERED' ? ['denied', `The guardrail <b>detected and blocked a prompt attack</b> before the model could act on it.`]
@@ -582,6 +589,7 @@ const PL = {
   'guardrail.checked':['✓','Guardrail screen on ticket text','ApplyGuardrail'],
   'guardrail.intervened':['✕','Guardrail result (inspect recorded action)','ApplyGuardrail'],
   'guardrail.unavailable':['!','Guardrail unavailable · text withheld','ApplyGuardrail'],
+  'tool.invalid_arguments':['!','Malformed model arguments (no Gateway call)','Runtime validation'],
   'run.halted':['■','Circuit breaker tripped','agent hook'],
   'approval.requested':['⏸','Held for the operator’s approval','agent hook'],
   'approval.granted':['✓','Operator approval','API Lambda → Gateway'],
@@ -692,7 +700,7 @@ function renderTickets(st){
     return `<div class="ticket foreign" data-t="${esc(t.ticket_id)}"><span class="id">${esc(t.ticket_id)}</span><span class="subj">${esc(t.subject)} <span class="tenant">${esc(regionName(t.customer_id))}</span></span><span class="status ${esc(status)}">${esc(status)}</span></div>`;
   }).join('');
   renderApprovals(done);
-  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', BLOCKED:'BLOCKED', FILTERED:'FILTERED', UNAVAILABLE:'DEPENDENCY ERROR', HALTED:'HALTED', READ_ONLY:'READ-ONLY', CONFIRMED:'APPROVED', CONFIRMED_BLOCKED:'APPROVED + BLOCKED', AWAITING_APPROVAL:'AWAITING APPROVAL', STOPPED:'STOPPED', ERROR:'ERROR'}; const legacyUnavailable = run.status === 'FILTERED' && (run.guardrail_unavailable || run.controls?.some(c => c.control === 'Bedrock Guardrails' && c.status?.startsWith('UNAVAILABLE'))); const status = legacyUnavailable ? 'UNAVAILABLE' : run.status; v.hidden = false; v.dataset.v = status; v.textContent = map[status] || status; }
+  if(done && run) { const v = $('#verdict'); const map = {NO_EFFECT:'NO EFFECT', CHANGED:'CHANGED', BLOCKED:'BLOCKED', FILTERED:'FILTERED', UNAVAILABLE:'DEPENDENCY ERROR', ARGUMENT_ERROR:'MODEL ARGUMENT ERROR', HALTED:'HALTED', READ_ONLY:'READ-ONLY', CONFIRMED:'APPROVED', CONFIRMED_BLOCKED:'APPROVED + BLOCKED', AWAITING_APPROVAL:'AWAITING APPROVAL', STOPPED:'STOPPED', ERROR:'ERROR'}; const legacyUnavailable = run.status === 'FILTERED' && (run.guardrail_unavailable || run.controls?.some(c => c.control === 'Bedrock Guardrails' && c.status?.startsWith('UNAVAILABLE'))); const status = legacyUnavailable ? 'UNAVAILABLE' : run.status; v.hidden = false; v.dataset.v = status; v.textContent = map[status] || status; }
   else $('#verdict').hidden = true;
 }
 // V3+: each held close, where its request came from, and the operator's decision

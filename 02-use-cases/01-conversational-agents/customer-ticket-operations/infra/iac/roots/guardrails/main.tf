@@ -30,6 +30,13 @@ resource "aws_bedrock_guardrail" "prompt_attack" {
       output_strength = "NONE"
     }
   }
+
+  lifecycle {
+    postcondition {
+      condition     = self.guardrail_arn == "arn:aws:bedrock:${var.region}:${var.account_id}:guardrail/${self.guardrail_id}"
+      error_message = "Prompt Guardrail ARN belongs to another account or region; refuse its SSM pointer."
+    }
+  }
 }
 
 resource "awscc_bedrock_automated_reasoning_policy" "rule_change" {

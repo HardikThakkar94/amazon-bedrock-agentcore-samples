@@ -383,6 +383,25 @@ def exercise(browser, origin, screenshots):
     expect(page.locator("#drBody")).to_contain_text("request-12345")
     expect(page.locator("#drBody")).to_contain_text("DRAFT")
     page.keyboard.press("Escape")
+    note_hold = [
+        {
+            "kind": "tool.skipped",
+            "node": "agent",
+            "status": "denied",
+            "tool": "add_note",
+            "label": "add_note A-90 not evaluated",
+            "detail": {
+                "reason": "not evaluated: add_note has no trusted operator task or suite grant"
+            },
+        }
+    ]
+    page.evaluate(
+        "evs => { cancelPlayback(); RUN={run_id:'mock-run',events:evs}; STEPS=toSteps(evs); N=1; renderPanel(); }",
+        note_hold,
+    )
+    expect(page.locator("#capx")).to_contain_text("no trusted operator task")
+    expect(page.locator("#capx")).to_contain_text("No Gateway call or policy DENY")
+    assert "breaker already ended" not in page.locator("#capx").inner_text()
     state["active_stage"] = "v0"
     state["last_run"] = None
     page.evaluate("cancelPlayback(); RUN = null; STEPS=[]; N=0")

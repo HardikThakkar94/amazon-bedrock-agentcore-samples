@@ -143,6 +143,8 @@ class Table:
                     store_change_source=v[":src"],
                     run_id=v[":id"],
                 )
+            if "stop_requested = :on" in UpdateExpression:
+                item["stop_requested"] = v[":on"]
             if "breaker_open = :f" in UpdateExpression:
                 item["breaker_open"] = v[":f"]
             if "active_stage = :stage" in UpdateExpression:
@@ -261,33 +263,117 @@ def held(api, monkeypatch, ticket="A-42"):
 
 
 def test_gateway_confirmation_requires_exact_structured_target(api, monkeypatch):
-    class Response:
-        def __init__(self, body):
-            self.body = body
+    from tests.test_mcp_grant import ACTOR, ARGS, TOOL, MCPWire
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return self.body
-
-    data = {"status": "CONFIRMED", "ticket_id": "A-42", "customer_id": "customer-a"}
-    replies = [data, {**data, "ticket_id": "A-41"}, {**data, "status": "NOT CONFIRMED"}]
-    args = {"customer_id": "customer-a", "ticket_id": "A-42"}
-    for expected, inner in zip((True, False, False), replies, strict=True):
-        rpc = {"result": {"content": [{"text": json.dumps(inner)}]}}
+    for scenario, expected in (("ok", True), ("foreign_target", False), ("missing_actor", False)):
+        wire = MCPWire(scenario)
         monkeypatch.setattr(
-            api.app.urllib.request,
-            "urlopen",
-            lambda *a, reply=rpc, **kw: Response(json.dumps(reply).encode()),
+            api.app.mcp_grant.urllib.request, "build_opener", lambda *a, reply=wire: reply
         )
         allowed, _ = api.app.gateway_call(
-            "offline", "https://gateway.invalid", "policy-1", "TicketTools___confirm_close", args
+            "test-token", "https://gateway.invalid", "policy-1", TOOL, ARGS
         )
         assert allowed is expected
+        assert [m["method"] for m, _ in wire.sent][-1] == "tools/call"
+        assert wire.sent[-1][0]["params"]["arguments"]["actor"] == ACTOR
+
+
+@pytest.mark.parametrize("stage", [f"v{i}" for i in range(6)])
+def test_stop_refuses_before_any_runtime_model_or_gateway_call(api, monkeypatch, stage):
+    state = api.tables["state"].rows[("customer-a",)]
+    state["active_stage"] = stage
+    assert request(api, "/api/stop", {"stop": True})[0] == 200
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("stop must not dispatch a Runtime or Gateway request")
+
+    monkeypatch.setattr(api.app, "invoke_agent", forbidden)
+    monkeypatch.setattr(api.app, "gateway_call", forbidden)
+    status, body = request(api, "/api/run", {})
+    assert status == 200 and body["result"]["status"] == "STOPPED"
+    assert body["result"]["source"] == "API admission · operator stop"
+    assert body["result"]["controls"][0]["control"] == "Kill switch"
+    assert body["result"]["tool_calls"] == [] and body["result"]["effects"] == []
+    run_id = body["result"]["run_id"]
+    kinds = [
+        item.get("kind")
+        for item in api.tables["events"].rows.values()
+        if item.get("run_id") == run_id
+    ]
+    assert "run.refused" in kinds and "run.completed" in kinds
+    assert api.app.demo_state("customer-a").get("busy_owner") is None
+
+
+@pytest.mark.parametrize("mode", ["replay", "approve"])
+def test_stop_does_not_dispatch_capture_or_consume_approval(api, monkeypatch, mode):
+    state = api.tables["state"].rows[("customer-a",)]
+    stage = "v3" if mode == "approve" else "v5"
+    state["active_stage"] = stage
+    if mode == "approve":
+        card = held(api, monkeypatch)
+        request_body = {"mode": "approve", "approval": card["id"]}
+        initial_session = state["policy_session"]
+    else:
+        state["capture"] = json.dumps(
+            {
+                "stage": stage,
+                "run_id": "prior",
+                "fingerprint": api.app.runs.fingerprint(api.app.tickets_for("customer-a")),
+                "calls": [
+                    {
+                        "tool": "add_note",
+                        "input": {
+                            "customer_id": "customer-a",
+                            "ticket_id": "A-42",
+                            "note": "untrusted replay",
+                        },
+                    }
+                ],
+            }
+        )
+        request_body = {"mode": "replay"}
+    assert request(api, "/api/stop", {"stop": True})[0] == 200
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("stop must not dispatch a Gateway grant or Runtime replay")
+
+    monkeypatch.setattr(api.app, "invoke_agent", forbidden)
+    monkeypatch.setattr(api.app, "gateway_call", forbidden)
+    status, body = request(api, "/api/run", request_body)
+    assert status == 200 and body["result"]["status"] == "STOPPED"
+    assert body["result"]["tool_calls"] == [] and body["result"]["effects"] == []
+    assert not state.get("approval_uncertain") and not state.get("approval_dispatch")
+    if mode == "approve":
+        assert cards_of(api)[-1]["status"] == "PENDING"
+        assert state["policy_session"] == initial_session
+
+
+def test_clear_stop_restores_valid_owned_summary_after_prior_stop(api, monkeypatch):
+    state = api.tables["state"].rows[("customer-a",)]
+    state["active_stage"] = "v0"
+    assert request(api, "/api/stop", {"stop": True})[0] == 200
+    first, stopped = request(api, "/api/run")
+    assert first == 200 and stopped["result"]["status"] == "STOPPED"
+    assert request(api, "/api/stop", {"stop": False})[0] == 200
+    invoked = []
+
+    def summary(token, run_id, payload):
+        invoked.append(run_id)
+        return {
+            "run_id": run_id,
+            "model_id": "offline",
+            "answer": "A-41 delivery and A-42 billing remain open for follow-up.",
+            "tool_calls": [
+                {"tool": "list_tickets", "status": "OK", "input": {"customer_id": "customer-a"}}
+            ],
+        }
+
+    monkeypatch.setattr(api.app, "invoke_agent", summary)
+    second, completed = request(api, "/api/run")
+    assert second == 200 and completed["result"]["status"] == "NO_EFFECT"
+    assert invoked == [completed["result"]["run_id"]]
+    assert "A-41" in completed["result"]["answer"]
+    assert completed["result"]["effects"] == [] and not state.get("busy_owner")
 
 
 def test_post_failure_effect_remains_error_and_unknown_diff_is_explicit(api, monkeypatch):
@@ -775,7 +861,11 @@ def test_authoritative_policy_denial_is_completed_not_unknown(api, monkeypatch):
             "calls": [
                 {
                     "tool": "close_ticket",
-                    "input": {"customer_id": "customer-a", "ticket_id": "A-42"},
+                    "input": {
+                        "customer_id": "customer-a",
+                        "ticket_id": "A-42",
+                        "reason": "approved by operator",
+                    },
                 }
             ],
         }
@@ -808,7 +898,14 @@ def test_earlier_stage_lost_write_reply_never_cleanly_completes(
                 "run_id": "captured",
                 "fingerprint": api.app.runs.fingerprint(api.app.tickets_for("customer-a")),
                 "calls": [
-                    {"tool": tool, "input": {"customer_id": "customer-a", "ticket_id": "A-42"}}
+                    {
+                        "tool": tool,
+                        "input": {
+                            "customer_id": "customer-a",
+                            "ticket_id": "A-42",
+                            "reason": "operator request",
+                        },
+                    }
                 ],
             }
         )

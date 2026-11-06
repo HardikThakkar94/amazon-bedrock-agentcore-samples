@@ -24,7 +24,7 @@ for fn in functions/*/; do
   fi
   if [ "$name" = "evals" ]; then
     # the suite runner reuses the API's modules and reads the versioned dataset
-    cp functions/api/app.py functions/api/runs.py functions/api/jwt_verify.py functions/api/eval_contract.py evals/dataset.json evals/dataset-k10.json "$stage/"
+    cp functions/api/app.py functions/api/runs.py functions/api/jwt_verify.py functions/api/eval_contract.py functions/api/mcp_grant.py evals/dataset.json evals/dataset-k10.json "$stage/"
   fi
   if [ -f "$stage/requirements.txt" ]; then
     python3 -m pip install --quiet --no-compile --disable-pip-version-check -r "$stage/requirements.txt" -t "$stage"
