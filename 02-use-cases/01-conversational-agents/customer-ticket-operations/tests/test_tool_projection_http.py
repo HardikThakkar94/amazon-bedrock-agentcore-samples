@@ -112,9 +112,20 @@ class Handler(BaseHTTPRequestHandler):
             }
         elif method == "tools/call":
             name, args = request["params"]["name"], request["params"]["arguments"]
-            assert name in ("TicketTools___list_tickets", "TicketTools___close_ticket")
+            assert name in (
+                "TicketTools___list_tickets",
+                "TicketTools___close_ticket",
+                "TicketTools___confirm_close",
+            )
             assert args["actor"] == ACTOR and args["customer_id"] == "customer-a"
-            assert args["run_id"] == self.server.expected_run
+            if name == "TicketTools___confirm_close":
+                assert args == {
+                    "customer_id": "customer-a",
+                    "ticket_id": self.server.expected_ticket,
+                    "actor": ACTOR,
+                }
+            else:
+                assert args["run_id"] == self.server.expected_run
             if name == "TicketTools___close_ticket":
                 assert args["ticket_id"] == self.server.expected_ticket
                 assert self.server.admission_state is not None
@@ -124,10 +135,11 @@ class Handler(BaseHTTPRequestHandler):
             context = SimpleNamespace(
                 client_context=SimpleNamespace(custom={"bedrockAgentCoreToolName": name})
             )
+            native = tools.lambda_handler(args, context)
+            if name == "TicketTools___confirm_close" and self.server.confirm_override:
+                native = self.server.confirm_override(native)
             result = {
-                "content": [
-                    {"type": "text", "text": json.dumps(tools.lambda_handler(args, context))}
-                ],
+                "content": [{"type": "text", "text": json.dumps(native)}],
                 "isError": False,
             }
         else:
@@ -161,6 +173,7 @@ def local_mcp(monkeypatch):
     server.raw_tools = copy.deepcopy(RAW)
     server.auth_token, server.expected_run, server.admission_state = "local", "owned-run", None
     server.expected_ticket = "A-41"
+    server.confirm_override = None
     server.expected_policy_session = None
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

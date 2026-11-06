@@ -144,7 +144,7 @@ data "aws_iam_policy_document" "api" {
   }
   statement {
     sid       = "Events"
-    actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query"]
+    actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem"]
     resources = [aws_dynamodb_table.events.arn]
   }
   statement {
