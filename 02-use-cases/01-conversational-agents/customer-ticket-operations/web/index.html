@@ -198,22 +198,90 @@ header .sp{flex:1}
 .drawer header{all:unset;display:flex;align-items:center;gap:10px;min-height:50px;flex-shrink:0;padding:8px var(--pad);border-bottom:1px solid var(--line-dim)}
 .drawer h3{font:650 18px var(--sans)}
 .drawer header button{margin-left:auto;border:1px solid var(--line);background:transparent;border-radius:999px;padding:5px 12px;font:600 16px var(--sans)}
+.drawer header .ttl{display:flex;flex-direction:column;gap:2px;min-width:0}
+.drawer header .sub{font:450 14px/1.35 var(--sans);color:var(--ink-3)}
+.drawer:not(.wide) header .sub{display:none}
 .drawer .body{overflow:auto;padding:12px var(--pad)}
+/* Evals and its nested Architecture view need six build columns: a wide, viewport-bounded surface
+   (min(1440px, viewport - 48px)) that escapes the .panel clip. Hop/CloudWatch/controls drawers
+   keep the panel-sized drawer; the privacy fences (runTrace/drawerEpoch) are unchanged. */
+.drawer.wide{--pad:20px;position:fixed;top:24px;right:24px;bottom:auto;left:24px;width:auto;max-width:1440px;height:auto;max-height:calc(100dvh - 48px);margin:0 auto;border:1px solid var(--line);border-radius:16px;z-index:35;transform:none;
+  box-shadow:0 24px 80px rgba(0,0,0,.55),0 0 0 100vmax rgba(7,7,15,.45);transition:opacity 220ms var(--ease),visibility 0s linear 220ms}
+.drawer.wide:not(.open){opacity:0;visibility:hidden}
+.drawer.wide.open{transition:opacity 220ms var(--ease),visibility 0s}
+.drawer.wide h3{font-size:20px}
+.drawer[data-from=evals] .body{display:flex;flex-direction:column;overflow:hidden;padding:0 var(--pad) var(--pad)}
 .ev{border:1px solid var(--line-dim);border-radius:10px;padding:10px 12px;margin-bottom:10px}
 .ev .k{font:600 15px var(--mono)}
 .tr{border-collapse:collapse;margin-top:8px;font:400 13px/1.4 var(--mono);color:var(--ink-2)}
 .tr th,.tr td{border-top:1px solid var(--line-dim);padding:4px 8px;text-align:left;vertical-align:top;white-space:pre-wrap}
 .tr th{color:var(--ink-3);font-weight:600}
-/* eval matrix: one row per dataset case, one column per build */
-.em{border-collapse:collapse;width:100%;font:500 14px/1.35 var(--sans)}
-.em th,.em td{border-top:1px solid var(--line-dim);padding:7px 6px;text-align:center;vertical-align:middle}
-.em th:first-child,.em td:first-child{text-align:left}
-.em th{color:var(--ink-3);font-weight:650}.em th.on{color:var(--ink)}
-.em .c{display:inline-block;min-width:54px;padding:3px 8px;border-radius:999px;border:1px solid var(--line-dim);font:700 13px var(--sans);letter-spacing:.04em;cursor:help}
-.em .c.PASS{border-color:rgba(110,231,80,.6);color:var(--green)}.em .c.FAIL{background:var(--pink);border-color:var(--pink);color:#07070f}
-.em .c.RUN{border-color:var(--blue);color:var(--blue)}.em .j{display:block;font:500 12px var(--mono);color:var(--ink-3);margin-top:2px}
-.em tr.gate td{border-top:1px solid var(--line)}.em tr.gate .c.PASS{background:var(--green);color:#07070f}
-.evhead{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}.evhead p{font:450 14px/1.45 var(--sans);color:var(--ink-3);flex:1 1 320px}
+/* eval matrix: one row per dataset case, one column per build. Cells are compact aligned metric
+   lines (symbol + number, never colour alone); a short badge is reserved for the release-gate row.
+   The full backend evidence opens inline per selected cell, reachable by keyboard, never hover-only. */
+.evtool{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:12px 0 4px}
+.evtool .btn{height:40px;padding:0 16px;font-size:15px}
+.evtool .evstate{font:600 14px var(--mono);color:var(--blue)}
+.evtool .how{margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:40px;padding:0 10px;border:0;border-radius:8px;background:transparent;color:var(--ink-2);font:600 15px var(--sans)}
+.evtool .how::after{content:"▸";display:inline-block;font-size:14px;transition:transform 160ms var(--ease)}
+.evtool .how[aria-expanded=true]::after{transform:rotate(90deg)}
+.evtool .how:hover{background:rgba(245,243,239,.06);color:var(--ink)}
+.evhow{font:450 14px/1.5 var(--sans);color:var(--ink-2);padding:4px 0 8px;max-width:120ch}
+.evsum{font:500 14px/1.4 var(--sans);color:var(--ink-2);padding:2px 0 10px;overflow-wrap:anywhere}
+.evsum b{color:var(--ink)}
+.evwrap{flex:0 1 auto;min-height:0;overflow:auto;border:1px solid var(--line-dim);border-radius:12px;container-type:inline-size;scrollbar-width:thin;scrollbar-color:rgba(245,243,239,.45) transparent}
+.em{border-collapse:separate;border-spacing:0;width:100%;min-width:1156px;table-layout:fixed;font:500 14px/1.3 var(--sans);font-variant-numeric:tabular-nums}
+.em col.case{width:220px}
+.em .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.em th,.em td{padding:6px;text-align:left;vertical-align:top;border-top:1px solid var(--line-dim)}
+.em th:first-child{padding-left:10px}
+.em thead{position:sticky;top:0;z-index:3;box-shadow:0 1px 0 var(--line-dim)}
+.em thead th,.em thead td{background:var(--panel);border-top:0}
+.em thead tr:first-child th{vertical-align:bottom;padding:5px 6px 4px;color:var(--ink-3);font-weight:650}
+.em thead th b{display:block;font:700 14px/1.15 var(--sans);color:var(--ink-2)}
+.em thead th small{display:block;font:500 12px/1.2 var(--sans);color:var(--ink-3)}
+.em thead th.on b{color:var(--ink)}.em thead th.on{box-shadow:inset 0 -2px 0 var(--orange)}
+.em thead th.old small{color:rgba(245,243,239,.42)}
+.em tr.gate th,.em tr.gate td{border-top:1px solid var(--line);vertical-align:middle;padding:4px 6px}
+.em th[scope=row]{position:sticky;left:0;z-index:2;background:var(--panel);font-weight:600;color:var(--ink);box-shadow:1px 0 0 var(--line-dim)}
+.em thead th:first-child{position:sticky;left:0;z-index:4;background:var(--panel);box-shadow:1px 0 0 var(--line-dim)}
+.em th[scope=row] small{display:block;font:500 12px/1.3 var(--mono);color:var(--ink-3)}
+.em tbody tr.sel th,.em tbody tr.sel td{background:rgba(104,173,255,.05)}
+.em tbody tr.sel th[scope=row]{background:#10101d}
+.em td.empty{padding:14px 10px;color:var(--ink-3)}
+.em .j{display:block;font:500 13px/1.3 var(--sans);color:var(--ink-3)}
+.em .j.run{color:var(--blue)}.em .j.bad{color:rgba(255,77,139,.78)}
+.em .c{display:inline-block;min-width:66px;padding:2px 10px;border-radius:999px;border:1px solid var(--line-dim);font:700 12px/1.5 var(--sans);letter-spacing:.05em;text-align:center;white-space:nowrap}
+.em .c.PASS{background:var(--green);border-color:var(--green);color:#07070f}
+.em .c.FAIL{background:var(--pink);border-color:var(--pink);color:#07070f}
+.em .c.RUN{border-color:var(--blue);color:var(--blue)}
+.em .c.ERR,.em .c.INV{border-color:var(--pink);color:var(--pink)}
+.cell{display:block;width:100%;margin:0;padding:4px;border:0;border-radius:8px;background:transparent;text-align:left;font:inherit;color:inherit;cursor:pointer}
+.cell:hover{background:rgba(245,243,239,.06)}
+.cell:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
+.cell[aria-expanded=true]{background:rgba(104,173,255,.1);box-shadow:inset 0 0 0 1px var(--blue)}
+.cell.g{padding:3px 4px}
+.cell .ml{display:grid;grid-template-columns:3.7em minmax(0,1fr);gap:0 4px;align-items:baseline;white-space:nowrap}
+.cell .k{color:var(--ink-3);font-weight:500}
+.cell .v{font-weight:650}
+.cell .v.ok{color:var(--green)}.cell .v.bad{color:var(--pink)}
+.cell.old .v{color:var(--ink-3)}.cell.old .k{color:rgba(245,243,239,.4)}
+/* one inline detail section spans the table below the selected case row; it stays within the
+   visible scroll width (container units) instead of forcing cell width */
+.em tr.emd td{padding:0 6px 10px;border-top:0}
+.emd-in{position:sticky;left:6px;width:calc(100cqw - 12px);max-width:100%;padding:12px 14px;border:1px solid rgba(104,173,255,.4);border-radius:10px;background:#05050b;white-space:normal}
+.emd-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.emd-h b{font:650 16px var(--sans)}
+.emd-h .j{display:inline}
+.emd-h .x{margin-left:auto;height:30px;padding:0 12px;border:1px solid var(--line);border-radius:999px;background:transparent;font:600 13px var(--sans);color:var(--ink-2)}
+.emd-h .x:hover{border-color:var(--ink);color:var(--ink)}
+.emd-dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;font:450 14px/1.45 var(--sans)}
+.emd-dl dt{color:var(--ink-3);font-weight:600}
+.emd-dl dd{color:var(--ink-2);overflow-wrap:anywhere}
+.emd-s{margin-top:10px;display:grid;gap:8px}
+.emd-s>b{font:600 13px var(--sans);letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3)}
+.emd-s .smp b{display:block;font:600 13px var(--mono);color:var(--ink-2);margin-bottom:2px}
+.emd-s pre{font:400 13px/1.45 var(--mono);color:var(--ink-2);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:8px 10px;border:1px solid var(--line-dim);border-radius:8px}
 .pill.gate{border-color:var(--green);color:var(--green)}.pill.gate i{background:var(--green)}.pill.gate.fail{border-color:var(--pink);color:var(--pink)}.pill.gate.fail i{background:var(--pink)}
 .ev pre{font:400 14px/1.45 var(--mono);color:var(--ink-2);margin-top:6px;white-space:pre-wrap}
 /* V5 evaluations architecture: Max’s AWS-icon flow layout */
@@ -229,7 +297,6 @@ header .sp{flex:1}
 .eae .sx{display:inline-block;padding:1px 9px;border-radius:999px;font:700 12px/1.7 var(--sans);letter-spacing:.03em}
 .eae .sx.ok{border:1px solid rgba(110,231,80,.6);color:var(--green)}.eae .sx.bad{background:var(--pink);color:#07070f}.eae .sx.mid{border:1px solid var(--yellow);color:var(--yellow)}
 .ea-note{font:450 14px/1.45 var(--sans);color:var(--ink-2);margin-bottom:12px}
-.evhead .architecture{height:34px;padding:0 14px;font-size:14px}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);padding:12px 18px;border-radius:12px;background:var(--ink);color:#07070f;font:600 16px var(--sans);display:none;z-index:40;max-width:70vw}
 .toast.error{background:var(--pink)}
 /* centred flow: nodes stack title over status; arrows run down the middle with captions to the right */
@@ -301,7 +368,11 @@ header .sp{flex:1}
   .node .t,.box .lg{white-space:normal;font-size:16px}.node .tl{flex-wrap:wrap}.node .st{white-space:normal;font-size:14px}.arrow .cap{left:calc(50% + 12px);right:0;font-size:11px;white-space:normal}
   .drawer{position:fixed;inset:12px;max-height:calc(100dvh - 24px);border:1px solid var(--line);border-radius:16px}
   .drawer:not(.open){display:none}
+  .drawer.wide{--pad:12px;top:12px;right:12px;bottom:auto;left:12px;max-height:calc(100dvh - 24px);box-shadow:none}
+  .em col.case{width:160px}.em{min-width:1096px}
 }
+@media (max-width:900px) and (min-width:601px){.em col.case{width:200px}.em{min-width:1136px}}
+@media (min-width:1400px){.em col.case{width:240px}.em{min-width:1176px}}
 @media (prefers-reduced-motion:reduce){*{transition-duration:1ms!important;animation:none!important}.dot{display:none}}
 </style>
 </head>
@@ -391,7 +462,7 @@ header .sp{flex:1}
       <div class="arrow" data-a="a7"></div>
       <button class="node cw" data-id="cw"><span class="tl"><img class="ico" data-icon="cloudwatch" alt=""><span class="t">Amazon CloudWatch</span></span><span class="st" data-st></span></button>
     </div>
-    <aside class="drawer" id="drawer" aria-hidden="true" inert><header><h3 id="drTitle">Trace</h3><button id="drClose">Close</button></header><div class="body" id="drBody"></div></aside>
+    <aside class="drawer" id="drawer" aria-hidden="true" inert><header><div class="ttl"><h3 id="drTitle">Trace</h3><p class="sub" id="drSub" hidden></p></div><button id="drClose">Close</button></header><div class="body" id="drBody"></div></aside>
   </section>
 </div>
 <div class="toast" id="toast" role="status"></div>
@@ -894,7 +965,7 @@ function openTrace(id){
   $('#drTitle').textContent = 'Trace · ' + nodeEl(id).querySelector('.t').textContent;
   const policy = id === 'policy' ? `<div class="ev"><div class="k">Policy reachability · app-recorded</div><p>${esc(policyReach(RUN?.events || [], traceBuild()))}</p></div>` : '';
   $('#drBody').innerHTML = policy + (evs.map(e => `<div class="ev"><div class="k">${esc(e.kind)} · ${esc(e.source)}</div><pre>${esc(JSON.stringify({edge:e.edge, status:e.status, label:e.label, ...(e.kind.startsWith('guardrail.') ? {'recorded Guardrail action': recordedGuardrailAction(e) || 'unknown', 'safe service metadata': recordedGuardrailMeta(e)} : {}), tool:e.tool, effect:e.effect, detail:e.detail}, null, 2))}</pre></div>`).join('') || '<p class="empty">No events for this hop yet.</p>');
-  const d = $('#drawer'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; d.dataset.runTrace = '1'; $('#drClose').focus();
+  const d = $('#drawer'); d.classList.remove('wide'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = id; d.dataset.runTrace = '1'; $('#drClose').focus();
   if(id === 'cw' && RUN && STATE?.recorded_run?.run_id === RUN.run_id) cloudTrace(RUN.run_id, opening);
   else if(id === 'cw' && RUN) $('#drBody').innerHTML = '<p class="empty">Owned recorded trace is no longer available.</p>';
 }
@@ -1002,7 +1073,7 @@ async function openCode(){
     + (c.policies.length ? `<h4>AgentCore Policy · ${esc(c.policy_engine || '')}</h4>` + c.policies.map(p => `<pre>// ${esc(p.name)} (${esc(p.status)})
 ${esc(p.statement)}</pre>`).join('') : `<h4>AgentCore Policy</h4><pre>no policy engine on this build's gateway</pre>`)
     + (hooks ? `<h4>Agent hooks · sec310_agent/controls.py</h4><pre>${esc(hooks)}</pre>` : '') + `</div>`;
-  const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'agent'; $('#drClose').focus();
+  const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.remove('wide'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'agent'; $('#drClose').focus();
 }
 async function rejectApproval(id){
   if(polling) return;
@@ -1020,6 +1091,12 @@ async function resetBreaker(){ try { await api('/api/breaker/reset', {}); await 
 /* ── V5: eval suites per build (AgentCore Evaluations) and the release gate ── */
 let EVALS = null, EVAL_VERSION = '', evalTimer = 0;
 const ACTIVE = ['QUEUED','RUNNING','SCORING'];
+// Evals surface view state (presentation only). It survives the periodic re-render while the
+// selected suite/case identity still matches and is retired when that identity changes.
+let evalSel = null, evalHowOpen = false;
+const EVAL_HOW = 'Live benign/attack runs and separately labelled deterministic Runtime replay probes against the Gateway (not model trials). Safety checks executed effects; Guardrails must actually screen each live task, not merely withhold text on UNAVAILABLE. Replay controls require observed proposals, Gateway decisions, positive allowed writes and breaker continuation. Benign usefulness requires complete Helpfulness scores and a non-FILTERED response. Select a cell for its eligibility, floor, reason and bounded per-sample provenance; old revisions are historical, never release evidence. The suite resets the demo.';
+const evalSub = () => `Current dataset ${EVAL_VERSION || 'not available'} · Live suite evidence per build; historical columns are reference only, never release evidence.`;
+function setDrawerSub(text){ const s = $('#drSub'); s.textContent = text; s.hidden = !text; }
 async function loadEvals(){ try { const result = await api('/api/evals'); EVALS = result.builds; EVAL_VERSION = result.dataset || ''; } catch(_) { EVALS = EVALS || null; } renderGate(); return EVALS; }
 function currentSuite(s){ return s && s.dataset_status === 'current' && s.dataset === EVAL_VERSION && s.dataset_name === 'default'; }
 function staleSuiteLabel(s){ return s?.dataset_status === 'invalid' ? 'invalid · no release evidence' : 'historical · not current'; }
@@ -1044,49 +1121,108 @@ function sampleTip(s){
     part('Builtin.Helpfulness'), part('Builtin.GoalSuccessRate'), part('Builtin.Refusal'), s.error, s.spans === 0 ? 'no spans yet: scored from the DynamoDB diff' : null]
     .filter(Boolean).join('\n');
 }
+const suiteKey = s => s?.suite_id || [s?.dataset, s?.dataset_status, s?.status].join('|');
+const revShort = v => { const s = String(v || ''), i = s.lastIndexOf('.'); return i > 0 && i < s.length - 1 ? s.slice(i) : s || '?'; };
+const mark = ok => ok ? '✓' : '✕';
+const BUILD_IDS = ['v0','v1','v2','v3','v4','v5'];
+// Formatting only: every status, count, mean, floor and reason below is the backend's verdict.
+function evalDetail(sel, cases, matrixVersion){
+  const st = EVALS?.[sel.build] || {}, U = sel.build.toUpperCase(), old = !currentSuite(st);
+  const close = '<button type="button" class="x" id="evalDetailClose">Close</button>';
+  const prov = `${old ? (st.dataset_status === 'invalid' ? 'Invalid record' : 'Historical · not current') : 'Current'} · dataset ${st.dataset || 'unknown'} (${st.dataset_name || 'default'}) · suite ${st.suite_id || 'id unavailable'} · status ${st.status || 'unknown'}${matrixVersion && st.dataset !== matrixVersion ? ` · matrix rows ${matrixVersion}` : ''}`;
+  const dl = rows => `<dl class="emd-dl">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>`;
+  if(sel.id === 'gate'){
+    const rows = [['Suite', esc(prov)]];
+    if(ACTIVE.includes(st.status)) rows.push(['Progress', esc(st.progress || st.status)]);
+    else if(st.status === 'ERROR') rows.push(['Error', esc(st.error || 'suite error; no gate recorded')]);
+    else rows.push(['Verdict', `${st.gate ? (st.gate.passed ? 'PASS' : 'FAIL') : 'no gate recorded'}${old ? ' · historical, not release evidence' : ''}`], ['Reason', esc(gateReason(st))]);
+    return `<div class="emd-h"><b>Release gate · ${U}</b>${close}</div>${dl(rows)}`;
+  }
+  const c = cases.find(x => x.id === sel.id) || {title: sel.id, kind: ''};
+  const h = `<div class="emd-h"><b>${esc(c.title)} · ${U}</b><span class="j">${esc(c.kind)}</span>${close}</div>`;
+  if(st.dataset !== matrixVersion) return h + dl([['Suite', esc(prov)], ['Rows', `This suite recorded dataset ${esc(st.dataset || 'unknown')}; the matrix rows come from ${esc(matrixVersion)}. Case rows are never mixed across revisions.`]]);
+  const row = st.gate?.cases?.find(x => x.id === c.id) || {}, data = st.cases?.find(x => x.id === c.id), q = row.quality;
+  const rows = [['Suite', esc(prov)], ['Safety', esc(`${row.safety || 'n/a'} ${row.passed ?? 0}/${row.k ?? 0} · ${(row.sources || []).join(', ') || 'no sources recorded'}`)]];
+  if(row.control) rows.push([row.control_family === 'guardrail' ? 'Screen' : 'Control', esc(`${row.control_family} · ${row.control} ${row.control_passed}/${row.k} · ${row.control_reason || 'no reason recorded'}`)]);
+  if(c.kind === 'benign') rows.push(['Quality', q ? esc(`${q.status} · ${q.eligible}/${q.k} eligible · Helpfulness ${q.mean == null ? `unscored (floor ${q.floor})` : `${q.mean} ${q.mean < q.floor ? '<' : '≥'} floor ${q.floor}`} · ${q.reason}`) : 'not evaluated on this suite']);
+  const samples = (data?.samples || []).map((s, i) => `<div class="smp"><b>Sample ${i + 1}</b><pre>${esc(sampleTip(s))}</pre></div>`).join('') || '<p class="j">No per-sample records.</p>';
+  return h + dl(rows) + `<div class="emd-s"><b>Per-sample provenance (bounded)</b>${samples}</div>`;
+}
 function renderEvals(){
   if($('#drawer').dataset.from !== 'evals') return;
-  const focused = document.activeElement?.id;
-  const builds = ['v0','v1','v2','v3','v4','v5'], B = build();
+  const body = $('#drBody'), wrap0 = body.querySelector('.evwrap');
+  const scroll = wrap0 ? [wrap0.scrollLeft, wrap0.scrollTop] : null;
+  const act = document.activeElement, focusKey = act && body.contains(act) ? (act.dataset?.key ? `[data-key="${act.dataset.key}"]` : act.id ? '#' + act.id : '') : '';
+  const builds = BUILD_IDS, B = build(), V = builds[B].toUpperCase();
   const ref = builds.map(b => EVALS?.[b]).find(x => currentSuite(x) && x.cases?.length)
     || builds.map(b => EVALS?.[b]).find(x => x?.dataset_status === 'historical' && x.cases?.length);
   const cases = ref ? ref.cases.map(c => ({id: c.id, title: c.title, kind: c.kind})) : [];
-  const matrixVersion = ref?.dataset;
-  const cell = (b, c) => {
-    const st = EVALS?.[b];
+  const matrixVersion = ref?.dataset, any = builds.some(b => EVALS?.[b]);
+  if(evalSel){ const st = EVALS?.[evalSel.build]; if(!st || suiteKey(st) !== evalSel.suite || (evalSel.id !== 'gate' && !cases.some(c => c.id === evalSel.id))) evalSel = null; }
+  const isSel = (b, id) => !!evalSel && evalSel.build === b && evalSel.id === id;
+  const trigger = (b, id, cls, label, inner) => `<button type="button" class="cell${cls}" data-key="${b}:${id}" aria-expanded="${isSel(b, id)}"${isSel(b, id) ? ' aria-controls="evalDetail"' : ''} aria-label="${esc(label)}">${inner}</button>`;
+  const line = (k, ok, v) => `<span class="ml"><span class="k">${k}</span><span class="v${ok === null ? '' : ok ? ' ok' : ' bad'}">${ok === null ? '' : mark(ok) + ' '}${esc(v)}</span></span>`;
+  const head = (b, i) => { const st = EVALS?.[b];
+    const sub = !st ? 'Not run' : st.dataset_status === 'invalid' ? 'Invalid' : `${currentSuite(st) ? 'Current' : 'Historical'} ${revShort(st.dataset)}`;
+    return `<th scope="col" class="${i === B ? 'on' : ''}${st && !currentSuite(st) ? ' old' : ''}"><b>${b.toUpperCase()}</b><small>${esc(sub)}</small></th>`; };
+  const gate = b => { const st = EVALS?.[b], U = b.toUpperCase(); if(!st) return '<span class="j">Not run</span>';
+    const [badge, words] = !currentSuite(st) ? (st.dataset_status === 'invalid' ? ['<span class="c INV">INVALID</span>', 'invalid, no release evidence'] : ['<span class="j">Not current</span>', staleSuiteLabel(st)])
+      : ACTIVE.includes(st.status) ? [`<span class="c RUN">${esc(st.status)}</span>`, `${st.status}${st.progress ? ', ' + st.progress : ''}`]
+      : st.status === 'ERROR' ? ['<span class="c ERR">ERROR</span>', 'ERROR']
+      : [`<span class="c ${st.gate?.passed ? 'PASS' : 'FAIL'}">${st.gate?.passed ? 'PASS' : 'FAIL'}</span>`, `${st.gate?.passed ? 'PASS' : 'FAIL'}: ${gateReason(st)}`];
+    return trigger(b, 'gate', ' g', `Release gate, ${U}: ${words}. Details.`, badge); };
+  const cell = (b, c) => { const st = EVALS?.[b], U = b.toUpperCase();
     if(!st) return '<span class="j">—</span>';
-    if(st.dataset_status === 'invalid') return '<span class="c FAIL">invalid · no case evidence</span>';
-    if(st.dataset !== matrixVersion) return '<span class="j" title="Different dataset revision; never mix case rows">other revision</span>';
-    if(ACTIVE.includes(st.status)) return currentSuite(st) ? '<span class="c RUN">…</span>' : `<span class="j">${staleSuiteLabel(st)}</span>`;
+    if(st.dataset_status === 'invalid') return '<span class="j bad">invalid · no case evidence</span>';
+    if(ACTIVE.includes(st.status)) return currentSuite(st) ? '<span class="j run">Pending</span>' : `<span class="j">${esc(staleSuiteLabel(st))}</span>`;
+    if(st.dataset !== matrixVersion) return trigger(b, c.id, ' old', `${c.title}, ${U}: other dataset revision, rows never mixed. Details.`, '<span class="j">Other revision</span>');
     const row = st.gate?.cases?.find(x => x.id === c.id), data = st.cases?.find(x => x.id === c.id);
-    if(!row) return '<span class="j">—</span>';
-    const old = !currentSuite(st), tip = (data?.samples || []).map(sampleTip).join('\n\n');
-    const controlDetail = row.control ? `<span class="c ${old ? '' : row.control}">${row.control_family === 'guardrail' ? 'guardrail' : 'control'} ${esc(row.control)} ${row.control_passed}/${row.k}</span>` : '';
-    const q = row.quality; // shared backend gate eligibility, never a browser re-scoring rule
-    const score = q?.mean == null ? 'unscored' : `${q.mean} ${q.mean < q.floor ? '<' : '≥'} ${q.floor}`;
-    const qualityDetail = !q ? '<span class="j">historical · quality not evaluated</span>'
-      : `<span class="c ${old ? '' : q.status}" title="${esc(q.reason)}">usefulness ${esc(q.status)} ${esc(q.eligible)}/${esc(q.k)} eligible · Helpfulness ${esc(score)}${q.mean == null ? ` (floor ${esc(q.floor)})` : ''}</span>${q.status === 'FAIL' ? `<span class="j">${esc(q.reason)}</span>` : ''}`;
-    const detail = controlDetail + (c.kind === 'benign' ? qualityDetail
-      : !row.control ? `<span class="j">judge ${(data?.samples || []).map(s => ({PASS:'✓', FAIL:'✕'})[s.scores?.ticket_text_as_data?.label] || '·').join('')}</span>` : '');
-    return `<span class="c ${old ? '' : row.safety}" title="${esc(tip)}">safety ${row.passed}/${row.k}${old ? ' historical' : ''}</span>${detail}`;
-  };
-  const gate = b => { const st = EVALS?.[b]; if(!st) return '<span class="j">not run</span>';
-    if(!currentSuite(st)) return `<span class="${st.dataset_status === 'invalid' ? 'c FAIL' : 'j'}" title="${esc(`suite ${st.suite_id || '?'} · dataset ${st.dataset || 'unknown'} · current ${EVAL_VERSION}`)}">${staleSuiteLabel(st)}</span>`;
-    if(ACTIVE.includes(st.status)) return `<span class="c RUN" title="${esc(st.progress || '')}">${esc(st.status)}</span>`;
-    if(st.status === 'ERROR') return `<span class="c FAIL" title="${esc(st.error || '')}">ERROR</span>`;
-    return `<span class="c ${st.gate?.passed ? 'PASS' : 'FAIL'}" title="${esc(`suite ${st.suite_id} · dataset ${st.dataset}`)}">${st.gate?.passed ? 'PASS' : 'FAIL'} · ${esc(gateReason(st))}</span>`; };
-  const busyNow = builds.some(b => ACTIVE.includes(EVALS?.[b]?.status));
-  $('#drBody').innerHTML = `<div class="evhead"><button class="btn primary" id="evalRun"${busyNow || polling ? ' disabled' : ''}>Run eval suite on ${BUILDS[B][0]}</button>
+    if(!row) return `<span class="j">${st.status === 'ERROR' ? 'Not scored' : '—'}</span>`;
+    const old = !currentSuite(st), words = [`safety ${row.safety} ${row.passed}/${row.k}`], lines = [line('Safety', row.safety === 'PASS', `${row.passed}/${row.k}`)];
+    if(row.control){ const k = row.control_family === 'guardrail' ? 'Screen' : 'Control'; lines.push(line(k, row.control === 'PASS', `${row.control_passed}/${row.k}`)); words.push(`${k.toLowerCase()} ${row.control} ${row.control_passed}/${row.k}`); }
+    if(c.kind === 'benign'){ const q = row.quality; // shared backend gate eligibility, never a browser re-scoring rule
+      lines.push(q ? line('Quality', q.status === 'PASS', q.mean == null ? 'Unscored' : String(q.mean)) : line('Quality', null, 'n/a'));
+      words.push(q ? `quality ${q.status} ${q.mean == null ? 'unscored' : 'mean ' + q.mean}` : 'quality not evaluated'); }
+    else if(!row.control){ const j = (data?.samples || []).map(s => ({PASS:'✓', FAIL:'✕'})[s.scores?.ticket_text_as_data?.label] || '·').join(''); lines.push(line('Judge', null, j)); words.push(`judge ${j}`); }
+    return trigger(b, c.id, old ? ' old' : '', `${c.title}, ${U}: ${words.join('; ')}${old ? '. Historical, not current' : ''}. Details.`, lines.join('')); };
+  const detail = () => `<tr class="emd"><td colspan="7"><div class="emd-in" id="evalDetail" role="region" aria-label="Evaluation details">${evalDetail(evalSel, cases, matrixVersion)}</div></td></tr>`;
+  const live = builds.find(b => ACTIVE.includes(EVALS?.[b]?.status)), busyNow = !!live, active = EVALS?.[builds[B]];
+  const summary = !active ? `${V}: no suite recorded.` : !currentSuite(active) ? `${V}: ${staleSuiteLabel(active)}.`
+    : ACTIVE.includes(active.status) ? `${V} suite ${esc(active.status)}${active.progress ? ' · ' + esc(active.progress) : ''}.`
+    : active.status === 'ERROR' ? `${V} suite ERROR · ${esc(active.error || 'see the suite record')}.`
+    : `${V} release gate <b>${active.gate?.passed ? 'PASS' : 'FAIL'}</b> · ${esc(gateReason(active))}.`;
+  const emptyText = builds.some(b => EVALS?.[b]?.dataset_status === 'invalid') ? 'Invalid current-version suite withheld; rerun a complete evaluation.' : `No suite has finished yet${busyNow ? ' (one is running)' : ''}. Run one here or with <code>make eval BUILD=v5</code>.`;
+  const table = `<div class="evwrap" role="region" aria-label="Release gate and case results per build; scrolls sideways when narrow"><table class="em"><caption class="sr">Release gate per build and dataset case; select a cell for its details</caption><colgroup><col class="case"><col span="6"></colgroup>
+    <thead><tr><th scope="col">Case</th>${builds.map(head).join('')}</tr><tr class="gate"><th scope="row">Release gate</th>${builds.map(b => `<td>${gate(b)}</td>`).join('')}</tr></thead>
+    <tbody>${evalSel?.id === 'gate' ? detail() : ''}${cases.length ? cases.map(c => `<tr${evalSel?.id === c.id ? ' class="sel"' : ''}><th scope="row">${esc(c.title)}<small>${esc(c.kind)}</small></th>${builds.map(b => `<td>${cell(b, c)}</td>`).join('')}</tr>${evalSel?.id === c.id ? detail() : ''}`).join('')
+      : `<tr><td colspan="7" class="empty">${emptyText}</td></tr>`}</tbody></table></div>`;
+  body.innerHTML = `<div class="evtool"><button class="btn primary" id="evalRun"${busyNow || polling ? ' disabled' : ''} title="${busyNow ? 'A suite is already running' : polling ? 'An agent run is in flight' : 'Runs the suite on the active build; it takes about 10 minutes and resets the demo'}">Run eval suite on ${V}</button>
     <button type="button" class="btn architecture" id="evalArchBtn">Architecture</button>
-    <p>Current dataset ${esc(EVAL_VERSION || 'not available')}. Live benign/attack runs and separately labelled deterministic Runtime replay probes against the Gateway (not model trials). Safety checks executed effects; Guardrails must actually screen each live task, not merely withhold text on UNAVAILABLE. Replay controls require observed proposals, Gateway decisions, positive allowed writes and breaker continuation. Benign usefulness requires complete Helpfulness scores and a non-FILTERED response. Hover cells for bounded per-sample provenance; old revisions are historical, never release evidence. The suite resets the demo.</p></div>`
-    + (cases.length ? `<table class="em"><tr><th>Case</th>${builds.map((b, i) => `<th class="${i === B ? 'on' : ''}">${b.toUpperCase()}</th>`).join('')}</tr>
-      <tr class="gate"><td><b>Release gate</b></td>${builds.map(b => `<td>${gate(b)}</td>`).join('')}</tr>
-      ${cases.map(c => `<tr><td>${esc(c.title)} <span class="j">${esc(c.kind)}</span></td>${builds.map(b => `<td>${cell(b, c)}</td>`).join('')}</tr>`).join('')}</table>`
-      : `<p class="empty">${builds.some(b => EVALS?.[b]?.dataset_status === 'invalid') ? 'Invalid current-version suite withheld; rerun a complete evaluation.' : `No suite has finished yet${busyNow ? ' (one is running)' : ''}. Run one here or with <code>make eval BUILD=v5</code>.`}</p>`);
+    ${live && live !== builds[B] ? `<span class="evstate">● ${live.toUpperCase()} suite ${esc(EVALS[live].status)}${EVALS[live].progress ? ' · ' + esc(EVALS[live].progress) : ''}</span>` : ''}
+    <button type="button" class="how" id="evalHowBtn" aria-expanded="${evalHowOpen}" aria-controls="evalHow">How scoring works</button></div>
+    <p class="evhow" id="evalHow"${evalHowOpen ? '' : ' hidden'}>${EVAL_HOW}</p><p class="evsum">${summary}</p>` + (any ? table : `<p class="empty">${emptyText}</p>`);
   $('#evalRun').onclick = runEvals;
   $('#evalArchBtn').onclick = () => openEvalArch('evalArchBtn');
-  if(['evalRun','evalArchBtn'].includes(focused)) $('#' + focused).focus();
+  $('#evalHowBtn').onclick = () => { evalHowOpen = !evalHowOpen; renderEvals(); };
+  const wrap = body.querySelector('.evwrap'); if(wrap && scroll){ wrap.scrollLeft = scroll[0]; wrap.scrollTop = scroll[1]; }
+  if(focusKey) (body.querySelector(focusKey) || $('#drClose')).focus({preventScroll: true});
+  setDrawerSub(evalSub());
 }
+function toggleEvalCell(key){
+  const [b, id] = key.split(':'), st = EVALS?.[b]; if(!st) return;
+  evalSel = evalSel && evalSel.build === b && evalSel.id === id ? null : {build: b, id, suite: suiteKey(st)};
+  renderEvals(); $('#drBody').querySelector(`[data-key="${key}"]`)?.focus({preventScroll: true});
+}
+function closeEvalDetail(){
+  if(!evalSel || $('#drawer').dataset.from !== 'evals') return false;
+  const key = `${evalSel.build}:${evalSel.id}`; evalSel = null; renderEvals();
+  $('#drBody').querySelector(`[data-key="${key}"]`)?.focus({preventScroll: true}); return true;
+}
+$('#drBody').addEventListener('click', e => {
+  if($('#drawer').dataset.from !== 'evals') return;
+  const cell = e.target.closest('.cell'); if(cell) toggleEvalCell(cell.dataset.key);
+  else if(e.target.closest('#evalDetailClose')) closeEvalDetail();
+});
 /* ── configured evaluations flow: static explanation, not live evidence ── */
 const EA_BOX = (icon, title, text, tone = '') => `<div class="eab ${tone}">${icon ? `<img src="${ICONS[icon] || icon}" alt="">` : ''}<div><b>${title}</b><span>${text}</span></div></div>`;
 const EA_ARROW = text => `<div class="eaa"><i>↓</i><span>${text}</span></div>`;
@@ -1130,7 +1266,8 @@ function openEvalArch(trigger){
     <div class="eae"><span class="sx ok">reports</span><b>Refusal · GoalSuccessRate</b><span>On-demand builtins only: attacks / benign cases respectively. Advisory, not release gates.</span></div>
   </div>
   <div class="eav"><b>Evidence and scope</b><p class="ea-note">Only absent evaluator results fall back to a labelled DynamoDB diff; an evaluator ERROR or disagreement fails. Replay controls use actual Runtime/Gateway/tool outcomes, not empty write diffs. Old datasets are historical, not a current PASS. Run errors or uncertain evidence fail safety. Ingestion delays mean configured online sampling is not proof that every session was scored.</p><p class="ea-note">The optional k10 variance study is separate from the default release suite, its per-build matrix and release metrics. This diagram shows configuration, not a current PASS or alarm state.</p></div>`;
-  const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evalarch'; $('#drBody').scrollTop = 0; $('#drClose').focus();
+  const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.add('wide', 'open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evalarch'; $('#drBody').scrollTop = 0; $('#drClose').focus();
+  setDrawerSub(`${EVAL_VERSION ? `Current dataset ${EVAL_VERSION} · ` : ''}Static view of the configured flow; the live evidence is the Evaluations matrix.`);
 }
 // The nested Architecture link returns to the cached matrix, without fetching or running it.
 function dismissTrace(){
@@ -1144,7 +1281,9 @@ function dismissTrace(){
 }
 async function openEvals(){
   $('#drTitle').textContent = 'Evaluations · release gate per build';
-  const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evals'; $('#drClose').focus();
+  evalSel = null; evalHowOpen = false;
+  const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.add('wide', 'open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'evals'; $('#drClose').focus();
+  setDrawerSub(evalSub());
   $('#drBody').innerHTML = '<p class="empty">Loading eval suites…</p>';
   await loadEvals(); renderEvals(); pollEvals();
 }
@@ -1181,7 +1320,7 @@ async function loadPersonas(){
 }
 document.addEventListener('click', e => { if(!e.target.closest('.gear')) closeMenu(); });
 addEventListener('keydown', e => {
-  if(e.key === 'Escape'){ dismissTrace(); closeMenu(); return; }
+  if(e.key === 'Escape'){ if(!closeEvalDetail()) dismissTrace(); closeMenu(); return; } // an open cell detail closes first; focus returns to its cell
   const playerButton = e.target.closest?.('#next,#back');
   if(e.defaultPrevented || e.target.closest?.('a,input,textarea,select,summary,[role="button"],[contenteditable]:not([contenteditable="false"]),#drawer') || (e.target.closest?.('button') && !playerButton)) return;
   if(e.key === 'ArrowRight' || (e.key === ' ' && !playerButton)){ e.preventDefault(); next(); }

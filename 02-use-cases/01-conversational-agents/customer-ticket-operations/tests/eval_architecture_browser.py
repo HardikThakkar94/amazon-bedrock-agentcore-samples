@@ -273,24 +273,35 @@ def exercise(browser, origin, screenshots):
             if case["kind"] != "benign":
                 continue
             q = verdicts[case["id"]]["quality"]
-            cell = page.locator("tr", has_text=case["title"]).locator("td").last
+            cell = page.locator(f'[data-key="v5:{case["id"]}"]')
+            quality = cell.locator(".ml", has_text="Quality").locator(".v")
+            expect(quality).to_have_count(1)
             if q["status"] == "FAIL":
-                assert cell.locator("span.c.PASS", has_text="usefulness").count() == 0, (
+                expect(quality).to_have_class(re.compile(r"\bbad\b"))
+                expect(quality).to_contain_text("✕")
+                assert cell.locator(".ml", has_text="Quality").locator(".v.ok").count() == 0, (
                     "invalid quality was presented green: " + cell.inner_text()
                 )
-            badge = cell.locator("span.c", has_text=f"usefulness {q['status']}")
-            expect(badge).to_have_count(1)
-            expect(badge).to_have_class(re.compile(rf"\b{q['status']}\b"))
-            expect(badge).to_contain_text(f"{q['eligible']}/{q['k']} eligible")
-            if q["mean"] is None:
-                expect(badge).to_contain_text("Helpfulness unscored")
-                expect(badge).to_contain_text(f"floor {q['floor']}")
             else:
-                expect(badge).to_contain_text(f"Helpfulness {q['mean']}")
-                expect(badge).to_contain_text(
-                    f"{('<' if q['mean'] < q['floor'] else '≥')} {q['floor']}"
+                expect(quality).to_have_class(re.compile(r"\bok\b"))
+                expect(quality).to_contain_text("✓")
+            expect(quality).to_contain_text("Unscored" if q["mean"] is None else str(q["mean"]))
+            assert f"quality {q['status']}" in cell.get_attribute("aria-label")
+            # Eligibility, floor and the backend reason are disclosed on click, not hover.
+            cell.click()
+            detail = page.locator("#evalDetail")
+            expect(detail.locator(".emd-h b")).to_have_text(f"{case['title']} · V5")
+            expect(detail).to_contain_text(f"{q['status']} · {q['eligible']}/{q['k']} eligible")
+            if q["mean"] is None:
+                expect(detail).to_contain_text(f"Helpfulness unscored (floor {q['floor']})")
+            else:
+                expect(detail).to_contain_text(
+                    f"Helpfulness {q['mean']} {('<' if q['mean'] < q['floor'] else '≥')} floor {q['floor']}"
                 )
-            assert q["reason"] in (badge.get_attribute("title") or "")
+            expect(detail).to_contain_text(q["reason"])
+            assert page.locator("#drBody .c").filter(has_text="eligible").count() == 0
+            page.locator("#evalDetailClose").click()
+            expect(cell).to_be_focused()
         pill = page.locator("#gatePill")
         expect(pill).to_contain_text(
             f"Release gate: {'PASS' if record['gate']['passed'] else 'FAIL'}"
@@ -630,7 +641,9 @@ def exercise(browser, origin, screenshots):
     fixture["hold_evals"] = True
     page.locator("#evalBtn").click()
     expect(page.locator("#drBody")).to_contain_text("Loading eval suites")
-    page.locator("#nextFix").click()
+    # The wide Evals surface covers the toolbar for the pointer; the keyboard still reaches it.
+    page.locator("#nextFix").focus()
+    page.keyboard.press("Enter")
     fixture["hold_evals"] = False
     fixture["evals"] = {"v5": {"status": "RUNNING"}}
     for route in pending.pop("evals"):
@@ -686,7 +699,9 @@ def exercise(browser, origin, screenshots):
     page.locator("#evalBtn").click()
     page.wait_for_function("EVALS?.v5?.suite_id === 'old'")
     page.evaluate("renderEvals(); renderGate()")
-    expect(page.locator("#drBody")).to_contain_text("historical · not current")
+    expect(page.locator(".em thead th").nth(6)).to_contain_text("Historical .1")
+    expect(page.locator('[data-key="v5:gate"]')).to_have_text("Not current")
+    expect(page.locator("#drBody .evsum")).to_contain_text("historical · not current")
     expect(page.locator("#gatePill")).to_contain_text("not current")
     page.keyboard.press("Escape")
     current_cases = [
@@ -747,18 +762,23 @@ def exercise(browser, origin, screenshots):
     fixture["hold_evals"] = True
     page.locator("#evalBtn").click()
     proof = page.evaluate(
-        "rows => { EVALS = rows; renderEvals(); renderGate(); return {body: document.querySelector('#drBody').textContent, pill: document.querySelector('#gatePill').textContent, red: [...document.querySelectorAll('#drBody .c.FAIL')].some(e => e.textContent.includes('control FAIL'))}; }",
+        "rows => { EVALS = rows; renderEvals(); renderGate(); return {body: document.querySelector('#drBody').textContent, pill: document.querySelector('#gatePill').textContent, gate: document.querySelector('[data-key=\"v5:gate\"]').textContent, red: [...document.querySelectorAll('#drBody .cell:not(.old) .ml')].some(e => e.textContent.startsWith('Control') && e.querySelector('.v.bad'))}; }",
         fixture["evals"],
     )
-    assert "other revision" in proof["body"] and "control FAIL" in proof["body"]
+    assert "Other revision" in proof["body"] and "Not current" in proof["body"]
+    assert proof["gate"] == "FAIL"  # the badge is the short status only; the reason is disclosed
     assert proof["red"] and "safety PASS" in proof["pill"]
     assert "helpfulness 0" in proof["pill"] and "controls FAIL" in proof["pill"]
-    case_cell = page.locator('tr:has-text("Repeated notes") td').last
-    case_cell.hover()
-    assert "Runtime replay / Gateway probe" in case_cell.locator("span[title]").get_attribute(
-        "title"
+    case_cell = page.locator('[data-key="v5:write_cap"]')
+    expect(case_cell.locator(".ml", has_text="Control").locator(".v")).to_have_text("✕ 0/1")
+    case_cell.click()
+    expect(page.locator("#evalDetail")).to_contain_text("cap · FAIL 0/1 · no Gateway denial")
+    expect(page.locator("#evalDetail")).to_contain_text("Runtime replay / Gateway probe")
+    expect(page.locator("#evalDetail")).to_contain_text("no Gateway denial")
+    page.locator('[data-key="v2:benign_summary"]').click()
+    expect(page.locator("#evalDetail")).to_contain_text(
+        "Case rows are never mixed across revisions"
     )
-    assert "no Gateway denial" in case_cell.locator("span[title]").get_attribute("title")
     corrupt = copy.deepcopy(fixture["evals"])
     corrupt["v5"]["cases"][-1]["family"] = "wrong-probe"
     corrupt["v5"]["gate"]["passed"] = True

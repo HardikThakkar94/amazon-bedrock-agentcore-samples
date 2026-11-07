@@ -275,7 +275,7 @@ def main():
             page.evaluate("refresh(false)")
             expect(page.locator("#drawer")).to_have_attribute("data-from", "evals")
             expect(page.locator("#drTitle")).to_contain_text("Evaluations")
-            expect(page.locator("#drBody")).to_contain_text("Current dataset")
+            expect(page.locator("#drSub")).to_contain_text("Current dataset")  # header line
             assert page.evaluate("RUN") is None
             page.keyboard.press("Escape")
             expect(page.locator("#evalBtn")).to_be_focused()
