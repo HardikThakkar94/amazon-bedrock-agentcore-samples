@@ -102,6 +102,14 @@ def test_console_markup_drops_hover_only_capsules():
         in html
     )
     assert "gateReason(st)}</span>" not in html
+    # Other-revision and ERROR records disclose only the selected suite's own returned case.
+    assert (
+        "const own = st.cases?.find(x => x.id === sel.id), row = st.gate?.cases?.find(x => x.id === sel.id)"
+        in html
+    )
+    assert "No corresponding case ${sel.id} was returned for this suite" in html
+    assert "no gate row recorded for this case · not release evidence" in html
+    assert "suite ERROR, not scored" in html
     assert ".drawer.wide{" in html and ".drawer[data-from=evals] .body{" in html
     # Run-trace privacy fences are untouched by the presentation change.
     assert (
@@ -133,6 +141,14 @@ def test_evals_density_layout_in_chrome(tmp_path):
     for scenario in fixtures.fixtures():
         for width, height in ((1920, 1080), (1440, 900), (1280, 800), (834, 900), (390, 844)):
             assert f"{scenario}-{width}x{height}.png" in produced, (scenario, width, height)
-    assert "v0_fail_current_hist4-1440x900-detail-open.png" in produced
-    assert "trace-drawer-after-evals-1440x900.png" in produced
+    for name in (
+        "v0_fail_current_hist4-1440x900-detail-open.png",
+        "v0_fail_current_hist4-1440x900-other-revision-detail.png",
+        "v0_fail_current_hist4-1440x900-absent-case-detail.png",
+        "long_text-834x900-error-benign-detail.png",
+        "long_text-834x900-error-probe-detail.png",
+        "trace-drawer-after-evals-1440x900.png",
+    ):
+        assert name in produced, name
+    assert "settled paint complete_pass_fail@1920" in result.stdout
     print(json.dumps({"screenshots": shots, "count": len(produced)}))

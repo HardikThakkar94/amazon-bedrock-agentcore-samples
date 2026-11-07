@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import copy
 import os
+import re
+import struct
 import sys
 import threading
+import zlib
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,6 +47,60 @@ GREEN, PINK = "rgb(110, 231, 80)", "rgb(255, 77, 139)"
 class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, *_args):
         pass
+
+
+def png_rows(path: Path, upto: int):
+    """Decode the first `upto` rows of a non-interlaced 8-bit RGB/RGBA PNG (stdlib only)."""
+    data = path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", path
+    pos, idat, width, height, channels = 8, [], 0, 0, 0
+    while pos < len(data):
+        length, kind = struct.unpack(">I4s", data[pos : pos + 8])
+        body = data[pos + 8 : pos + 8 + length]
+        if kind == b"IHDR":
+            width, height, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", body)
+            assert depth == 8 and interlace == 0 and color in (2, 6), (depth, color, interlace)
+            channels = 3 if color == 2 else 4
+        elif kind == b"IDAT":
+            idat.append(body)
+        elif kind == b"IEND":
+            break
+        pos += 12 + length
+    raw, stride = zlib.decompress(b"".join(idat)), width * channels
+    prev, rows = bytearray(stride), []
+    for y in range(min(upto, height)):
+        off = y * (stride + 1)
+        flt, line = raw[off], bytearray(raw[off + 1 : off + 1 + stride])
+        for i in range(stride):
+            a = line[i - channels] if i >= channels else 0
+            b = prev[i]
+            c = prev[i - channels] if i >= channels else 0
+            if flt == 1:
+                line[i] = (line[i] + a) & 255
+            elif flt == 2:
+                line[i] = (line[i] + b) & 255
+            elif flt == 3:
+                line[i] = (line[i] + ((a + b) >> 1)) & 255
+            elif flt == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(bytes(line))
+        prev = line
+    return channels, rows
+
+
+def ink_pixels(path: Path, x0: int, y0: int, x1: int, y1: int) -> int:
+    """Pixels in the box that differ from the panel background (#0d0d18): painted text/marks."""
+    channels, rows = png_rows(path, y1)
+    count = 0
+    for y in range(y0, y1):
+        row = rows[y]
+        for x in range(x0, x1):
+            r, g, b = row[x * channels], row[x * channels + 1], row[x * channels + 2]
+            if abs(r - 13) + abs(g - 13) + abs(b - 24) > 40:
+                count += 1
+    return count
 
 
 def rect(page, selector):
@@ -162,9 +219,19 @@ def exercise(browser, origin, shots: Path | None):
         page.locator("#evalBtn").click()
         page.wait_for_function("!!document.querySelector('#drBody .evtool')")
 
+    def settle():
+        """Capture only after fonts, layout and timers have settled: the PNG is visual evidence."""
+        page.evaluate("document.fonts.ready.then(() => true)")
+        page.wait_for_function(
+            "() => { const b = document.querySelector('#drBody'); const el = b.querySelector('.em tbody tr, p.empty, .ea, .ev') || b; return el.getBoundingClientRect().height > 0; }"
+        )
+        page.clock.run_for(250)
+        page.wait_for_timeout(50)
+
     def shot(name: str):
         if shots:
-            page.screenshot(path=str(shots / name))
+            settle()
+            page.screenshot(path=str(shots / name), animations="disabled")
 
     def layout_checks(scenario: str, width: int, page_width_before: int):
         drawer = rect(page, "#drawer")
@@ -286,10 +353,11 @@ def exercise(browser, origin, shots: Path | None):
         )
         for cell in cells:
             assert cell["tag"] == "BUTTON" and "Details" in cell["label"]
-            if "Other revision" not in cell["text"]:
-                assert ("✓" in cell["text"] or "✕" in cell["text"]) and (
-                    "PASS" in cell["label"] or "FAIL" in cell["label"]
-                ), cell
+            if cell["text"] in ("Other revision", "Not scored", "—"):
+                continue  # neutral comparison triggers: no verdict text, only the disclosure
+            assert ("✓" in cell["text"] or "✕" in cell["text"]) and (
+                "PASS" in cell["label"] or "FAIL" in cell["label"]
+            ), cell
 
     for scenario in SCENARIOS:
         stage = "v0" if scenario in ("running_mixed", "v0_fail_current_hist4") else "v5"
@@ -303,6 +371,17 @@ def exercise(browser, origin, shots: Path | None):
                 "getComputedStyle(document.querySelector('#drawer')).opacity === '1'"
             )
             shot(f"{scenario}-{width}x{height}.png")
+            if (
+                shots
+                and width == 1920
+                and scenario in ("complete_pass_fail", "v0_fail_current_hist4")
+            ):
+                # The recorded PNG itself must show the painted first case row, not blank geometry.
+                ink = ink_pixels(shots / f"{scenario}-{width}x{height}.png", 500, 268, 1660, 330)
+                assert ink > 400, (
+                    f"{scenario}@{width}: table body blank in the recorded PNG ({ink})"
+                )
+                print(f"settled paint {scenario}@{width}: {ink} ink pixels in the first case row")
             layout_checks(scenario, width, page_width_before)
             assert not errors, errors
         page.keyboard.press("Escape")
@@ -407,14 +486,65 @@ def exercise(browser, origin, shots: Path | None):
     )
     assert page.locator(".em tr.emd").count() == 1
     shot("v0_fail_current_hist4-1440x900-gate-detail.png")
+    # Other-revision columns stay a neutral comparison, yet the selected suite's OWN returned case
+    # (matched by id) is disclosed under its .4 dataset/suite ids: nothing substituted or inferred.
+    hist = all_fixtures["v0_fail_current_hist4"]["builds"]["v3"]
+    hist_row = next(r for r in hist["gate"]["cases"] if r["id"] == "benign_summary")
+    hq = hist_row["quality"]
     other = page.locator('[data-key="v3:benign_summary"]')
+    expect(other).to_have_text("Other revision")
+    expect(other).to_have_class(re.compile(r"\bold\b"))
+    other.focus()
+    page.keyboard.press("Enter")
+    detail = page.locator("#evalDetail")
+    expect(detail.locator(".emd-h b")).to_have_text("Benign summary · V3")
+    text = detail.inner_text()
+    for needle in (
+        f"Historical · not current · dataset {fixtures.HISTORICAL_VERSION} (default) · suite "
+        f"{hist['suite_id']} · status DONE · matrix rows {fixtures.VERSION}",
+        "Case rows are never mixed across revisions: the evidence below is this suite's own "
+        "recorded case benign_summary · historical, not release evidence.",
+        f"{hist_row['safety']} {hist_row['passed']}/{hist_row['k']} · AgentCore Evaluations + DynamoDB diff",
+        f"guardrail · {hist_row['control']} {hist_row['control_passed']}/{hist_row['k']} · {hist_row['control_reason']}",
+        f"{hq['status']} · {hq['eligible']}/{hq['k']} eligible · Helpfulness {hq['mean']} ≥ floor {hq['floor']} · {hq['reason']}",
+        "PER-SAMPLE PROVENANCE (BOUNDED)",
+        f"run {hist['cases'][0]['samples'][0]['run_id']}",
+        "Builtin.Helpfulness: SCORED (0.83)",
+    ):
+        assert needle in text, needle
+    expect(other).to_have_text("Other revision")  # the comparison cell itself is unchanged
+    expect(other).to_have_attribute("aria-expanded", "true")
+    assert page.locator(".em tr.emd").count() == 1
+    assert "0.83" not in page.locator('[data-key="v0:benign_summary"]').inner_text()
+    shot("v0_fail_current_hist4-1440x900-other-revision-detail.png")
+    page.keyboard.press("Escape")
+    expect(page.locator("#evalDetail")).to_have_count(0)
+    expect(other).to_be_focused()
+    page.keyboard.press("Space")
+    expect(page.locator("#evalDetail .emd-h b")).to_have_text("Benign summary · V3")
+    page.locator("#evalDetailClose").click()
+    expect(page.locator("#evalDetail")).to_have_count(0)
+    expect(other).to_be_focused()
+    # A historical suite without that case says so explicitly instead of pairing another record.
+    v2 = current["builds"]["v2"]
+    v2["cases"] = [c for c in v2["cases"] if c["id"] != "benign_summary"]
+    v2["gate"]["cases"] = [r for r in v2["gate"]["cases"] if r["id"] != "benign_summary"]
+    page.evaluate("loadEvals().then(() => renderEvals())")
+    absent = page.locator('[data-key="v2:benign_summary"]')
+    expect(absent).to_have_text("Other revision")
+    absent.focus()
+    page.keyboard.press("Enter")
+    expect(page.locator("#evalDetail .emd-h b")).to_have_text("Benign summary · V2")
+    expect(page.locator("#evalDetail")).to_contain_text(
+        "No corresponding case benign_summary was returned for this suite; nothing to disclose."
+    )
+    assert page.locator("#evalDetail dt", has_text="Safety").count() == 0
+    assert page.locator("#evalDetail .smp").count() == 0
+    shot("v0_fail_current_hist4-1440x900-absent-case-detail.png")
+    page.keyboard.press("Escape")
+    expect(absent).to_be_focused()
     other.click()
-    expect(page.locator("#evalDetail")).to_contain_text(
-        "Historical · not current · dataset 2026-11-05.4"
-    )
-    expect(page.locator("#evalDetail")).to_contain_text(
-        "Case rows are never mixed across revisions"
-    )
+    expect(page.locator("#evalDetail .emd-h b")).to_have_text("Benign summary · V3")
     # "How scoring works" is a real disclosure and the polling re-render preserves everything.
     how = page.locator("#evalHowBtn")
     expect(page.locator("#evalHow")).to_be_hidden()
@@ -534,6 +664,52 @@ def exercise(browser, origin, shots: Path | None):
     open_evals()
     expect(page.locator('[data-key="v4:gate"]')).to_have_text("ERROR")
     assert page.locator(".em tbody td .j", has_text="Not scored").count() == 12
+    # An ERROR suite keeps neutral 'Not scored' cells, yet its returned partial case/samples are
+    # disclosed, labelled ERROR / not release evidence, without inventing a gate row or verdict.
+    v4 = all_fixtures["long_text"]["builds"]["v4"]
+    err = page.locator('[data-key="v4:benign_summary"]')
+    expect(err).to_have_text("Not scored")
+    assert "suite ERROR, not scored; 1 returned sample(s), not release evidence" in (
+        err.get_attribute("aria-label") or ""
+    )
+    err.focus()
+    page.keyboard.press("Enter")
+    detail = page.locator("#evalDetail")
+    expect(detail.locator(".emd-h b")).to_have_text("Benign summary · V4")
+    text = detail.inner_text()
+    for needle in (
+        f"Current · dataset {fixtures.VERSION} (default) · suite {v4['suite_id']} · status ERROR",
+        "ERROR · no gate row recorded for this case · not release evidence · Suite unavailable (RuntimeError)",
+        "PER-SAMPLE PROVENANCE (BOUNDED)",
+        "live model run · verdict NO_EFFECT",
+        "Builtin.Helpfulness: SCORED (0.83)",
+    ):
+        assert needle in text, needle
+    assert detail.locator("dt", has_text="Safety").count() == 0
+    assert detail.locator("dt", has_text="Quality").count() == 0
+    assert detail.locator(".c").count() == 0  # no verdict badge is invented for an ERROR suite
+    expect(err).to_have_text("Not scored")
+    shot("long_text-834x900-error-benign-detail.png")
+    page.evaluate("loadEvals().then(() => renderEvals())")  # the periodic poll keeps it open
+    expect(page.locator("#evalDetail .emd-h b")).to_have_text("Benign summary · V4")
+    expect(err).to_be_focused()
+    page.keyboard.press("Escape")
+    expect(page.locator("#evalDetail")).to_have_count(0)
+    expect(err).to_be_focused()
+    probe = page.locator('[data-key="v4:write_cap"]')
+    probe.focus()
+    page.keyboard.press("Space")
+    expect(page.locator("#evalDetail .emd-h b")).to_have_text(
+        "Repeated notes require bounded dispatch and durable breaker · V4"
+    )
+    expect(page.locator("#evalDetail")).to_contain_text("Runtime replay / Gateway probe")
+    expect(page.locator("#evalDetail")).to_contain_text(f"control FAIL: {fixtures.LONG[:180]}")
+    expect(page.locator("#evalDetail")).to_contain_text("add_note:NOT_EVALUATED:-")
+    expect(page.locator("#evalDetail")).to_contain_text("not release evidence")
+    shot("long_text-834x900-error-probe-detail.png")
+    page.locator("#evalDetailClose").click()
+    expect(page.locator("#evalDetail")).to_have_count(0)
+    expect(probe).to_be_focused()
     page.locator('[data-key="v4:gate"]').click()
     expect(page.locator("#evalDetail")).to_contain_text("Suite unavailable (RuntimeError)")
     region = rect(page, "#drBody .evwrap")

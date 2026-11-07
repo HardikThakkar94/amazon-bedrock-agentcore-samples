@@ -1139,13 +1139,21 @@ function evalDetail(sel, cases, matrixVersion){
     return `<div class="emd-h"><b>Release gate · ${U}</b>${close}</div>${dl(rows)}`;
   }
   const c = cases.find(x => x.id === sel.id) || {title: sel.id, kind: ''};
-  const h = `<div class="emd-h"><b>${esc(c.title)} · ${U}</b><span class="j">${esc(c.kind)}</span>${close}</div>`;
-  if(st.dataset !== matrixVersion) return h + dl([['Suite', esc(prov)], ['Rows', `This suite recorded dataset ${esc(st.dataset || 'unknown')}; the matrix rows come from ${esc(matrixVersion)}. Case rows are never mixed across revisions.`]]);
-  const row = st.gate?.cases?.find(x => x.id === c.id) || {}, data = st.cases?.find(x => x.id === c.id), q = row.quality;
-  const rows = [['Suite', esc(prov)], ['Safety', esc(`${row.safety || 'n/a'} ${row.passed ?? 0}/${row.k ?? 0} · ${(row.sources || []).join(', ') || 'no sources recorded'}`)]];
-  if(row.control) rows.push([row.control_family === 'guardrail' ? 'Screen' : 'Control', esc(`${row.control_family} · ${row.control} ${row.control_passed}/${row.k} · ${row.control_reason || 'no reason recorded'}`)]);
-  if(c.kind === 'benign') rows.push(['Quality', q ? esc(`${q.status} · ${q.eligible}/${q.k} eligible · Helpfulness ${q.mean == null ? `unscored (floor ${q.floor})` : `${q.mean} ${q.mean < q.floor ? '<' : '≥'} floor ${q.floor}`} · ${q.reason}`) : 'not evaluated on this suite']);
-  const samples = (data?.samples || []).map((s, i) => `<div class="smp"><b>Sample ${i + 1}</b><pre>${esc(sampleTip(s))}</pre></div>`).join('') || '<p class="j">No per-sample records.</p>';
+  // Disclose only the selected suite's own recorded case (matched by case id): its gate row where the
+  // backend returned one, and its bounded samples. Other-revision, historical and ERROR records are
+  // labelled as that suite's evidence; nothing is substituted into the current matrix or inferred.
+  const own = st.cases?.find(x => x.id === sel.id), row = st.gate?.cases?.find(x => x.id === sel.id), kind = own?.kind || c.kind, q = row?.quality;
+  const h = `<div class="emd-h"><b>${esc(c.title)} · ${U}</b><span class="j">${esc(kind)}</span>${close}</div>`;
+  const rows = [['Suite', esc(prov)]], absent = !own && !row;
+  if(st.dataset !== matrixVersion) rows.push(['Rows', esc(`This suite recorded dataset ${st.dataset || 'unknown'}; the matrix rows come from ${matrixVersion}. Case rows are never mixed across revisions${absent ? '' : `: the evidence below is this suite's own recorded case ${sel.id}${own && own.title && own.title !== c.title ? ` (“${own.title}”)` : ''}${old ? ' · historical, not release evidence' : ''}`}.`)]);
+  if(absent) return h + dl([...rows, ['Evidence', esc(`No corresponding case ${sel.id} was returned for this suite${st.status === 'ERROR' ? ' (suite ERROR)' : ''}; nothing to disclose.`)]]);
+  if(!row) rows.push(['Status', esc(`${st.status || 'unknown'} · no gate row recorded for this case · not release evidence${st.status === 'ERROR' && st.error ? ' · ' + st.error : ''}`)]);
+  else {
+    rows.push(['Safety', esc(`${row.safety || 'n/a'} ${row.passed ?? 0}/${row.k ?? 0} · ${(row.sources || []).join(', ') || 'no sources recorded'}`)]);
+    if(row.control) rows.push([row.control_family === 'guardrail' ? 'Screen' : 'Control', esc(`${row.control_family} · ${row.control} ${row.control_passed}/${row.k} · ${row.control_reason || 'no reason recorded'}`)]);
+    if(kind === 'benign') rows.push(['Quality', q ? esc(`${q.status} · ${q.eligible}/${q.k} eligible · Helpfulness ${q.mean == null ? `unscored (floor ${q.floor})` : `${q.mean} ${q.mean < q.floor ? '<' : '≥'} floor ${q.floor}`} · ${q.reason}`) : 'not evaluated on this suite']);
+  }
+  const samples = (own?.samples || []).map((s, i) => `<div class="smp"><b>Sample ${i + 1}</b><pre>${esc(sampleTip(s))}</pre></div>`).join('') || '<p class="j">No per-sample records.</p>';
   return h + dl(rows) + `<div class="emd-s"><b>Per-sample provenance (bounded)</b>${samples}</div>`;
 }
 function renderEvals(){
@@ -1177,7 +1185,8 @@ function renderEvals(){
     if(ACTIVE.includes(st.status)) return currentSuite(st) ? '<span class="j run">Pending</span>' : `<span class="j">${esc(staleSuiteLabel(st))}</span>`;
     if(st.dataset !== matrixVersion) return trigger(b, c.id, ' old', `${c.title}, ${U}: other dataset revision, rows never mixed. Details.`, '<span class="j">Other revision</span>');
     const row = st.gate?.cases?.find(x => x.id === c.id), data = st.cases?.find(x => x.id === c.id);
-    if(!row) return `<span class="j">${st.status === 'ERROR' ? 'Not scored' : '—'}</span>`;
+    const unscored = `<span class="j">${st.status === 'ERROR' ? 'Not scored' : '—'}</span>`; // comparison stays neutral: no gate row, no verdict
+    if(!row) return data ? trigger(b, c.id, '', `${c.title}, ${U}: ${st.status === 'ERROR' ? 'suite ERROR, not scored' : 'no gate row recorded'}; ${data.samples?.length || 0} returned sample(s), not release evidence. Details.`, unscored) : unscored;
     const old = !currentSuite(st), words = [`safety ${row.safety} ${row.passed}/${row.k}`], lines = [line('Safety', row.safety === 'PASS', `${row.passed}/${row.k}`)];
     if(row.control){ const k = row.control_family === 'guardrail' ? 'Screen' : 'Control'; lines.push(line(k, row.control === 'PASS', `${row.control_passed}/${row.k}`)); words.push(`${k.toLowerCase()} ${row.control} ${row.control_passed}/${row.k}`); }
     if(c.kind === 'benign'){ const q = row.quality; // shared backend gate eligibility, never a browser re-scoring rule
