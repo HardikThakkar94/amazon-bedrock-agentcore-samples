@@ -706,6 +706,12 @@ def exercise(browser, origin, shots: Path | None):
     expect(page.locator("#evalDetail")).to_contain_text(f"control FAIL: {fixtures.LONG[:180]}")
     expect(page.locator("#evalDetail")).to_contain_text("add_note:NOT_EVALUATED:-")
     expect(page.locator("#evalDetail")).to_contain_text("not release evidence")
+    # Evidence capture: bring the selected probe row and its detail into the table viewport so
+    # the recorded PNG shows the disclosure (artifact settling; production CSS is unchanged).
+    page.evaluate("document.querySelector('.em tbody tr.sel').scrollIntoView({block: 'start'})")
+    region = rect(page, "#drBody .evwrap")
+    head = rect(page, "#evalDetail .emd-h")
+    assert region["top"] <= head["top"] and head["bottom"] <= region["bottom"], (region, head)
     shot("long_text-834x900-error-probe-detail.png")
     page.locator("#evalDetailClose").click()
     expect(page.locator("#evalDetail")).to_have_count(0)

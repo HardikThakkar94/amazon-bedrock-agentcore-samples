@@ -111,6 +111,11 @@ def test_console_markup_drops_hover_only_capsules():
     assert "no gate row recorded for this case · not release evidence" in html
     assert "suite ERROR, not scored" in html
     assert ".drawer.wide{" in html and ".drawer[data-from=evals] .body{" in html
+    # The closed wide surface is display:none; a visibility transition would interact with the
+    # global reduced-motion 1ms transition-duration and defeat the synchronous Close focus().
+    wide = html[html.index(".drawer.wide{") : html.index(".drawer.wide h3{")]
+    assert ".drawer.wide:not(.open){display:none}" in wide
+    assert "transition:none" in wide and "visibility" not in wide and "opacity" not in wide
     # Run-trace privacy fences are untouched by the presentation change.
     assert (
         "if(d.dataset.runTrace === '1') { drawerEpoch++; $('#drBody').replaceChildren(); $('#drTitle').textContent = ''; }"
@@ -152,3 +157,25 @@ def test_evals_density_layout_in_chrome(tmp_path):
         assert name in produced, name
     assert "settled paint complete_pass_fail@1920" in result.stdout
     print(json.dumps({"screenshots": shots, "count": len(produced)}))
+
+
+def test_wide_surface_focus_contract_in_chrome(tmp_path):
+    """Both motion preferences × five widths: Close is focused synchronously on every (re-)open."""
+    python = os.environ.get("UI_BROWSER_PYTHON")
+    if not python:
+        pytest.skip("set UI_BROWSER_PYTHON to an installed Python with Playwright (no downloads)")
+    shots = os.environ.get("UI_SCREENSHOTS", str(tmp_path))
+    result = subprocess.run(
+        [python, "tests/evals_focus_browser.py"],
+        cwd=ROOT,
+        env={**os.environ, "UI_SCREENSHOTS": shots},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "PASS: wide-surface focus contract · motion reduce/no-preference × 5 viewports"
+        in result.stdout
+    )
+    assert "0 POSTs" in result.stdout

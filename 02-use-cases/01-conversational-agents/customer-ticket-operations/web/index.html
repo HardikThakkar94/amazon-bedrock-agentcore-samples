@@ -204,11 +204,13 @@ header .sp{flex:1}
 .drawer .body{overflow:auto;padding:12px var(--pad)}
 /* Evals and its nested Architecture view need six build columns: a wide, viewport-bounded surface
    (min(1440px, viewport - 48px)) that escapes the .panel clip. Hop/CloudWatch/controls drawers
-   keep the panel-sized drawer; the privacy fences (runTrace/drawerEpoch) are unchanged. */
-.drawer.wide{--pad:20px;position:fixed;top:24px;right:24px;bottom:auto;left:24px;width:auto;max-width:1440px;height:auto;max-height:calc(100dvh - 48px);margin:0 auto;border:1px solid var(--line);border-radius:16px;z-index:35;transform:none;
-  box-shadow:0 24px 80px rgba(0,0,0,.55),0 0 0 100vmax rgba(7,7,15,.45);transition:opacity 220ms var(--ease),visibility 0s linear 220ms}
-.drawer.wide:not(.open){opacity:0;visibility:hidden}
-.drawer.wide.open{transition:opacity 220ms var(--ease),visibility 0s}
+   keep the panel-sized drawer; the privacy fences (runTrace/drawerEpoch) are unchanged.
+   The closed wide surface is display:none (as on small screens), never a visibility transition:
+   under prefers-reduced-motion the global 1ms transition-duration would make the drawer and its
+   descendants transition inherited visibility, so the synchronous Close focus() on open would miss. */
+.drawer.wide{--pad:20px;position:fixed;top:24px;right:24px;bottom:auto;left:24px;width:auto;max-width:1440px;height:auto;max-height:calc(100dvh - 48px);margin:0 auto;border:1px solid var(--line);border-radius:16px;z-index:35;transform:none;transition:none;
+  box-shadow:0 24px 80px rgba(0,0,0,.55),0 0 0 100vmax rgba(7,7,15,.45)}
+.drawer.wide:not(.open){display:none}
 .drawer.wide h3{font-size:20px}
 .drawer[data-from=evals] .body{display:flex;flex-direction:column;overflow:hidden;padding:0 var(--pad) var(--pad)}
 .ev{border:1px solid var(--line-dim);border-radius:10px;padding:10px 12px;margin-bottom:10px}
