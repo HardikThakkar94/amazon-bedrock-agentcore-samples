@@ -1,4 +1,4 @@
-# Who the callers are: one Cognito user pool, three personas, tenant + role stamped into tokens.
+# Who the callers are: one Cognito user pool, three personas and a presenter, tenant + role stamped into tokens.
 # Nothing here trusts the request body; every downstream check reads these verified claims.
 
 locals {

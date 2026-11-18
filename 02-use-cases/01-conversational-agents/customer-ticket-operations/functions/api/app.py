@@ -1,8 +1,8 @@
 """SEC310 presenter API (Lambda function URL, AuthType=AWS_IAM, reachable only via CloudFront).
 
-CloudFront's Lambda@Edge has already verified the Cognito session and forwards the access token
-in ``x-sec310-access-token``; this function verifies its signature, issuer, audience and expiry
-again (defence in depth) and takes the persona from the token's claims, never from the body.
+A CloudFront Function has already checked the session cookie and forwards the access token in
+``x-sec310-access-token``; this function verifies its signature, issuer, audience and expiry
+(defense in depth) and takes the persona from the token's claims, never from the body.
 """
 
 from __future__ import annotations
@@ -87,12 +87,12 @@ TITLES = {
     "v5": "Evidence: gate release on behavior",
 }
 LESSONS = {
-    "v0": "VULNERABLE — no independent boundary; the ticket can close.",
-    "v1": "STILL VULNERABLE — screening may pass a plausible workflow note; no Region fence yet.",
-    "v2": "STILL VULNERABLE — Region A is in scope, but scope is not permission to close.",
-    "v3": "PROTECTED — every close waits for the operator's approval; one nobody approved is denied.",
-    "v4": "CONTAINED — a denial trips the circuit breaker: the run ends, the agent stays read-only until reset.",
-    "v5": "EVIDENCE — recorded safety, controls and usefulness must all pass a current measured release gate.",
+    "v0": "VULNERABLE: no independent boundary; the ticket can close.",
+    "v1": "STILL VULNERABLE: screening may pass a plausible workflow note; no Region fence yet.",
+    "v2": "STILL VULNERABLE: Region A is in scope, but scope is not permission to close.",
+    "v3": "PROTECTED: every close waits for the operator's approval; one nobody approved is denied.",
+    "v4": "CONTAINED: a denial trips the circuit breaker; the run ends and the agent stays read-only until reset.",
+    "v5": "EVIDENCE: recorded safety, controls and usefulness must all pass a current measured release gate.",
 }
 
 
@@ -122,9 +122,9 @@ def build_code(stage: str) -> dict[str, Any]:
     n = STAGES.index(stage)
     controls = [{"name": k, "on": STAGES.index(v) <= n, "detail": ""} for k, v in CONTROLS.items()]
     engines = json.loads(agent_param("policy_engines", "{}"))
-    # V1 shares V0's broad Gateway, V2 uses V1's fenced Gateway, V5 uses V4's ENFORCE
-    # Gateway/policy engine; the controls
-    # drawer must read the policy attached to the actual Gateway, not a nonexistent V5 engine.
+    # V1 shares V0's broad Gateway, V2 uses V1's fenced Gateway and V5 uses V4's ENFORCE Gateway
+    # and policy engine, so the controls drawer reads the policy attached to the Gateway the
+    # build actually uses (V5 has no engine of its own).
     engine = engines.get(GATEWAY_OF[stage])
     policies = []
     if engine:
@@ -410,9 +410,9 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
             else ""
         ),
         "next_step": (
-            "Do not clear this exclusion on elapsed time or silent logs. "
-            "Escalate for verified Runtime/tool quiescence, effect reconciliation, "
-            "and conditional owner/session recovery (README)."
+            "The run may still be working. Once its time limit has passed, release the lock "
+            "with `make recover`; add FORCE=1 if you know it has stopped (README). Then choose "
+            "Reset demo."
             if owner
             else "Review effects; an operator may reset the breaker when no run owns the exclusion."
             if pending
@@ -515,8 +515,9 @@ def claim_run(
     stage: str | None = None,
     principal: str | None = None,
 ) -> None:
-    """A durable exclusion owner, not just an expiring hint. An expired orphan needs recovery;
-    expiration alone cannot prove that a timed-out invocation has stopped writing."""
+    """Claim the tenant's durable exclusion owner. It outlives its time hint: an expired orphan
+    needs recovery, because expiration alone cannot prove that a timed-out invocation has
+    stopped writing."""
     now = int(time.time())
     try:
         values: dict[str, Any] = {":until": now + duration, ":now": now, ":owner": owner}
@@ -669,7 +670,7 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
         "auth.verified",
         "ingress",
         "ok",
-        f"{who['username']} signed in · token verified at the edge and again by the API",
+        f"{who['username']} signed in · session checked at the edge, token verified by the API",
         payload=json.dumps(
             {
                 "CloudFront Function (viewer request)": "HMAC session cookie ✓ · expiry ✓",
@@ -789,14 +790,16 @@ def run_agent(who: dict[str, str], token: str, body: dict[str, Any]) -> dict[str
         except Exception as exc:  # noqa: BLE001 - failure can follow a committed tool write
             try:
                 after = runs.snapshot(all_tickets()) if before is not None else None
-            except Exception as read_exc:  # noqa: BLE001 - unknown is not zero effects
+            except Exception as read_exc:  # noqa: BLE001 - effects are unknown if the read fails
                 after = None
                 exc = RuntimeError(f"{exc}; post-failure store read: {read_exc}")
+            # The exception text can carry a Runtime response body: log it, show only its class.
+            print(f"run {session_id} failed: {type(exc).__name__}: {str(exc)!r}")
             result = runs.failed(
                 stage,
                 session_id,
                 "AgentCore Runtime",
-                f"{type(exc).__name__}: {exc}",
+                f"{type(exc).__name__} from the agent run; details are in the API function's logs",
                 before,
                 after,
                 confirmed,
@@ -1273,8 +1276,8 @@ def reset_demo(who: dict[str, str]) -> dict[str, Any]:
     owner = runs.uuid7()
     claimed = claim_seed_scope(owner)
     try:
-        # Pre-upgrade portal rows may have no portal_ticket_seq. Read all of this tenant's
-        # rows consistently while the exclusion is held, and persist the highest identity
+        # The state row may not hold portal_ticket_seq yet. Read all of this tenant's ticket
+        # rows consistently while the exclusion is held, and persist the highest ticket number
         # *before* reset removes those rows. Never rewind a larger existing marker.
         tickets = []
         page = {}
@@ -1697,8 +1700,9 @@ def delete_portal_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str,
             for a in current_approvals(st)
         ):
             raise HttpError(409, "a pending approval references this ticket")
-        # Legacy submissions predate portal_ticket_seq. Capture their high-water mark before
-        # removing the highest live row; never reuse an ID still referenced in run history.
+        # The state row may not hold portal_ticket_seq yet, so take the high-water mark from
+        # the live ticket IDs as well, before removing the highest live row. Never reuse an ID
+        # still referenced in run history.
         prefix = cid.split("-")[-1].upper() + "-"
         live_numbers = [
             int(t["ticket_id"][len(prefix) :])
@@ -1721,7 +1725,7 @@ def delete_portal_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str,
             uncertain = False  # a definite conditional refusal did not delete anything
             raise HttpError(409, "ticket changed before deletion") from exc
         # Retain the prior run/effect/approval history, stage, breaker and policy session.
-        # Persist legacy ID high-water and invalidate replay before releasing the owner.
+        # Persist the ID high-water mark and invalidate replay before releasing the owner.
         _state.update_item(
             Key={"customer_id": cid},
             UpdateExpression="SET store_change_source = :source, portal_ticket_seq = :next REMOVE capture",
@@ -1746,7 +1750,7 @@ def submit_ticket(who: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     subject = str(body.get("subject", "")).strip()
     text = str(body.get("body", "")).strip()
     if not 0 < len(subject) <= MAX_SUBJECT or not 0 < len(text) <= MAX_BODY:
-        raise HttpError(400, f"subject 1–{MAX_SUBJECT} and body 1–{MAX_BODY} characters")
+        raise HttpError(400, f"subject 1 to {MAX_SUBJECT} and body 1 to {MAX_BODY} characters")
     cid = who["customer_id"]
     owner = runs.uuid7()
     claim_run(cid, owner)
@@ -1844,7 +1848,7 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             return reply(200, apply_patch(who, body))
         if method == "POST" and path == "/api/run":
             return reply(200, run_agent(who, access_token(event), body))
-        raise HttpError(404, f"{method} {path} is not available yet")
+        raise HttpError(404, f"{method} {path} not found")
     except HttpError as exc:
         return reply(exc.status, {"error": str(exc)})
     except (ValueError, json.JSONDecodeError):

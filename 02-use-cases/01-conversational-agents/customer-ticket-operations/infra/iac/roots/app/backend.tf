@@ -1,5 +1,5 @@
 terraform {
   backend "s3" {
-    key = "burner/app/terraform.tfstate"
+    key = "demo/app/terraform.tfstate"
   }
 }

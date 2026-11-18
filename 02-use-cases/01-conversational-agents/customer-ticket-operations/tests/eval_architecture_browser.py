@@ -237,7 +237,7 @@ def exercise(browser, origin, screenshots):
     fixture["hold_state"] = False
     for route in pending.pop("state"):
         route.fulfill(json=state)
-    expect(page.locator("#custTitle")).to_have_text("Region A tickets (Operator Alice)")
+    expect(page.locator("#custTitle")).to_have_text("Region A tickets (operator alice)")
     assert page.evaluate("typeof openCode") == "function"
     assert not errors, errors
     assert page.evaluate("mode") == "auto"
@@ -699,7 +699,7 @@ def exercise(browser, origin, screenshots):
     page.locator("#evalBtn").click()
     page.wait_for_function("EVALS?.v5?.suite_id === 'old'")
     page.evaluate("renderEvals(); renderGate()")
-    expect(page.locator(".em thead th").nth(6)).to_contain_text("Historical .1")
+    expect(page.locator(".em thead th").nth(6)).to_contain_text("Historical 2026-10-26.1")
     expect(page.locator('[data-key="v5:gate"]')).to_have_text("Not current")
     expect(page.locator("#drBody .evsum")).to_contain_text("historical · not current")
     expect(page.locator("#gatePill")).to_contain_text("not current")
@@ -796,7 +796,7 @@ def exercise(browser, origin, screenshots):
     for route in pending.pop("evals", []):
         route.fulfill(json={"builds": fixture["evals"], "dataset": VERSION})
 
-    # The existing eval execution button still requires its own explicit click and confirmation.
+    # The eval execution button requires its own explicit click and confirmation.
     fixture["evals"] = {}
     page.locator("#evalBtn").click()
     expect(page.locator("#evalRun")).to_be_enabled()
@@ -813,15 +813,15 @@ def exercise(browser, origin, screenshots):
 
     # No default Region or fake identity before/without an authenticated persona.
     for persona, label in (
-        (None, "Unknown Region tickets (Operator unknown)"),
+        (None, "Unknown Region tickets (operator unknown)"),
         (
             {"username": "carol", "customer_id": "unmapped"},
-            "Unknown Region tickets (Operator Carol)",
+            "Unknown Region tickets (operator carol)",
         ),
-        ({"customer_id": "customer-b"}, "Region B tickets (Operator unknown)"),
+        ({"customer_id": "customer-b"}, "Region B tickets (operator unknown)"),
         (
             {"username": '<img src=x onerror="window.pwned=1">', "customer_id": "customer-b"},
-            'Region B tickets (Operator <img src=x onerror="window.pwned=1">)',
+            'Region B tickets (operator <img src=x onerror="window.pwned=1">)',
         ),
     ):
         state["persona"] = persona
@@ -839,7 +839,7 @@ def exercise(browser, origin, screenshots):
     state["active_stage"] = "v0"
     refresh()
     screenshot("desktop-alice-v0.png")
-    # Existing portal deletion UI still cancels safely and issues only the intended delete on confirm.
+    # Portal deletion UI cancels safely and issues only the intended delete on confirm.
     page.once("dialog", lambda dialog: dialog.dismiss())
     before = copy.deepcopy(mutations())
     page.locator('[data-delete="A-90"]').click()
@@ -851,7 +851,7 @@ def exercise(browser, origin, screenshots):
 
     page.locator("#gearBtn").click()
     page.locator('#personas a:has-text("bob")').click()
-    expect(page.locator("#custTitle")).to_have_text("Region B tickets (Operator Bob)")
+    expect(page.locator("#custTitle")).to_have_text("Region B tickets (operator bob)")
     assert page.evaluate("STATE.persona.customer_id") == "customer-b"
     expect(page.locator("#tickets")).to_contain_text("B-77")
     screenshot("desktop-bob-v0.png")
@@ -886,7 +886,7 @@ def exercise(browser, origin, screenshots):
     expect(page.locator("#drawer")).to_have_attribute("aria-hidden", "true")
     page.locator("#gearBtn").click()
     page.locator('#personas a:has-text("alice")').click()
-    expect(page.locator("#custTitle")).to_have_text("Region A tickets (Operator Alice)")
+    expect(page.locator("#custTitle")).to_have_text("Region A tickets (operator alice)")
     before_clicks = len(mutations())
     state["active_stage"] = "v5"
     refresh()
@@ -897,7 +897,7 @@ def exercise(browser, origin, screenshots):
         page.locator("#drClose").click()
         expect(node).to_be_focused()
     assert len(mutations()) == before_clicks
-    # Stage selector buttons each require a click; merely looking at V0–V5 is read-only.
+    # Stage selector buttons each require a click; merely looking at V0-V5 is read-only.
     for version in range(6):
         page.locator(f'#steps [data-stage="v{version}"]').click()
         expect(page.locator(f'#steps [data-stage="v{version}"]')).to_have_attribute(
@@ -1039,8 +1039,8 @@ def exercise(browser, origin, screenshots):
     page.once("dialog", lambda dialog: dialog.accept())
     page.locator('[data-delete="A-90"]').click()
     expect(page.locator('[data-delete="A-90"]')).to_have_count(0)
-    # External navigation is intentionally blocked in this local mock; inspect destinations,
-    # while the parent owns real portal/login/logout click-through with an authenticated session.
+    # External navigation is intentionally blocked in this local mock; inspect destinations only.
+    # Real portal/login/logout click-through needs an authenticated deployed session.
     page.locator("#gearBtn").click()
     expect(page.locator('a[href="/portal/"]')).to_have_attribute("target", "sec310_portal")
     expect(page.locator('a[href="/auth/logout"]')).to_have_count(1)

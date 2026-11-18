@@ -139,7 +139,8 @@ def approval_requests(
 ) -> list[dict[str, Any]]:
     """V3+: the calls the harness held, as approval cards for the operator. Each says where the
     request came from: the operator's own ask, or not (then the portal tickets that mention the
-    target, which is what the model was reading). Provenance informs the human; it is not a control."""
+    target, which is what the model was reading). Provenance is context for the operator and
+    takes no part in any control."""
     portal = [t for t in tickets if t.get("origin") in ("form", "preset")]
     out = []
     for i, call in enumerate(c for c in tool_calls if c.get("status") == "PENDING_APPROVAL"):
@@ -165,8 +166,9 @@ def approval_requests(
 
 
 def uncertain_writes(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """An ERROR is not proof of denial after a write was dispatched. A policy DENY is
-    authoritative no-effect evidence; pre-dispatch holds/refusals have other statuses."""
+    """Dispatched writes that returned ERROR without a policy DENY, so their effect is unknown.
+    A policy DENY is authoritative no-effect evidence; pre-dispatch holds/refusals have other
+    statuses."""
     return [
         c
         for c in tool_calls

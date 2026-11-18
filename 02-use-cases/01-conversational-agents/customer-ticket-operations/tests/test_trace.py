@@ -172,7 +172,7 @@ def test_actual_live_schema_preserves_known_span_names_and_policy_latency(api, m
                     "trace_id": TRACE,
                     "traceId": TRACE,
                     "decision": "ALLOW",
-                    "policies": '["sec310_max3_v4_tenant_fence-de8s4zcraq"]',
+                    "policies": '["sec310_v4_tenant_fence-0000000000"]',
                     "policy_ms": "101",
                     "@message": "secret",
                 }
@@ -186,7 +186,7 @@ def test_actual_live_schema_preserves_known_span_names_and_policy_latency(api, m
         {
             "@timestamp": "2026-11-05 18:14:07.051",
             "decision": "ALLOW",
-            "policies": "sec310_max3_v4_tenant_fence-de8s4zcraq",
+            "policies": "sec310_v4_tenant_fence-0000000000",
             "policy_ms": "101",
         }
     ]
@@ -423,7 +423,7 @@ def test_http_loopback_real_handler_to_shipped_browser_live_schema(api, monkeypa
                     "trace_id": TRACE,
                     "traceId": TRACE,
                     "decision": "ALLOW",
-                    "policies": '["sec310_max3_v4_tenant_fence-de8s4zcraq"]',
+                    "policies": '["sec310_v4_tenant_fence-0000000000"]',
                     "policy_ms": "101",
                     "@message": "secret request",
                 }
@@ -509,7 +509,7 @@ def test_real_handler_mixed_gateway_records_render_safe_in_browser(api, monkeypa
                     "trace_id": TRACE,
                     "traceId": TRACE,
                     "decision": "ALLOW",
-                    "policies": '["sec310_max3_v4_tenant_fence-de8s4zcraq"]',
+                    "policies": '["sec310_v4_tenant_fence-0000000000"]',
                     "policy_ms": "101",
                     "@message": "secret request",
                 }

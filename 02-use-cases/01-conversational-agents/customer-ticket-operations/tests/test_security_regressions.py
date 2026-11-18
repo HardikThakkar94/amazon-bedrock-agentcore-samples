@@ -564,7 +564,7 @@ def test_expired_owner_hint_never_authorizes_reset_or_new_admission(api):
     api.app.claim_run("customer-a", "stale-owner", duration=-1)
     rec = api.app.public_state(ALICE)["recovery"]
     assert rec["required"] and rec["owner"] == "stale-owner"
-    assert "time" in rec["reason"] and "quiescence" in rec["next_step"]
+    assert "time" in rec["reason"] and "make recover" in rec["next_step"]
     assert request(api, "/api/reset")[0] == 409
     with pytest.raises(api.app.HttpError):
         api.app.claim_run("customer-a", "new-owner")

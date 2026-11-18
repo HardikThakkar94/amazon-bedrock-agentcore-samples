@@ -99,7 +99,7 @@ const sessionCookies = (cfg, realm, token, claims, ttl) => [
   setCookie(`sec310_as_${realm}`, encodeURIComponent(claims.username || ""), ttl),
 ];
 
-// ── presenter persona switch ──
+// Presenter persona switch
 const PRESENTER = "sec310_presenter"; // access token, sent only to /auth/*
 const PRESENTER_R = "sec310_presenter_r"; // refresh token, keeps the presenter signed in for the day
 const presenterCookies = (access, refresh, ttl) => [
@@ -148,7 +148,7 @@ async function signInAs(cfg, user) {
 }
 
 const firstOf = (cfg, realm) => Object.keys(cfg.personas).find((u) => realmOf(cfg.personas[u].role) === realm);
-// Browsers mark cross-site requests; a switch only follows a same-site click or a typed URL.
+// Browsers mark cross-site requests; a switch only follows a same-origin click or a typed URL.
 const crossSite = (headers) => ["cross-site", "same-site"].includes(headers["sec-fetch-site"]?.[0]?.value);
 
 // Return destinations are browser URLs, not string prefixes: WHATWG treats /\\host as //host.
@@ -324,7 +324,7 @@ async function callback(cfg, host, query, jar) {
   if (state.r === "op" && claims.role !== "operator")
     return page(403, "Operators only", "The operator console needs an operator persona such as alice or bob.", "Sign in as another user", "/auth/logout");
   if (state.r === "portal" && claims.role !== "customer")
-    return page(403, "Customers only", "The support portal needs a customer persona such as carol.", "Sign in as another user", "/auth/logout");
+    return page(403, "Customers only", "The Ticket Portal needs a customer persona such as carol.", "Sign in as another user", "/auth/logout");
   return redirect(returnPath(state.b, host), [...sessionCookies(cfg, state.r, tokens.access_token, claims, ttl), setCookie(`sec310_pkce_${nonce}`, "", 0)]);
 }
 
@@ -370,6 +370,6 @@ async function route(event) {
       setCookie(PRESENTER_R, "", 0, "/auth"),
     ]);
   }
-  if (uri === "/signed-out") return page(200, "Signed out", "Both the operator console and the customer portal sessions have ended.", "Sign in again", "/");
+  if (uri === "/signed-out") return page(200, "Signed out", "Both the operator console and the Ticket Portal sessions have ended.", "Sign in again", "/");
   return deny(404, "not found");
 }

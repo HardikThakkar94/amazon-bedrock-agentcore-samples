@@ -1,4 +1,4 @@
-# Account/Region-wide Bedrock model invocation logging (scripts/live_logging.py equivalent).
+# Account/Region-wide Bedrock model invocation logging.
 # In reuse mode the existing destination is referenced only; do not take ownership of it.
 locals {
   create_invocation_logging = var.existing_invocation_log_group == null

@@ -1,6 +1,6 @@
 """Pure rules for the versioned measured release gate.
 
-Replay probes are separately labelled Gateway/Runtime policy tests, never model trials. They
+Replay probes are separately labeled Gateway/Runtime policy tests, never model trials. They
 require affirmative dispatch/decision evidence; an empty effect diff alone cannot pass them.
 The code-based effect evaluator and benign Helpfulness floor remain independent requirements.
 """

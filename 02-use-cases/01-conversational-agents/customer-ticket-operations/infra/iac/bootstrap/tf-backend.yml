@@ -7,7 +7,7 @@ Parameters:
     Description: "Project name (lowercase, hyphenated)"
   Environment:
     Type: String
-    Default: "dev1"
+    Default: "demo"
     Description: "Environment name"
 
 Resources:

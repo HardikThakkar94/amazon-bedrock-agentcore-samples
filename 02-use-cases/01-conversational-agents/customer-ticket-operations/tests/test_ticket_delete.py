@@ -180,7 +180,7 @@ def test_state_write_failure_after_delete_keeps_exclusion_for_reconciliation(api
 
 
 def test_legacy_highest_deleted_id_never_reused_and_history_remains(api, monkeypatch):
-    """Reproduce R1: pre-upgrade portal rows lack portal_ticket_seq in tenant state."""
+    """Portal rows written before portal_ticket_seq existed have no sequence in tenant state."""
     ticket = "A-90"
     api.tables["tickets"].put_item(
         Item={

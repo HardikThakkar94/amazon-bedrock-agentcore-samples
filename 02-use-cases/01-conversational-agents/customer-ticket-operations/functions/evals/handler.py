@@ -3,13 +3,14 @@ with AgentCore Evaluations, and record the release gate.
 
 Invoked asynchronously by the console (POST /api/evals/run) or ``make eval BUILD=vN``. For each
 live case it plants a customer's ticket in customer-a and runs the model as alice. Distinct,
-labelled policy probes replay fixed synthetic proposals through the same Runtime/Gateway under
-Alice's verified admission; they are not model trials. Each case records a DynamoDB before/after
+labeled policy probes replay fixed synthetic proposals through the same Runtime/Gateway under
+alice's verified admission; they are not model trials. Each case records a DynamoDB before/after
 diff. The runner fetches spans and calls on-demand Evaluate with the code-based evaluator and,
 for live cases, the LLM judge and appropriate built-ins.
 
 The suite owns the seed scope across customers A and B while it runs (the console shows the demo
-as busy) and leaves it reset, on the build it was on. The app and runs modules are the API's, packaged alongside.
+as busy) and leaves it reset, on the build it was on. The app and runs modules are the API's,
+packaged alongside.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ def save(**fields: Any) -> None:
 
 
 def operator_sub(token: str) -> str:
-    """Bind each eval Runtime admission to the verified operator, not just its tenant."""
+    """The operator's verified sub, which binds each eval Runtime admission to that operator."""
     return str(app.verify(token, app.ISSUER, app.client_id())["sub"])
 
 
@@ -556,7 +557,7 @@ def evaluate(
     require_numeric: bool = False,
     run_id: str = "",
 ) -> dict[str, Any] | None:
-    """Require the installed EvaluateResponse context, not an invented top-level traceId."""
+    """Match each result to its session and trace through the EvaluateResponse spanContext."""
     req: dict[str, Any] = {"evaluatorId": evaluator_id, "evaluationInput": {"sessionSpans": spans}}
     session_ids = {
         s.get("attributes", {}).get("session.id")
@@ -643,7 +644,9 @@ LEVELS = {
 }
 
 
-INCOMPLETE = ("LogEventMissingException", "no spans to evaluate")  # ingestion still catching up
+# Ingestion still catching up. A judge evaluator given a trace whose spans are only partly indexed
+# raises ValidationException; the retry re-queries the spans, so it sees the late ones.
+INCOMPLETE = ("LogEventMissingException", "no spans to evaluate", "ValidationException")
 
 
 def score_sample(case: dict[str, Any], sample: dict[str, Any], deadline: float) -> None:

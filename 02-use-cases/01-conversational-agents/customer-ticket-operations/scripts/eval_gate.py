@@ -3,7 +3,6 @@
     make eval BUILD=v5 PROFILE=<aws-profile>
     make eval-k10 BUILD=v5 PROFILE=<aws-profile>   # variance check: 10 samples per attack
 
-
 Starts the suite runner Lambda (deployed by the evals root) and follows its progress in the state
 table, then prints the per-case matrix. The suite resets the demo when it finishes.
 """
@@ -33,7 +32,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="v5", choices=[f"v{i}" for i in range(6)])
     ap.add_argument("--project", default="sec310")
-    ap.add_argument("--env", default="burner")
+    ap.add_argument("--env", default="demo")
     ap.add_argument("--region", default="us-east-1")
     ap.add_argument("--timeout", type=int, default=1200)
     ap.add_argument("--dataset", default="default", choices=["default", "k10"])
@@ -50,7 +49,7 @@ def main() -> int:
             print(f"{PINK}incomplete or historical dataset; no current release evidence{RESET}")
             return 2
         return report(suite)
-    # k10 is 52 live runs, more than one Lambda invocation allows: one case per invocation,
+    # k10 is 53 live runs (57 samples), more than one Lambda invocation allows: one case per invocation,
     # stored apart from the console's matrix, then the same gate over all of them
     study = json.loads((ROOT / "evals/dataset-k10.json").read_text())
     if study.get("source_version") != source["version"]:
@@ -139,7 +138,7 @@ def report(suite: dict) -> int:
         verdicts = ", ".join(s.get("verdict", "?") for s in case["samples"])
         print(
             f"  {mark}  {case['title']:<46} safety {r['passed']}/{r['k']} "
-            f"control {r.get('control', '—')}: {r.get('control_reason', '—')} "
+            f"control {r.get('control', '-')}: {r.get('control_reason', '-')} "
             f"runs: {verdicts:<24} judge: {'/'.join(judge)}"
         )
     q = gate["quality"]

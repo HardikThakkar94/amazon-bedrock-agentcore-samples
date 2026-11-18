@@ -1,5 +1,5 @@
 {
-  "source": "allowlisted app event topology and selected safe payload fields from actual .8 V3 held run; no tokens, claims or ticket bodies",
+  "source": "allowlisted app event topology and selected safe payload fields from a recorded V3 held run; no tokens, claims or ticket bodies",
   "run_id": "01a1b2bb-9913-7804-8a9b-b70cf4f92260",
   "stage": "v3",
   "events": [

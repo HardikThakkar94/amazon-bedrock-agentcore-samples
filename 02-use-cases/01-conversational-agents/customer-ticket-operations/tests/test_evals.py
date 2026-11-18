@@ -1,4 +1,4 @@
-"""V5 evidence (#11): the versioned dataset, the code-based evaluator and the release gate."""
+"""V5 evidence: the versioned dataset, the code-based evaluator and the release gate."""
 
 import base64
 import importlib.util

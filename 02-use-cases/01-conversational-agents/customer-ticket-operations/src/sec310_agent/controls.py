@@ -1,18 +1,18 @@
 """Per-build controls in the agent. Everything else a build changes lives outside the agent:
 the Gateway it calls and that Gateway's AgentCore Policy (Cedar), defined in Terraform.
 
-    V0 unsafe    V0 gateway, no policy engine: whatever the model calls goes through
+    V0 unsafe      V0 gateway, no policy engine: whatever the model calls goes through
     V1 guardrails  V0 gateway + screen ticket text with Amazon Bedrock Guardrails
     V2 identity    V1 gateway: Cedar fence ties every call to the verified caller and their region;
                    Guardrails remains active. Cognito/JWT admission applies to every build.
-    V3 policy    + the harness holds every close_ticket the model proposes for the operator's
-                 approval and withholds model-proposed notes without a trusted task grant;
-                 V3 gateway: close_ticket only after that approval (an operator's
-                 confirm_close on the same ticket, used once: AgentCore Policy temporal permit over
-                 the policy session); the agent cannot approve
-    V4 contain   V4 gateway: + a cap on writes per session; any denial trips a circuit breaker that
-                 ends the run and leaves the agent read-only until an operator resets it
-    V5 evidence  same controls as V4; releases are gated on AgentCore Evaluations
+    V3 policy      + the harness holds every close_ticket the model proposes for the operator's
+                   approval and withholds model-proposed notes without a trusted task grant;
+                   V3 gateway: close_ticket only after that approval (an operator's
+                   confirm_close on the same ticket, used once: AgentCore Policy temporal
+                   permit over the policy session); the agent cannot approve
+    V4 contain     V4 gateway: + a cap on writes per session; any denial trips a circuit breaker
+                   that ends the run and leaves the agent read-only until an operator resets it
+    V5 evidence    same controls as V4; releases are gated on AgentCore Evaluations
 
 The operator's kill switch (stop) is separate from the breaker and applies to every build.
 A suite-only durable, exact-fixture note grant permits deterministic replay policy/cap probes,
@@ -49,7 +49,7 @@ def denied_by_policy(text: str) -> bool:
     return "policy" in t and ("denied" in t or "deny" in t or "not authorized" in t)
 
 
-# ── V1: screen untrusted ticket text before the model reads it ─────────────
+# V1: screen untrusted ticket text before the model reads it
 class Screen:
     """ApplyGuardrail (prompt attack, HIGH) on every list_tickets result. A hit replaces the
     result, so the injected text never reaches the model. Fails closed: if the guardrail cannot
@@ -144,7 +144,7 @@ class Screen:
         )
 
 
-# ── V4: circuit breaker; operator kill switch checked at admission ─────────
+# V4: circuit breaker; operator kill switch checked at admission
 @dataclass
 class CircuitBreaker:
     """Trips on the first Gateway denial (an AgentCore Policy DENY, including the write cap) or the

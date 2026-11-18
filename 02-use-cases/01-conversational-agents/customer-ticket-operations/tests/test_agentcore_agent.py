@@ -1,4 +1,4 @@
-"""Agent on AgentCore Runtime (#3): the API's run evidence, TicketTools, and the agent's identity."""
+"""Agent on AgentCore Runtime: the API's run evidence, TicketTools, and the agent's identity."""
 
 import base64
 import importlib.util
