@@ -8,7 +8,7 @@ terraform {
     }
     awscc = {
       source  = "hashicorp/awscc"
-      version = "~> 1.0" # Dogwood policies and Automated Reasoning are only in awscc
+      version = "~> 1.0" # Automated Reasoning resources are only in awscc
     }
   }
 }

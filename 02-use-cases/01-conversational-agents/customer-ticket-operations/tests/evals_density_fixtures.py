@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "tests/fixtures/evals_density"
 DATASET = json.loads((ROOT / "evals/dataset.json").read_text())
 VERSION = DATASET["version"]
-HISTORICAL_VERSION = VERSION.rsplit(".", 1)[0] + ".4"  # the ".4" columns in Hardik's screenshots
+HISTORICAL_VERSION = (
+    VERSION.rsplit(".", 1)[0] + ".4"
+)  # an earlier dataset revision, shown as a Historical column
 NOTE = (
     "VISUAL FIXTURE for the console's Evals matrix layout. Synthetic local data shaped like "
     "/api/evals; not live release evidence. DONE gates are recomputed by the real contract."
@@ -239,7 +241,7 @@ def v4_filtered_travel(case: dict[str, Any], i: int, build: str, rev: str) -> di
 
 
 def v0_live_failure(case: dict[str, Any], i: int, build: str, rev: str) -> dict[str, Any]:
-    """Hardik's second screenshot: safety FAIL 7/17, Helpfulness unscored 0/3, controls 0/17."""
+    """The second reference screenshot: safety FAIL 7/17, Helpfulness unscored 0/3, controls 0/17."""
     if case["kind"] == "benign" or case["id"] == "region_read":
         return unsafe(case, i, build, rev)
     if case["id"] == "encoded_injection" or (case["id"] == "blunt_injection" and i == 1):

@@ -707,7 +707,7 @@ class Recorder:
                 "harmful",
                 "portal ticket text in context",
                 detail={
-                    "note": "a ticket submitted through the customer portal is now in the prompt"
+                    "note": "a ticket submitted through the Ticket Portal is now in the prompt"
                 },
             )
         if call.decision == "DENY" and self.breaker is not None and not self.breaker.tripped:
@@ -879,7 +879,7 @@ def run(
     state_table: Any = None,
 ) -> dict[str, Any]:
     """One agent run on the build named in the payload. ``screen`` (V1 on) and ``state_table``
-    (V4 on) are supplied by the entrypoint; ``mode="replay"`` re-sends captured tool calls."""
+    (every build) are supplied by the entrypoint; ``mode="replay"`` re-sends captured tool calls."""
     from strands.tools.mcp import MCPClient
 
     from sec310_agent.controls import BUILDS, SESSION_HEADER, CircuitBreaker, at_least
@@ -1157,9 +1157,9 @@ def _completion_repair_allowed(recorder: Recorder, asked: list[str], stop: str) 
         for c in recorder.calls
     ):
         return False
-    # This is an additional refusal fence, not an authorization grant: the API already
-    # verified the operator's requested seed ticket. Require its current open own-tenant
-    # record in the genuine Gateway read; never inspect customer body text for authority.
+    # An extra refusal check that grants nothing: the API already verified the operator's
+    # requested seed ticket. Require its current open own-tenant record in the genuine
+    # Gateway read; never inspect customer body text for authority.
     try:
         if not any(
             isinstance(data := json.loads(c.result), dict)
@@ -1243,7 +1243,8 @@ def live(
         system_prompt=SAFE_PROMPT if recorder.stage in ("v3", "v4", "v5") else SYSTEM_PROMPT,
         hooks=[recorder],
         callback_handler=None,
-        # on every agent, model and tool span: the console's Trace view finds a run by these
+        # on every agent, model and tool span, for ad hoc CloudWatch queries; the console's
+        # Trace view correlates by session.id
         trace_attributes={"sec310.run_id": run_id, "sec310.build": recorder.stage},
     )
     prompt = (

@@ -31,8 +31,8 @@ import evals_density_fixtures as fixtures  # noqa: E402
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 VIEWPORTS = [(1920, 1080), (1440, 900), (1280, 800), (834, 900), (390, 844)]
 SCENARIOS = [
-    "running_mixed",  # Hardik's first screenshot: V0 current .9 RUNNING, V1-V5 historical .4
-    "v0_fail_current_hist4",  # Hardik's second screenshot: V0 DONE FAIL 7/17, 0/3 unscored, 0/17
+    "running_mixed",  # the first reference screenshot: V0 current .9 RUNNING, V1-V5 historical .4
+    "v0_fail_current_hist4",  # the second reference screenshot: V0 DONE FAIL 7/17, 0/3 unscored, 0/17
     "complete_pass_fail",
     "quality_missing_invalid",
     "invalid_dataset",
@@ -193,7 +193,7 @@ def exercise(browser, origin, shots: Path | None):
     page.clock.install()
     context.route("**/*", intercept)
     page.goto(origin, wait_until="domcontentloaded")
-    expect(page.locator("#custTitle")).to_have_text("Region A tickets (Operator Alice)")
+    expect(page.locator("#custTitle")).to_have_text("Region A tickets (operator alice)")
 
     def use(scenario: str, stage: str):
         payload = all_fixtures[scenario]
@@ -353,7 +353,7 @@ def exercise(browser, origin, shots: Path | None):
         )
         for cell in cells:
             assert cell["tag"] == "BUTTON" and "Details" in cell["label"]
-            if cell["text"] in ("Other revision", "Not scored", "—"):
+            if cell["text"] in ("Other revision", "Not scored", "-"):
                 continue  # neutral comparison triggers: no verdict text, only the disclosure
             assert ("✓" in cell["text"] or "✕" in cell["text"]) and (
                 "PASS" in cell["label"] or "FAIL" in cell["label"]
@@ -403,10 +403,10 @@ def exercise(browser, origin, shots: Path | None):
     assert page.locator("#drBody .evsum .c").count() == 0  # plain text, not a badge
     head_v0 = page.locator(".em thead tr:first-child th").nth(1)
     expect(head_v0).to_contain_text("V0")
-    expect(head_v0).to_contain_text("Current .9")
+    expect(head_v0).to_contain_text(f"Current {fixtures.VERSION}")
     for n in range(1, 6):
         expect(page.locator(".em thead tr:first-child th").nth(n + 1)).to_contain_text(
-            "Historical .4"
+            f"Historical {fixtures.HISTORICAL_VERSION}"
         )
         expect(page.locator(f'[data-key="v{n}:gate"]')).to_have_text("Not current")
         expect(page.locator(f'[data-key="v{n}:benign_summary"]')).to_have_text("Other revision")
@@ -622,7 +622,7 @@ def exercise(browser, origin, shots: Path | None):
     )
     expect(page.locator('[data-key="v2:gate"]')).to_have_text("SCORING")
     expect(page.locator("#drBody .evsum")).to_contain_text("V5 release gate PASS")
-    # Enabled Run suite keeps the existing confirmation: Cancel sends nothing, OK posts once.
+    # Enabled Run suite keeps its confirmation: Cancel sends nothing, OK posts once.
     use("complete_pass_fail", "v5")
     open_evals()
     expect(page.locator("#evalRun")).to_be_enabled()
@@ -636,7 +636,7 @@ def exercise(browser, origin, shots: Path | None):
     )
     assert posts() == [("POST", "/api/evals/run")]
     page.clock.run_for(4300)
-    # An agent run in flight disables the action too (existing semantics).
+    # An agent run in flight disables the action too.
     page.evaluate("polling = 123; renderEvals()")
     expect(page.locator("#evalRun")).to_be_disabled()
     assert "agent run" in page.locator("#evalRun").get_attribute("title")

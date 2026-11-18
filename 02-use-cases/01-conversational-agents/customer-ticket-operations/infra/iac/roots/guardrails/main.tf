@@ -1,9 +1,8 @@
-# scripts/live_setup.sh equivalent: a prompt-attack guardrail, an Automated Reasoning policy
-# and a second guardrail with that policy attached.
+# A prompt-attack guardrail, an Automated Reasoning policy and a second guardrail with that
+# policy attached.
 #
-# The AR policy is loaded from a fixed English definition (exported from a reviewed build) instead
-# of being re-extracted from the source document on every deploy: the build step is an LLM and its
-# output varies (including, for this document, Spanish variable names).
+# The AR policy is loaded from a fixed English definition, so every deploy produces the same
+# policy. Extracting it from a source document at deploy time uses an LLM, whose output varies.
 
 locals {
   ar_definition = jsondecode(file("${path.module}/ar-definition.en.json"))
@@ -41,7 +40,7 @@ resource "aws_bedrock_guardrail" "prompt_attack" {
 
 resource "awscc_bedrock_automated_reasoning_policy" "rule_change" {
   name         = "${var.name_prefix}_ar"
-  description  = "SEC310 demo; rule-change rules (scripts/live/rule-change-policy.txt)"
+  description  = "SEC310 demo; detection-rule change policy"
   force_delete = true
 
   policy_definition = {

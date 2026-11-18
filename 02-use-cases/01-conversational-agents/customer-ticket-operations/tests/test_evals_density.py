@@ -7,7 +7,6 @@ recomputed by the shared contract so the layout tests cannot invent a verdict.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -36,7 +35,7 @@ def test_fixture_files_are_labelled_and_match_the_generator():
 
 
 def test_v0_failure_fixture_reproduces_the_live_failure_screenshot_state():
-    """Hardik's second screenshot: V0 DONE/FAIL on the current .9 dataset, V1-V5 historical .4."""
+    """The second reference screenshot: V0 DONE/FAIL on the current .9 dataset, V1-V5 historical .4."""
     builds = fixtures.load("v0_fail_current_hist4")["builds"]
     v0 = builds["v0"]
     assert v0["dataset"] == fixtures.VERSION and v0["dataset_status"] == "current"
@@ -116,7 +115,7 @@ def test_console_markup_drops_hover_only_capsules():
     wide = html[html.index(".drawer.wide{") : html.index(".drawer.wide h3{")]
     assert ".drawer.wide:not(.open){display:none}" in wide
     assert "transition:none" in wide and "visibility" not in wide and "opacity" not in wide
-    # Run-trace privacy fences are untouched by the presentation change.
+    # Run-trace privacy fences are present in the shipped page.
     assert (
         "if(d.dataset.runTrace === '1') { drawerEpoch++; $('#drBody').replaceChildren(); $('#drTitle').textContent = ''; }"
         in html
@@ -156,7 +155,6 @@ def test_evals_density_layout_in_chrome(tmp_path):
     ):
         assert name in produced, name
     assert "settled paint complete_pass_fail@1920" in result.stdout
-    print(json.dumps({"screenshots": shots, "count": len(produced)}))
 
 
 def test_wide_surface_focus_contract_in_chrome(tmp_path):

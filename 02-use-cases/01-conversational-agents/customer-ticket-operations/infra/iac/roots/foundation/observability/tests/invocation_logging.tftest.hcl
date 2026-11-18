@@ -28,7 +28,7 @@ run "default_creates_fresh_logging" {
       length(time_sleep.iam_propagation) == 1 &&
       length(aws_bedrock_model_invocation_logging_configuration.this) == 1
     )
-    error_message = "Default mode must still create every fresh invocation-logging resource."
+    error_message = "Default mode must create every invocation-logging resource."
   }
 
   assert {
@@ -46,7 +46,7 @@ run "default_creates_fresh_logging" {
       aws_xray_trace_segment_destination.this.destination == "CloudWatchLogs" &&
       aws_xray_indexing_rule.default.rule[0].probabilistic[0].desired_sampling_percentage == 100
     )
-    error_message = "Default mode must preserve approved full tracing."
+    error_message = "Default mode must send spans to CloudWatch Logs and index 100% of them."
   }
 }
 
@@ -76,7 +76,7 @@ run "reuse_has_zero_logging_ownership" {
       aws_ssm_parameter.invocation_log_group.value == "/aws/bedrock/existing_example_invocations" &&
       output.invocation_log_group == "/aws/bedrock/existing_example_invocations"
     )
-    error_message = "Reuse mode must publish the existing group through the unchanged SSM contract."
+    error_message = "Reuse mode must publish the existing group through the same SSM parameter."
   }
 
   assert {
@@ -85,7 +85,7 @@ run "reuse_has_zero_logging_ownership" {
       aws_xray_indexing_rule.default.rule[0].probabilistic[0].desired_sampling_percentage == 100 &&
       aws_cloudwatch_log_resource_policy.xray.policy_name == "example_new_transaction_search"
     )
-    error_message = "Reuse mode must retain approved X-Ray destination, index and policy."
+    error_message = "Reuse mode must keep the X-Ray destination, indexing rule and resource policy."
   }
 }
 

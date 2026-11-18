@@ -1,8 +1,7 @@
-"""Observed native MCP grant is valid; event-owner IAM must permit post-grant update.
+"""A valid native MCP grant; event-owner IAM must permit the post-grant update.
 
-Only loopback stdlib HTTP and isolated conditional tables. This test demonstrates the
-specific post-grant failure that a permissive Events fake could not reveal; it does not
-claim deployed IAM state or change any Gateway/approval authority.
+Only loopback stdlib HTTP and isolated conditional tables. Covers an Events table that
+denies UpdateItem after the grant; it does not claim deployed IAM state.
 """
 
 from __future__ import annotations
@@ -251,7 +250,7 @@ def test_valid_native_gateway_grant_then_events_update_denial_causes_prior_502(
         return state_update(**kwargs)
 
     monkeypatch.setattr(api.tables["state"], "update_item", strict_state_update)
-    # Exact deployed IAM observation: Events PutItem/GetItem/Query, not UpdateItem.
+    # Simulate an Events role without UpdateItem (the shipped role grants it).
     monkeypatch.setattr(
         api.tables["events"],
         "update_item",

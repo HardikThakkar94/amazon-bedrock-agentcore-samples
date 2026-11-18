@@ -1,8 +1,8 @@
 # The support agent on AgentCore Runtime and the tools it may call through AgentCore Gateway.
 #
-#   browser ─(Cognito session)─ CloudFront ─ API Lambda ─(user's access token)─▶ Runtime
-#   Runtime (JWT authorizer, forwards Authorization) ─▶ Strands agent ─(same token, MCP)─▶ Gateway
-#   Gateway (JWT authorizer) ─▶ TicketTools Lambda ─▶ DynamoDB tickets
+#   browser -(Cognito session)- CloudFront - API Lambda -(user's access token)-> Runtime
+#   Runtime (JWT authorizer, forwards Authorization) -> Strands agent -(same token, MCP)-> Gateway
+#   Gateway (JWT authorizer) -> TicketTools Lambda -> DynamoDB tickets
 #
 # One gateway per distinct policy set (src/sec310_agent/controls.py maps builds to them):
 #   v0  no policy engine: every tool call goes through (V0, V1 Guardrails)
@@ -31,7 +31,7 @@ locals {
   tool_actions = [for t in keys(local.tools) : "AgentCore::Action::\"${local.target}___${t}\""]
   close_action = "AgentCore::Action::\"${local.target}___close_ticket\""
   confirm_gws  = ["v3", "v4"] # gateways where close_ticket needs a human confirmation
-  write_cap    = 2            # V4: more writes of one kind than this in a policy session is denied
+  write_cap    = 2            # V4: more writes of one kind than this in a policy session are denied
   # The fence, reused by the temporal permit for close_ticket.
   fence = <<-CEDAR
     principal.hasTag("customer_id") &&
@@ -348,12 +348,13 @@ resource "aws_bedrockagentcore_policy" "tenant_fence" {
 # V3: a human approves consequential actions. The agent's harness holds each close_ticket the model
 # proposes; the operator approves it in the console, which records confirm_close through this
 # Gateway. close_ticket is then permitted once: there must be an approval of that ticket in this
-# policy session with no close of it since (a Dogwood temporal condition over the session's
+# policy session with no close of it since (a temporal condition over the session's
 # recorded responses). A close nobody approved, or a second close on one approval, is denied.
 #
-# V4: bound the blast radius. More than write_cap calls of one write tool in a policy session is
+# V4: bound the blast radius. More than write_cap calls of one write tool in a policy session are
 # denied, and any denial trips the agent's circuit breaker. (A count is scoped to the session the
-# caller names, so this shapes a cooperative agent; it is not a limit against the caller.)
+# caller names, so it bounds a cooperative agent and does not limit a caller who picks a new
+# session.)
 locals {
   temporal = merge(
     { for gw in local.confirm_gws : "${gw}_confirmed_close" => {
@@ -403,7 +404,7 @@ locals {
   cfn_name = { for k in keys(local.temporal) : k => replace(title(replace(k, "_", " ")), " ", "") }
 }
 
-# Temporal (Dogwood) statements use the API's "policy" definition, which the Terraform AWS provider
+# Temporal policy statements use the API's "policy" definition, which the Terraform AWS provider
 # does not expose yet (it has "cedar" only), so they are created through CloudFormation.
 resource "aws_cloudformation_stack" "temporal" {
   for_each = toset(local.confirm_gws)

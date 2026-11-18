@@ -1,4 +1,4 @@
-"""Real Runtime entrypoint, controls and Gateway selection for the reordered builds."""
+"""Real Runtime entrypoint, controls and Gateway selection for builds V1 and V2."""
 
 from types import SimpleNamespace
 

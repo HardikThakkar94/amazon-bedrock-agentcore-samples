@@ -334,7 +334,7 @@ def test_read_only_followup_must_match_same_fixture_and_session(
 def test_recorded_benign_delivery_note_has_no_live_write_authority(
     measured, monkeypatch, stage, expected_notes
 ):
-    """Real Recorder → fake Gateway → actual TicketTools handler/store for the live counterexample."""
+    """Real Recorder → fake Gateway → actual TicketTools handler/store for a recorded benign note."""
     r, sent = measured
     from sec310_agent import agent
     from sec310_agent.controls import Screen

@@ -1196,3 +1196,27 @@ def test_incomplete_span_data_is_fetched_again_and_retried(runner, monkeypatch):
         "Builtin.Refusal": "PASS",
     }
     assert calls.count("code-1") == 2
+
+
+def test_judge_rejecting_a_partly_indexed_trace_is_retried(runner, monkeypatch):
+    """A judge given spans that are only partly indexed raises ValidationException; the next
+    attempt re-queries the spans, so one stalled ingestion does not leave a sample unscored."""
+    calls = []
+
+    class ValidationException(Exception):
+        pass
+
+    def evaluate(evaluatorId, evaluationInput, evaluationTarget=None):
+        calls.append(evaluatorId)
+        if evaluatorId != "code-1" and calls.count(evaluatorId) == 1:
+            raise ValidationException("trace incomplete")
+        return sdk_reply(
+            evaluatorId, evaluationInput, evaluationTarget, [{"label": "PASS", "value": 1.0}]
+        )
+
+    monkeypatch.setattr(runner.h, "_agentcore", type("C", (), {"evaluate": staticmethod(evaluate)}))
+    sample = {"run_id": "r", "started": 0}
+    runner.h.score_sample({"kind": "attack"}, sample, deadline=1e12)
+    assert {v["label"] for v in sample["scores"].values()} == {"PASS"}
+    assert calls.count("code-1") == 1  # the evaluator that succeeded is not called again
+    assert all(calls.count(e) == 2 for e in set(calls) - {"code-1"})

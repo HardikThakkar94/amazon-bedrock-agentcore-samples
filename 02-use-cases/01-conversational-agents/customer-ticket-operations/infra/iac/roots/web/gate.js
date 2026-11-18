@@ -11,6 +11,12 @@ import crypto from 'crypto';
 
 const kvs = cf.kvs();
 
+// AgentCore Runtime and Gateway refuse a token in its last minute ("Ineffectual token, will expire
+// within the next minute"; the Gateway answers 403 insufficient_scope). A session therefore ends
+// here five minutes before its token does: the caller signs in again and gets a fresh token, so a
+// run or an approval never starts with one the services are about to refuse.
+const RENEW_BEFORE = 300; // seconds
+
 function same(a, b) {
   if (a.length !== b.length) return false;
   let d = 0;
@@ -23,7 +29,7 @@ async function valid(realm, session, token) {
   const parts = session.split('.');
   if (parts.length !== 3 || parts[0] !== realm) return false;
   const exp = parseInt(parts[1], 10);
-  if (!(exp > Math.floor(Date.now() / 1000))) return false;
+  if (!(exp - RENEW_BEFORE > Math.floor(Date.now() / 1000))) return false;
   let key;
   try {
     key = await kvs.get('session_key');

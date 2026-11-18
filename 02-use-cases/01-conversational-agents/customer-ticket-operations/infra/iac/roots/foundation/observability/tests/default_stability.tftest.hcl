@@ -1,5 +1,5 @@
-# A mocked clean-state default apply and replan must retain the original output/SSM
-# contract; the seven moved declarations in main.tf cover legacy uncounted addresses.
+# Default mode: a mocked apply then replan on a clean state; the output and the SSM pointer
+# name the created log group.
 mock_provider "aws" {
   mock_resource "aws_iam_role" {
     defaults = {
@@ -35,7 +35,7 @@ run "default_apply" {
 
   assert {
     condition     = output.invocation_log_group == "/aws/bedrock/example_new_invocations"
-    error_message = "Default-mode apply must still return the newly created log group."
+    error_message = "Default-mode apply must return the newly created log group."
   }
 }
 
@@ -47,6 +47,6 @@ run "default_replan" {
       aws_ssm_parameter.invocation_log_group.value == output.invocation_log_group &&
       aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].cloudwatch_config[0].log_group_name == output.invocation_log_group
     )
-    error_message = "After a default apply, the account-wide config and SSM pointer must still match the output."
+    error_message = "After a default apply, the account-wide config and SSM pointer must match the output."
   }
 }

@@ -10,6 +10,7 @@ const policy = html.split('const POLICY_TEXT = ')[1].split('/* ── edges')[0]
 const drawer = html.split('const TRACE_COLS = ')[1].split('\nfunction closeTrace()')[0];
 const body = {innerHTML: ''}, panel = {dataset: {from: 'cw', runTrace: '1'}};
 const ctx = vm.createContext({
+  setTimeout: () => 0, // the drawer's re-query timer is recorded by cloud_trace_handler.mjs
   $: selector => selector === '#drBody' ? body : panel,
   RUN: {run_id: run, events: []}, STATE: {persona:{customer_id:'customer-a'}, policy_session:'policy-1', recorded_run:{run_id:run}}, drawerEpoch:1,
   build: () => 5, traceBuild: () => 5,
@@ -22,7 +23,7 @@ const ctx = vm.createContext({
 vm.runInContext(`${esc} const POLICY_TEXT = ${policy} const TRACE_COLS = ${drawer}\nthis.cloudTrace = cloudTrace;`, ctx);
 await ctx.cloudTrace(run);
 assert.match(body.innerHTML, /execute_tool TicketTools___list_tickets/);
-assert.match(body.innerHTML, /sec310_max3_v4_tenant_fence-de8s4zcraq/);
+assert.match(body.innerHTML, /sec310_v4_tenant_fence-0000000000/);
 assert.match(body.innerHTML, /101/);
 assert.match(body.innerHTML, /ALLOW/);
 assert.doesNotMatch(body.innerHTML, /secret request|@message|foreign-policy|requestBody/);

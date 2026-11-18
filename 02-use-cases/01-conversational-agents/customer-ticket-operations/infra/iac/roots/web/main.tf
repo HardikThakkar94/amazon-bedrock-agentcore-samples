@@ -269,7 +269,7 @@ data "aws_cloudfront_origin_request_policy" "all_except_host" {
 
 resource "aws_cloudfront_response_headers_policy" "security" {
   name = "${var.name_prefix}_security"
-  # Every response is per-user and changes with each deploy: browsers must revalidate, never guess.
+  # Every response is per-user and changes with each deploy, so browsers must revalidate.
   custom_headers_config {
     items {
       header   = "Cache-Control"
@@ -419,7 +419,7 @@ resource "aws_cognito_managed_login_branding" "web" {
   client_id    = aws_cognito_user_pool_client.web.id
   settings     = jsonencode(jsondecode(file("${path.module}/branding/settings.json")))
 
-  # Official AWS logo (reverse) and AWS re:Invent wordmark, from the re:Invent 2026 deck template.
+  # AWS logo (reverse) and AWS re:Invent wordmark.
   asset {
     category   = "PAGE_HEADER_LOGO"
     color_mode = "DARK"
@@ -432,7 +432,7 @@ resource "aws_cognito_managed_login_branding" "web" {
     extension  = "PNG"
     bytes      = filebase64("${path.module}/branding/reinvent-wordmark.png")
   }
-  # Smooth crimson → violet → blue field, generated once (same palette as the customer portal hero).
+  # Background gradient, crimson to violet to blue (same palette as the customer portal hero).
   asset {
     category   = "PAGE_BACKGROUND"
     color_mode = "DARK"

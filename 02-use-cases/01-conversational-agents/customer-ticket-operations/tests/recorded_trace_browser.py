@@ -1,6 +1,6 @@
 """Shipped Chrome: tenant-owned recorded run hydration, playback and stale GET fences.
 
-The 19-hop fixture is an allowlisted projection of the actual .8 V3 held run;
+The 19-hop fixture is an allowlisted projection of a recorded V3 held run;
 all HTTP is intercepted on 127.0.0.1. This does not query AWS or run a model.
 """
 

@@ -1,12 +1,12 @@
 """Wide-surface focus contract in installed Chrome, under both motion preferences.
 
-Round-3 regression for the Evals/Architecture surface: after the wide surface was closed and the
-page sat idle, re-opening it (Evals button, V5 "Evaluations architecture", nested Architecture
+After the wide Evals/Architecture surface is closed and the
+page sits idle, re-opening it (Evals button, V5 "Evaluations architecture", nested Architecture
 roundtrip) and opening ordinary run-hop / CloudWatch / controls drawers must move keyboard focus
 onto the drawer's Close button synchronously, exactly as the deployed console does. Under
-`prefers-reduced-motion: reduce` the global 1ms transition rule used to turn the closed surface's
-visibility into a transition, so `#drClose.focus()` ran while the button was still hidden and
-focus stayed on the trigger behind the surface; Tab then reached the page player.
+`prefers-reduced-motion: reduce` a global 1ms transition rule applies, so a visibility transition
+on the closed surface would let `#drClose.focus()` run while the button is still hidden, leaving
+focus on the trigger behind the surface where Tab reaches the page player.
 
 Loopback mocks only; no downloads; no network beyond 127.0.0.1. UI_SCREENSHOTS keeps PNG evidence.
 """
@@ -146,7 +146,7 @@ def exercise(browser, origin: str, shots: Path | None):
         expect_focus(page, where, "#evalBtn", "focus return after closing Evals")
         idle()
         closed_wide_unreachable(page, where, "closed Evals")
-        # Re-open after idling: this is the path that used to leave focus behind the surface.
+        # Re-open after idling: focus must land on Close, not stay behind the surface.
         page.keyboard.press("Enter")
         page.wait_for_function("!!document.querySelector('#drBody .evtool')")
         expect_focus(page, where, "#drClose", f"Evals re-open after {IDLE_MS}ms idle")
@@ -219,7 +219,7 @@ def exercise(browser, origin: str, shots: Path | None):
         page.on("pageerror", lambda error: errors.append(str(error)))
         context.route("**/*", intercept)
         page.goto(origin, wait_until="domcontentloaded")
-        expect(page.locator("#custTitle")).to_have_text("Region A tickets (Operator Alice)")
+        expect(page.locator("#custTitle")).to_have_text("Region A tickets (operator alice)")
         assert page.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches") is (
             motion == "reduce"
         ), motion
