@@ -21,9 +21,13 @@ This sample is a support-ticket agent built with Amazon Bedrock AgentCore. Custo
 
 ### Use case Architecture
 
-![Architecture](images/customer-ticket-operations-architecture.png)
+![Architecture: operators and a customer reach the ticket API through Amazon CloudFront; the API invokes the agent on AgentCore Runtime, which calls tools through AgentCore Gateway](images/customer-ticket-operations-architecture.png)
 
-Users sign in through Amazon Cognito. Amazon CloudFront serves the operator console and the Ticket Portal from Amazon S3 and forwards API calls, with the user's token, to the ticket API on AWS Lambda. The API invokes the agent on AgentCore Runtime with the same token. From V1 on, the agent screens ticket text with Amazon Bedrock Guardrails. The agent reaches its tools only through AgentCore Gateway. From V2 on, AgentCore Policy authorizes each call before the TicketTools Lambda function reads or changes a ticket in Amazon DynamoDB. Operator approvals go from the ticket API through the same Gateway. The ticket API writes portal submissions and demo resets to DynamoDB directly. An evaluation runner scores suite runs with AgentCore Evaluations. Logs and traces go to Amazon CloudWatch, and the console reads them back as evidence for each run. The diagram shows the request path; the build (AWS CodeBuild, Amazon ECR) and configuration (AWS Secrets Manager, Parameter Store) are left out.
+Users sign in through Amazon Cognito. Amazon CloudFront serves the operator console and the Ticket Portal from Amazon S3 and forwards API calls, with the user's token, to the ticket API on AWS Lambda. The API invokes the agent on AgentCore Runtime with the same token. From V1 on, the agent screens ticket text with Amazon Bedrock Guardrails. The agent reaches its tools only through AgentCore Gateway. From V2 on, AgentCore Policy authorizes each call before the TicketTools Lambda function reads or changes a ticket in Amazon DynamoDB. Operator approvals go from the ticket API through the same Gateway. The ticket API writes portal submissions and demo resets to DynamoDB directly. An evaluation runner scores suite runs with AgentCore Evaluations. Logs and traces go to Amazon CloudWatch, and the console reads them back as evidence for each run.
+
+The second diagram adds the controls and the evidence path: Amazon Bedrock Guardrails, AgentCore Policy, AgentCore Evaluations and Amazon CloudWatch. The build (AWS CodeBuild, Amazon ECR) and configuration (AWS Secrets Manager, Parameter Store) are left out of both.
+
+![Controls and evidence path](images/customer-ticket-operations-controls.png)
 
 ### Use case key Features
 
