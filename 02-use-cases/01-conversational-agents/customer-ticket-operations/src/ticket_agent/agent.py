@@ -311,7 +311,7 @@ class Recorder:
 
     @property
     def policy(self) -> bool:
-        from sec310_agent.controls import at_least
+        from ticket_agent.controls import at_least
 
         return at_least(self.stage, "v2")
 
@@ -333,7 +333,7 @@ class Recorder:
             self.events.emit(*args, **kw)
 
     def model_start(self, event: Any) -> None:
-        from sec310_agent.controls import MAX_TURNS
+        from ticket_agent.controls import MAX_TURNS
 
         self.turn += 1
         if self.turn > MAX_TURNS:  # a bounded loop: the run cannot spin forever
@@ -355,7 +355,7 @@ class Recorder:
                 {
                     "operation": "bedrock-runtime:Converse",
                     "modelId": self.model_id,
-                    "requestMetadata": {"sec310_run": self.run_id},
+                    "requestMetadata": {"ticketops_run": self.run_id},
                     "system": SAFE_PROMPT if self.stage in ("v3", "v4", "v5") else SYSTEM_PROMPT,
                     "toolConfig.tools": list(getattr(agent, "tool_names", None) or []),
                     "messages in context": len(messages),
@@ -631,7 +631,7 @@ class Recorder:
         call.result = text[:2000]
         call.seconds = round(time.monotonic() - call.seconds, 3)
         ticket = call.input.get("ticket_id")
-        from sec310_agent.controls import denied_by_policy
+        from ticket_agent.controls import denied_by_policy
 
         if self.policy:
             call.decision = (
@@ -882,8 +882,8 @@ def run(
     (every build) are supplied by the entrypoint; ``mode="replay"`` re-sends captured tool calls."""
     from strands.tools.mcp import MCPClient
 
-    from sec310_agent.controls import BUILDS, SESSION_HEADER, CircuitBreaker, at_least
-    from sec310_agent.events import Events
+    from ticket_agent.controls import BUILDS, SESSION_HEADER, CircuitBreaker, at_least
+    from ticket_agent.events import Events
 
     claims = claims_of(token)
     actor = actor_from(claims)
@@ -1113,7 +1113,7 @@ def _requested_close_held(recorder: Recorder, asked: list[str]) -> bool:
 
 def _completion_repair_allowed(recorder: Recorder, asked: list[str], stop: str) -> bool:
     """Fresh owned read and screened text, no prior side effect, denial or pending card."""
-    from sec310_agent.controls import MAX_TURNS
+    from ticket_agent.controls import MAX_TURNS
 
     if (
         recorder.stage not in ("v3", "v4", "v5")
@@ -1225,7 +1225,7 @@ def live(
     from strands import Agent
     from strands.models import BedrockModel
 
-    from sec310_agent.tool_projection import project_gateway_tools
+    from ticket_agent.tool_projection import project_gateway_tools
 
     asked = payload["requests"]  # complete frozen task validated before breaker admission
     # One initialized Gateway tools/list, then a model-only deep-copied view. The raw
@@ -1235,7 +1235,7 @@ def live(
         model_id=model_id,
         streaming=False,
         max_tokens=2000,
-        additional_args={"requestMetadata": {"sec310_run": run_id}},
+        additional_args={"requestMetadata": {"ticketops_run": run_id}},
     )
     agent = Agent(
         model=model,
@@ -1245,7 +1245,7 @@ def live(
         callback_handler=None,
         # on every agent, model and tool span, for ad hoc CloudWatch queries; the console's
         # Trace view correlates by session.id
-        trace_attributes={"sec310.run_id": run_id, "sec310.build": recorder.stage},
+        trace_attributes={"ticketops.run_id": run_id, "ticketops.build": recorder.stage},
     )
     prompt = (
         f"Verified operator {payload.get('operator') or 'the operator'} is working in "

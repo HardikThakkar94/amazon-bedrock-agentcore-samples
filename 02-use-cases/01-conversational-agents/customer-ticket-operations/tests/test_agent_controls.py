@@ -10,7 +10,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from sec310_agent.agent import run
+from ticket_agent.agent import run
 
 ACTOR = {"user_sub": "sub-alice", "customer_id": "customer-a"}
 DENIED = "Tool call denied by AgentCore Policy: not authorized"
@@ -138,7 +138,7 @@ def replay(stage, calls=CAPTURE, extra=None, **controls):
 
 
 def screen(client):
-    from sec310_agent.controls import Screen
+    from ticket_agent.controls import Screen
 
     return Screen("gr-1", "1", client=client)
 
@@ -176,7 +176,7 @@ def test_replay_records_a_gateway_failure_and_carries_on():
 
 
 def test_live_mode_is_the_default(monkeypatch):
-    from sec310_agent import tool_projection
+    from ticket_agent import tool_projection
 
     def live_only(gateway, fields):
         raise RuntimeError("live tool registration requested")
@@ -235,7 +235,7 @@ def test_v2_screen_block_ends_the_replay_before_any_write():
 @pytest.mark.parametrize("stage", ["v4", "v5"])
 def test_dependency_validation_error_is_unavailable_not_a_guardrail_block(stage, monkeypatch):
     from functions.api import runs as api_runs
-    from sec310_agent.events import Events
+    from ticket_agent.events import Events
 
     observed = []
     monkeypatch.setattr(Events, "emit", lambda self, kind, *args, **kw: observed.append((kind, kw)))
@@ -474,7 +474,7 @@ def test_earlier_policy_decision_outranks_later_local_exhaustion():
 
 
 def test_live_hook_exhaustion_cancels_and_withholds_later_valid_calls(monkeypatch):
-    import sec310_agent.agent as module
+    import ticket_agent.agent as module
     from functions.api import runs as api_runs
 
     FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
@@ -529,7 +529,7 @@ def test_live_hook_exhaustion_cancels_and_withholds_later_valid_calls(monkeypatc
 
 
 def test_runtime_hook_repairs_nested_read_then_screens_valid_own_result(monkeypatch):
-    import sec310_agent.agent as module
+    import ticket_agent.agent as module
     from functions.api import runs as api_runs
 
     FakeGateway.replies = {"list_tickets": {"status": "success", "content": [{"text": TICKETS}]}}
@@ -660,7 +660,7 @@ def test_runtime_stage_downgrade_and_missing_owner_refused_before_gateway():
 
 
 def test_runtime_rejects_retired_session_foreign_owner_and_unmatched_approval():
-    from sec310_agent.controls import SESSION_HEADER
+    from ticket_agent.controls import SESSION_HEADER
 
     expected = {
         "owner": "r1",
@@ -726,7 +726,7 @@ def test_agent_confirm_close_carries_run_id_so_policy_can_forbid_it():
 
 
 def test_v3_live_hook_holds_every_close_for_approval_and_sends_nothing():
-    from sec310_agent.agent import Recorder
+    from ticket_agent.agent import Recorder
 
     rec = Recorder(dict(ACTOR), run_id="r1", stage="v3", approvals=True)
     close = SimpleNamespace(
@@ -956,8 +956,8 @@ def test_v4_admits_when_no_stop_is_set():
 
 
 def test_v4_turn_limit_trips_the_breaker():
-    from sec310_agent.agent import Recorder
-    from sec310_agent.controls import MAX_TURNS, CircuitBreaker
+    from ticket_agent.agent import Recorder
+    from ticket_agent.controls import MAX_TURNS, CircuitBreaker
 
     table = StateTable()
     rec = Recorder(ACTOR, stage="v4", breaker=CircuitBreaker("customer-a", table))
@@ -987,8 +987,8 @@ def app(monkeypatch):
     monkeypatch.setenv("GUARDRAIL_VERSION", "2")
     monkeypatch.setenv("STATE_TABLE", "state")
     monkeypatch.setenv("MODEL_ID", "m")
-    monkeypatch.delitem(sys.modules, "sec310_agent.app", raising=False)
-    return importlib.import_module("sec310_agent.app")
+    monkeypatch.delitem(sys.modules, "ticket_agent.app", raising=False)
+    return importlib.import_module("ticket_agent.app")
 
 
 @pytest.mark.parametrize(
@@ -1049,7 +1049,7 @@ def test_invoke_runs_the_payload_build(app, monkeypatch):
 # ── V5: cumulative enforcement at the deployed Runtime entrypoint ─────────
 def test_v5_entrypoint_clean_denial_retains_identity_guardrail_policy_and_breaker(app, monkeypatch):
     """Invoke the real app.invoke → run → Recorder replay path, without AWS/model calls."""
-    import sec310_agent.events as event_module
+    import ticket_agent.events as event_module
 
     seen = []
     original = event_module.Events.emit
@@ -1133,7 +1133,7 @@ def test_v5_entrypoint_open_breaker_preserves_read_allow_and_never_dispatches_wr
 
 def test_v5_entrypoint_live_close_is_held_before_gateway(app, monkeypatch):
     """Stub the model turn only; real entrypoint/Recorder must hold an unapproved close."""
-    import sec310_agent.agent as agent_module
+    import ticket_agent.agent as agent_module
 
     table = StateTable({"busy_stage": "v5"})
     monkeypatch.setattr(

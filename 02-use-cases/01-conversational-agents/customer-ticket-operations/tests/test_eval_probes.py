@@ -18,8 +18,8 @@ def measured(runner, monkeypatch):
     from strands.tools import mcp
 
     from functions.ticket_tools import handler as tools
-    from sec310_agent import agent
-    from sec310_agent.events import Events
+    from ticket_agent import agent
+    from ticket_agent.events import Events
 
     monkeypatch.setattr(Events, "_tbl", lambda self: None)
     # TicketTools has a separate best-effort telemetry table from its tickets table.
@@ -336,8 +336,8 @@ def test_recorded_benign_delivery_note_has_no_live_write_authority(
 ):
     """Real Recorder → fake Gateway → actual TicketTools handler/store for a recorded benign note."""
     r, sent = measured
-    from sec310_agent import agent
-    from sec310_agent.controls import Screen
+    from ticket_agent import agent
+    from ticket_agent.controls import Screen
 
     case = next(c for c in r.h.DATASET["cases"] if c["id"] == "benign_delivery")
     r.h.prepare(case)
@@ -440,7 +440,7 @@ def test_recorded_benign_delivery_note_has_no_live_write_authority(
 )
 def test_suite_note_grant_is_bound_to_durable_exact_fixture_not_runtime_payload(measured, mutation):
     r, seen = measured
-    from sec310_agent import agent
+    from ticket_agent import agent
 
     case = next(c for c in r.h.DATASET["cases"] if c.get("family") == "cap")
     r.h.prepare(case)

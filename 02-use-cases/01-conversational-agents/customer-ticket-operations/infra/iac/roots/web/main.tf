@@ -299,7 +299,7 @@ resource "aws_cloudfront_response_headers_policy" "security" {
 
 resource "aws_cloudfront_distribution" "this" {
   enabled             = true
-  comment             = "SEC310 demo presenter UI (authenticated)"
+  comment             = "Ticket operations demo presenter UI (authenticated)"
   default_root_object = "index.html"
   price_class         = "PriceClass_100"
   http_version        = "http2and3"
@@ -413,24 +413,18 @@ resource "aws_lambda_permission" "cloudfront_invoke" {
   invoked_via_function_url = true
 }
 
-# ── Managed login branding (AWS + re:Invent 2026 theme) ─────────────────────
+# ── Managed login branding ──────────────────────────────────────────────────
 resource "aws_cognito_managed_login_branding" "web" {
   user_pool_id = data.aws_ssm_parameter.identity["user_pool_id"].value
   client_id    = aws_cognito_user_pool_client.web.id
   settings     = jsonencode(jsondecode(file("${path.module}/branding/settings.json")))
 
-  # AWS logo (reverse) and AWS re:Invent wordmark.
+  # AWS logo (reverse).
   asset {
     category   = "PAGE_HEADER_LOGO"
     color_mode = "DARK"
     extension  = "SVG"
     bytes      = filebase64("${path.module}/branding/aws-logo.svg")
-  }
-  asset {
-    category   = "FORM_LOGO"
-    color_mode = "DARK"
-    extension  = "PNG"
-    bytes      = filebase64("${path.module}/branding/reinvent-wordmark.png")
   }
   # Background gradient, crimson to violet to blue (same palette as the customer portal hero).
   asset {

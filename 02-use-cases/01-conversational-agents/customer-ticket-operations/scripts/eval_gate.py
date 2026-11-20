@@ -31,7 +31,7 @@ GREEN, PINK, DIM, RESET = "\033[38;2;110;231;80m", "\033[38;2;255;77;139m", "\03
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="v5", choices=[f"v{i}" for i in range(6)])
-    ap.add_argument("--project", default="sec310")
+    ap.add_argument("--project", default="ticketops")
     ap.add_argument("--env", default="demo")
     ap.add_argument("--region", default="us-east-1")
     ap.add_argument("--timeout", type=int, default=1200)

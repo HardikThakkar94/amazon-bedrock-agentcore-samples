@@ -4,7 +4,7 @@
 #   Runtime (JWT authorizer, forwards Authorization) -> Strands agent -(same token, MCP)-> Gateway
 #   Gateway (JWT authorizer) -> TicketTools Lambda -> DynamoDB tickets
 #
-# One gateway per distinct policy set (src/sec310_agent/controls.py maps builds to them):
+# One gateway per distinct policy set (src/ticket_agent/controls.py maps builds to them):
 #   v0  no policy engine: every tool call goes through (V0, V1 Guardrails)
 #   v1  AgentCore Policy: a call must be for the caller and their scope (V2 Identity)
 #   v3  v1's fence; close_ticket only after the operator's confirm_close     (V3)

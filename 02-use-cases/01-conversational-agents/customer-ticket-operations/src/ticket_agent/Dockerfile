@@ -5,13 +5,13 @@ FROM public.ecr.aws/docker/library/python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 
-COPY sec310_agent/requirements.txt ./requirements.txt
+COPY ticket_agent/requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
 # Readable but not writable by the runtime user, regardless of the checkout's file modes.
-COPY sec310_agent ./sec310_agent
-RUN chmod -R a+rX,go-w sec310_agent && useradd --uid 10001 --create-home agent
+COPY ticket_agent ./ticket_agent
+RUN chmod -R a+rX,go-w ticket_agent && useradd --uid 10001 --create-home agent
 USER agent
 
 EXPOSE 8080
-CMD ["opentelemetry-instrument", "python", "-m", "sec310_agent.app"]
+CMD ["opentelemetry-instrument", "python", "-m", "ticket_agent.app"]

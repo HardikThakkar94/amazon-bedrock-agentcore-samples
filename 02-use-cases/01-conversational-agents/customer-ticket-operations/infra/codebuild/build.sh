@@ -35,15 +35,15 @@ done
 
 # Web bundle, plus the agent's per-build controls as served source for the console's code view
 cp -R web/. "$OUT/web/"
-mkdir -p "$OUT/web/code" && cp src/sec310_agent/controls.py "$OUT/web/code/controls.py.txt"
+mkdir -p "$OUT/web/code" && cp src/ticket_agent/controls.py "$OUT/web/code/controls.py.txt"
 
 # Agent image (linux/arm64, native on this ARM build host). Tagged by a hash of its sources, so an
 # unchanged agent is not rebuilt and an immutable tag always means the same code.
-AGENT_TAG="agent-$(cd src && find sec310_agent -type f ! -path '*/__pycache__/*' ! -name '*.pyc' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)"
+AGENT_TAG="agent-$(cd src && find ticket_agent -type f ! -path '*/__pycache__/*' ! -name '*.pyc' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)"
 REGISTRY="${ECR_REPOSITORY%%/*}"
 if ! aws ecr describe-images --repository-name "${ECR_REPOSITORY#*/}" --image-ids imageTag="$AGENT_TAG" >/dev/null 2>&1; then
   aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
-  docker build --platform linux/arm64 -f src/sec310_agent/Dockerfile -t "$ECR_REPOSITORY:$AGENT_TAG" src
+  docker build --platform linux/arm64 -f src/ticket_agent/Dockerfile -t "$ECR_REPOSITORY:$AGENT_TAG" src
   docker push --quiet "$ECR_REPOSITORY:$AGENT_TAG"
 fi
 AGENT_DIGEST="$(aws ecr describe-images --repository-name "${ECR_REPOSITORY#*/}" --image-ids imageTag="$AGENT_TAG" --query 'imageDetails[0].imageDigest' --output text)"

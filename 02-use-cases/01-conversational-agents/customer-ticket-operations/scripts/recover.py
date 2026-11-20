@@ -80,7 +80,7 @@ def release(table: Any, row: dict[str, Any], *, force: bool, now: float) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--project", default="sec310")
+    ap.add_argument("--project", default="ticketops")
     ap.add_argument("--env", default="demo")
     ap.add_argument("--region", default="us-east-1")
     ap.add_argument("--force", action="store_true", help="release a lock whose time is not up")

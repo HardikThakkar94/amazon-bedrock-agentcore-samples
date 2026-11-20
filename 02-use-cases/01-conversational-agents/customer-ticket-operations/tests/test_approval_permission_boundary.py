@@ -12,9 +12,9 @@ import urllib.request
 import pytest
 
 from functions.ticket_tools import handler as tools
-from sec310_agent import agent as runtime
 from tests.test_security_regressions import held, request
 from tests.test_tool_projection_http import ACTOR
+from ticket_agent import agent as runtime
 
 pytest_plugins = ("tests.test_security_regressions", "tests.test_tool_projection_http")
 

@@ -79,7 +79,7 @@ const auth = await handler(req("/auth/login", "", jar));
 const nonce = new URL(location(auth)).searchParams.get("state");
 const callback = await handler(req("/auth/callback", new URLSearchParams({ code: "code", state: nonce }).toString(), jar));
 assert.equal(location(callback), "/");
-const presenterJar = { sec310_presenter: loginToken, sec310_as_op: "alice" };
+const presenterJar = { ticketops_presenter: loginToken, ticketops_as_op: "alice" };
 const auto = await handler(req("/auth/start", new URLSearchParams({ b: "/\\evil.invalid" }).toString(), presenterJar));
 assert.equal(location(auto), "/");
 for (const [back, expected] of [["/\\evil.invalid", "/"], ["//evil.invalid", "/"],

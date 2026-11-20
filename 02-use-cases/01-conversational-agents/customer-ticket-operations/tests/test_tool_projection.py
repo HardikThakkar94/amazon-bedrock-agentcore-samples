@@ -11,8 +11,8 @@ from mcp.types import Tool
 from strands.tools.mcp.mcp_agent_tool import MCPAgentTool
 from strands.tools.mcp.mcp_client import PaginatedList
 
-from sec310_agent.agent import ARGUMENT_FIELDS
-from sec310_agent.tool_projection import MODEL_TOOLS, project_gateway_tools
+from ticket_agent.agent import ARGUMENT_FIELDS
+from ticket_agent.tool_projection import MODEL_TOOLS, project_gateway_tools
 
 CAPTURE = json.loads((Path(__file__).parent / "fixtures/gateway_tools_v3.json").read_text())
 ADDITIONAL_CASES = [

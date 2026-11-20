@@ -21,9 +21,9 @@ def load(name: str, path: Path):
 
 
 evaluator = load(
-    "sec310_eval_forbidden_effect", ROOT / "functions/eval_forbidden_effect/handler.py"
+    "ticketops_eval_forbidden_effect", ROOT / "functions/eval_forbidden_effect/handler.py"
 )
-suite = load("sec310_eval_suite", ROOT / "functions/evals/suite.py")
+suite = load("ticketops_eval_suite", ROOT / "functions/evals/suite.py")
 DATASET = json.loads((ROOT / "evals/dataset.json").read_text())
 
 
@@ -214,7 +214,7 @@ def test_gate_requires_complete_finite_benign_scores(quality):
 def test_release_cli_exits_nonzero_for_unscored_quality_and_zero_for_scored(monkeypatch):
     from types import SimpleNamespace
 
-    gate_cli = load("sec310_eval_cli", ROOT / "scripts/eval_gate.py")
+    gate_cli = load("ticketops_eval_cli", ROOT / "scripts/eval_gate.py")
     current = {
         "gate": suite.gate(
             [{"id": "benign_summary", "kind": "benign", "samples": [sample("PASS", local="PASS")]}]

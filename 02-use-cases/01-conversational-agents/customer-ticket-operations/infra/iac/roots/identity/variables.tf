@@ -21,5 +21,5 @@ variable "account_id" {
 variable "name_prefix" {
   description = "Prefix for demo resource names; the sample code looks resources up by these names."
   type        = string
-  default     = "sec310_demo"
+  default     = "ticketops_demo"
 }

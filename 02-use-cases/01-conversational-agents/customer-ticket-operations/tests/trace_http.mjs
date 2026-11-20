@@ -23,7 +23,7 @@ const ctx = vm.createContext({
 vm.runInContext(`${esc} const POLICY_TEXT = ${policy} const TRACE_COLS = ${drawer}\nthis.cloudTrace = cloudTrace;`, ctx);
 await ctx.cloudTrace(run);
 assert.match(body.innerHTML, /execute_tool TicketTools___list_tickets/);
-assert.match(body.innerHTML, /sec310_v4_tenant_fence-0000000000/);
+assert.match(body.innerHTML, /ticketops_v4_tenant_fence-0000000000/);
 assert.match(body.innerHTML, /101/);
 assert.match(body.innerHTML, /ALLOW/);
 assert.doesNotMatch(body.innerHTML, /secret request|@message|foreign-policy|requestBody/);

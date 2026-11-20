@@ -1,7 +1,7 @@
-"""SEC310 presenter API (Lambda function URL, AuthType=AWS_IAM, reachable only via CloudFront).
+"""Presenter API (Lambda function URL, AuthType=AWS_IAM, reachable only via CloudFront).
 
 A CloudFront Function has already checked the session cookie and forwards the access token in
-``x-sec310-access-token``; this function verifies its signature, issuer, audience and expiry
+``x-ticketops-access-token``; this function verifies its signature, issuer, audience and expiry
 (defense in depth) and takes the persona from the token's claims, never from the body.
 """
 
@@ -96,7 +96,7 @@ LESSONS = {
 }
 
 
-# Which controls each build turns on (mirrors src/sec310_agent/controls.py and the agent root).
+# Which controls each build turns on (mirrors src/ticket_agent/controls.py and the agent root).
 CONTROLS = {
     "Inbound JWT authorizer (AgentCore Identity on Runtime and Gateway)": "v0",
     "Model tool specs: projected plain-string fields; Runtime injects actor/run_id": "v0",
@@ -164,7 +164,7 @@ class HttpError(Exception):
 
 def access_token(event: dict[str, Any]) -> str:
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
-    token = headers.get("x-sec310-access-token")
+    token = headers.get("x-ticketops-access-token")
     if not token:
         raise HttpError(401, "missing session")
     return token
@@ -461,7 +461,7 @@ def public_state(who: dict[str, str]) -> dict[str, Any]:
         "recorded_run": recorded_run,  # tenant-owned event-owner proof, never an action authority
         "decisions": json.loads(st.get("decisions", "[]")),
         "observability": {
-            "sec310_run": st.get("run_id"),
+            "ticketops_run": st.get("run_id"),
             "region": os.environ.get("AWS_REGION"),
             "invocation_log_group": os.environ.get("INVOCATION_LOG_GROUP"),
             "scope": "Agent on AgentCore Runtime; tools and policy at AgentCore Gateway",
@@ -496,7 +496,8 @@ def invoke_agent(token: str, session_id: str, payload: dict[str, Any]) -> dict[s
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=AGENT_TIMEOUT) as resp:
+        # The URL is the AgentCore Runtime HTTPS endpoint from configuration, never user input.
+        with urllib.request.urlopen(req, timeout=AGENT_TIMEOUT) as resp:  # nosec B310
             body = json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:300].decode(errors="replace")
@@ -996,7 +997,7 @@ TRACE_QUERIES = {
         "Amazon Bedrock model invocation logs",
         "fields @timestamp, modelId, operation, input.inputTokenCount as in_tokens, "
         "output.outputTokenCount as out_tokens, output.outputBodyJson.stopReason as stop "
-        "| filter requestMetadata.sec310_run = '{run}' | sort @timestamp asc | limit 50",
+        "| filter requestMetadata.ticketops_run = '{run}' | sort @timestamp asc | limit 50",
     ),
     "gateway": (
         "AgentCore Gateway APPLICATION_LOGS",

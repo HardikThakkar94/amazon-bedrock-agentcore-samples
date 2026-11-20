@@ -116,7 +116,7 @@ resource "aws_cognito_user_pool" "this" {
 }
 
 resource "aws_cognito_user_pool_domain" "this" {
-  domain                = "sec310-${var.account_id}"
+  domain                = "ticketops-${var.account_id}"
   user_pool_id          = aws_cognito_user_pool.this.id
   managed_login_version = 2 # managed login (branding editor styles)
 }
@@ -148,7 +148,7 @@ resource "aws_cognito_user" "persona" {
 resource "aws_secretsmanager_secret" "persona" {
   for_each                = local.personas
   name                    = "${var.project}/${var.environment}/personas/${each.key}"
-  description             = "SEC310 demo persona ${each.key} (${each.value.role}, ${each.value.customer_id})"
+  description             = "Ticket operations demo persona ${each.key} (${each.value.role}, ${each.value.customer_id})"
   recovery_window_in_days = 0
 }
 

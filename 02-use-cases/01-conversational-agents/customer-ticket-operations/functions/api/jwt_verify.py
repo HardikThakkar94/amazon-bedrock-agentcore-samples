@@ -28,7 +28,7 @@ def _b64(data: str) -> bytes:
 
 def _key(issuer: str, kid: str) -> tuple[int, int]:
     if kid not in _keys:
-        with urllib.request.urlopen(f"{issuer}/.well-known/jwks.json", timeout=5) as resp:  # noqa: S310
+        with urllib.request.urlopen(f"{issuer}/.well-known/jwks.json", timeout=5) as resp:  # noqa: S310  # nosec B310
             for k in json.load(resp)["keys"]:
                 _keys[k["kid"]] = (
                     int.from_bytes(_b64(k["n"]), "big"),

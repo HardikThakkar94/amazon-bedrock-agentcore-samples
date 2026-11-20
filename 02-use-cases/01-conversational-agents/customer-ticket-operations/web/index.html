@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bounded agent · re:Invent 2026</title>
+<title>Bounded agent · Customer Ticket Operations</title>
 <style>
 @font-face{font-family:'Mona Sans';src:url('/fonts/mona-sans-vf.woff2') format('woff2');font-weight:200 900;font-stretch:75% 125%;font-display:swap}
 @font-face{font-family:'Monaspace Neon';src:url('/fonts/monaspace-neon-vf.woff2') format('woff2');font-weight:200 800;font-stretch:100% 125%;font-display:swap}
-/* re:Invent 2026: navy-black page, crimson → violet → blue brand gradient. Color carries meaning:
+/* Navy-black page, crimson → violet → blue brand gradient. Color carries meaning:
    blue = in flight, pink = portal ticket text / harmful effect, green = held by a control, yellow = stop,
    orange = the one primary action. */
 :root{
@@ -30,7 +30,6 @@ button{font:inherit;color:inherit;cursor:pointer}
 header{display:flex;align-items:center;gap:18px;height:68px;padding:0 28px 0 0;background:var(--grad)}
 .tile{display:grid;place-items:center;height:100%;padding:0 22px;border-right:1px solid rgba(245,243,239,.22)}
 .tile img{height:30px;display:block}
-.event{display:flex;align-items:flex-end;gap:8px;height:20px}.event img{height:100%}.event span{font:650 16px/1 var(--sans);color:#fff}
 h1{font:650 26px/1.1 var(--sans);font-stretch:112%;letter-spacing:-.012em;color:#fff}
 header .sp{flex:1}
 .pill{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 14px;border-radius:999px;border:1px solid rgba(245,243,239,.3);background:rgba(7,7,15,.45);font:600 14px var(--sans);color:#fff;white-space:nowrap}
@@ -384,7 +383,7 @@ header .sp{flex:1}
 <body>
 <header>
   <span class="tile"><img src="/assets/aws-logo.svg" alt="AWS"></span>
-  <div><div class="event"><img src="/assets/reinvent-wordmark.png" alt="AWS re:Invent"><span>2026</span></div><h1>Build a bounded agent, live</h1></div>
+  <div><h1>Build a bounded agent, live</h1></div>
   <span class="sp"></span>
   <span class="pill gate" id="gatePill" hidden><i></i>Release gate</span>
   <span class="pill breaker" id="breakerPill" hidden title=""><i></i>Circuit breaker: OPEN · read-only</span>
@@ -393,7 +392,7 @@ header .sp{flex:1}
   <div class="gear"><button id="gearBtn" aria-haspopup="menu" aria-expanded="false" title="Operator menu">⚙</button>
     <div class="menu" id="menu" role="menu">
       <div id="personas" hidden></div>
-      <a href="/portal/" target="sec310_portal" role="menuitem">Ticket Portal</a>
+      <a href="/portal/" target="ticketops_portal" role="menuitem">Ticket Portal</a>
       <button id="mReset" role="menuitem">Reset demo</button>
       <button id="mBreaker" role="menuitem" hidden>Reset circuit breaker</button>
       <button id="mStop" role="menuitem">Stop agent</button>
@@ -1101,7 +1100,7 @@ async function openCode(){
   $('#drBody').innerHTML = `<div class="code">` + c.controls.map(x => row(x.name, x.on, x.detail)).join('')
     + (c.policies.length ? `<h4>AgentCore Policy · ${esc(c.policy_engine || '')}</h4>` + c.policies.map(p => `<pre>// ${esc(p.name)} (${esc(p.status)})
 ${esc(p.statement)}</pre>`).join('') : `<h4>AgentCore Policy</h4><pre>no policy engine on this build's gateway</pre>`)
-    + (hooks ? `<h4>Agent hooks · sec310_agent/controls.py</h4><pre>${esc(hooks)}</pre>` : '') + `</div>`;
+    + (hooks ? `<h4>Agent hooks · ticket_agent/controls.py</h4><pre>${esc(hooks)}</pre>` : '') + `</div>`;
   const d = $('#drawer'); drawerEpoch++; d.dataset.runTrace = ''; d.classList.remove('wide'); d.classList.add('open'); d.inert = false; d.setAttribute('aria-hidden', 'false'); d.dataset.from = 'agent'; $('#drClose').focus();
 }
 async function rejectApproval(id){

@@ -109,9 +109,9 @@ def test_queries_use_observed_flattened_session_field_and_project_safe_columns(a
     assert spans["logGroupNames"] == ["aws/spans"]
     assert f"filter attributes.session.id = '{RUN}'" in spans["queryString"]
     assert "attributes.session.id as session_id" in spans["queryString"]
-    assert "attributes.`sec310.run_id`" not in spans["queryString"]
+    assert "attributes.`ticketops.run_id`" not in spans["queryString"]
     assert "@message" not in spans["queryString"].split("| filter")[0]
-    assert f"filter requestMetadata.sec310_run = '{RUN}'" in logs.calls[0]["queryString"]
+    assert f"filter requestMetadata.ticketops_run = '{RUN}'" in logs.calls[0]["queryString"]
     gateway_query = logs.calls[3]["queryString"]
     assert "body.policy.decision as decision" in gateway_query
     assert "jsonParse(@message) as event" in gateway_query
@@ -172,7 +172,7 @@ def test_actual_live_schema_preserves_known_span_names_and_policy_latency(api, m
                     "trace_id": TRACE,
                     "traceId": TRACE,
                     "decision": "ALLOW",
-                    "policies": '["sec310_v4_tenant_fence-0000000000"]',
+                    "policies": '["ticketops_v4_tenant_fence-0000000000"]',
                     "policy_ms": "101",
                     "@message": "secret",
                 }
@@ -186,7 +186,7 @@ def test_actual_live_schema_preserves_known_span_names_and_policy_latency(api, m
         {
             "@timestamp": "2026-11-05 18:14:07.051",
             "decision": "ALLOW",
-            "policies": "sec310_v4_tenant_fence-0000000000",
+            "policies": "ticketops_v4_tenant_fence-0000000000",
             "policy_ms": "101",
         }
     ]
@@ -386,7 +386,7 @@ def test_real_handler_never_returns_foreign_gateway_policy_from_quoted_run(api, 
         "requestContext": {"http": {"method": "GET"}},
         "rawPath": "/api/trace",
         "queryStringParameters": {"run": RUN},
-        "headers": {"x-sec310-access-token": "offline"},
+        "headers": {"x-ticketops-access-token": "offline"},
     }
     response = api.app.lambda_handler(event, None)
     assert response["statusCode"] == 200
@@ -423,7 +423,7 @@ def test_http_loopback_real_handler_to_shipped_browser_live_schema(api, monkeypa
                     "trace_id": TRACE,
                     "traceId": TRACE,
                     "decision": "ALLOW",
-                    "policies": '["sec310_v4_tenant_fence-0000000000"]',
+                    "policies": '["ticketops_v4_tenant_fence-0000000000"]',
                     "policy_ms": "101",
                     "@message": "secret request",
                 }
@@ -509,7 +509,7 @@ def test_real_handler_mixed_gateway_records_render_safe_in_browser(api, monkeypa
                     "trace_id": TRACE,
                     "traceId": TRACE,
                     "decision": "ALLOW",
-                    "policies": '["sec310_v4_tenant_fence-0000000000"]',
+                    "policies": '["ticketops_v4_tenant_fence-0000000000"]',
                     "policy_ms": "101",
                     "@message": "secret request",
                 }

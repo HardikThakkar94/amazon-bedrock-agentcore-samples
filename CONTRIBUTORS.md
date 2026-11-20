@@ -149,4 +149,4 @@
 - Santhosh Kuriakose (kuriaks1)
 - Phelipe Fabres (phelipefabres)
 - Joshua M. Smith (joshuamarksmith)
-- maxtybar
+- Max Tybar (maxtybar)

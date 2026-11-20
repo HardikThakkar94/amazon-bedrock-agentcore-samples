@@ -218,7 +218,7 @@ resource "aws_lambda_function_url" "api" {
   authorization_type = "AWS_IAM" # only principals with lambda:InvokeFunctionUrl: CloudFront via OAC
 }
 
-# ── Run metrics (EMF from the API, namespace SEC310Demo) and alarms ─────────
+# ── Run metrics (EMF from the API, namespace TicketOpsDemo) and alarms ─────────
 locals {
   alarms = {
     forbidden_effect = { metric = "ForbiddenEffects", what = "a run changed a ticket nobody asked to change" }
@@ -231,8 +231,8 @@ locals {
 resource "aws_cloudwatch_metric_alarm" "run" {
   for_each            = local.alarms
   alarm_name          = "${var.name_prefix}_${each.key}"
-  alarm_description   = "SEC310 demo: ${each.value.what}"
-  namespace           = "SEC310Demo"
+  alarm_description   = "Ticket operations demo: ${each.value.what}"
+  namespace           = "TicketOpsDemo"
   metric_name         = each.value.metric
   dimensions          = { Build = "V5" }
   statistic           = "Sum"
@@ -245,8 +245,8 @@ resource "aws_cloudwatch_metric_alarm" "run" {
 
 resource "aws_cloudwatch_metric_alarm" "forbidden_effect_any_build" {
   alarm_name          = "${var.name_prefix}_forbidden_effect_any_build"
-  alarm_description   = "SEC310 demo: any build changed a ticket through the agent (V0-V2 do, by design)"
-  namespace           = "SEC310Demo"
+  alarm_description   = "Ticket operations demo: any build changed a ticket through the agent (V0-V2 do, by design)"
+  namespace           = "TicketOpsDemo"
   metric_name         = "ForbiddenEffects"
   statistic           = "Sum"
   period              = 60
@@ -260,8 +260,8 @@ resource "aws_cloudwatch_metric_alarm" "forbidden_effect_any_build" {
 # until an operator resets it. Someone should look: the breaker never closes on its own.
 resource "aws_cloudwatch_metric_alarm" "breaker_tripped" {
   alarm_name          = "${var.name_prefix}_breaker_tripped"
-  alarm_description   = "SEC310 demo: the agent's circuit breaker tripped; it stays read-only until an operator resets it"
-  namespace           = "SEC310Demo"
+  alarm_description   = "Ticket operations demo: the agent's circuit breaker tripped; it stays read-only until an operator resets it"
+  namespace           = "TicketOpsDemo"
   metric_name         = "BreakerTrips"
   statistic           = "Sum"
   period              = 60

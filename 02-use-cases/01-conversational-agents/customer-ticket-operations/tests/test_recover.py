@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("sec310_recover_cli", ROOT / "scripts/recover.py")
+spec = importlib.util.spec_from_file_location("ticketops_recover_cli", ROOT / "scripts/recover.py")
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
 

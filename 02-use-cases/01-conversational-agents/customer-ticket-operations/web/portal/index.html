@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ticket Portal · re:Invent 2026</title>
+<title>Ticket Portal · Customer Ticket Operations</title>
 <style>
 @font-face{font-family:'Mona Sans';src:url('/fonts/mona-sans-vf.woff2') format('woff2');font-weight:200 900;font-stretch:75% 125%;font-style:normal;font-display:swap}@font-face{font-family:'Monaspace Neon';src:url('/fonts/monaspace-neon-vf.woff2') format('woff2');font-weight:200 800;font-stretch:100% 125%;font-style:normal;font-display:swap}
-/* Customer portal: the re:Invent 2026 attendee/speaker portal look. Near-black navy page, a
+/* Customer portal. Near-black navy page, a
    crimson → violet → blue hero band, rounded outlined cards, pill buttons. Pink marks the
    ticket text the agent will act on, as on the operator console. */
 :root{--page:#07070f;--panel:#0d0d18;--panel-2:#141424;--line:rgba(245,243,239,.28);--line-2:rgba(245,243,239,.14);
@@ -19,7 +19,6 @@ a{color:var(--link)}
 .hd{display:flex;align-items:center;gap:18px;height:68px;padding:0 28px 0 0;background:linear-gradient(100deg,#5e1340 0%,#45197a 34%,#3428b0 66%,#241a62 86%,#120d2a 100%)}
 .hd .tile{display:grid;place-items:center;height:100%;padding:0 22px;border-right:1px solid rgba(245,243,239,.22)}
 .hd .tile img{height:30px;display:block}
-.hd .event{display:flex;align-items:flex-end;gap:8px;height:20px}.hd .event img{height:100%}.hd .event span{font:650 16px/1 var(--sans);color:#fff}
 .hd h1{margin:0;font:650 26px/1.1 var(--sans);font-stretch:112%;letter-spacing:-.012em;color:#fff}
 .hd .sp{flex:1}
 .hd .who{font:600 14px var(--sans);color:#fff;padding:0 14px;height:34px;display:inline-flex;align-items:center;border-radius:999px;border:1px solid rgba(245,243,239,.3);background:rgba(7,7,15,.45)}
@@ -71,14 +70,14 @@ aside p{margin:0;font-size:15.5px;color:var(--body)}
 .steps li:nth-child(1) .n{background:var(--pink)}.steps li:nth-child(2) .n{background:var(--purple)}.steps li:nth-child(3) .n{background:var(--green)}
 .boundary{border-color:rgba(243,195,0,.45)}.boundary h3{color:var(--yellow)}
 @media (max-width:900px){main{grid-template-columns:1fr}.card{min-width:0}.hero::after{display:none}}
-@media (max-width:560px){.hd{gap:8px;padding-right:12px}.hd .tile{padding:0 10px}.hd .event{display:none}.hd h1{font-size:19px}.hd .who{font-size:12px;padding:0 8px;white-space:nowrap}}
+@media (max-width:560px){.hd{gap:8px;padding-right:12px}.hd .tile{padding:0 10px}.hd h1{font-size:19px}.hd .who{font-size:12px;padding:0 8px;white-space:nowrap}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
 <body>
 <header class="hd">
   <span class="tile"><img src="/assets/aws-logo.svg" alt="AWS"></span>
-  <div><div class="event"><img src="/assets/reinvent-wordmark.png" alt="AWS re:Invent"><span>2026</span></div><h1>Build a bounded agent, live</h1></div>
+  <div><h1>Build a bounded agent, live</h1></div>
   <span class="sp"></span>
   <span class="who">carol · Region A</span>
   <div class="gear"><button id="gearBtn" type="button" aria-haspopup="menu" aria-expanded="false" title="Menu">⚙</button>
