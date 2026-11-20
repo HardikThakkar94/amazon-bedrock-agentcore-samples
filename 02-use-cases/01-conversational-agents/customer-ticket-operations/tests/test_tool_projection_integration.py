@@ -12,7 +12,7 @@ from mcp.types import Tool
 from strands.tools.mcp.mcp_agent_tool import MCPAgentTool
 from strands.tools.mcp.mcp_client import PaginatedList
 
-from sec310_agent import agent as runtime
+from ticket_agent import agent as runtime
 
 RAW = json.loads((Path(__file__).parent / "fixtures/gateway_tools_v3.json").read_text())["tools"]
 PRINT_AFTER_READ = json.loads(
@@ -906,7 +906,7 @@ def test_wrong_scope_native_repair_proposal_is_withheld_without_card(client):
     ),
 )
 def test_completion_repair_preconditions_are_refusal_only(case):
-    from sec310_agent.controls import MAX_TURNS
+    from ticket_agent.controls import MAX_TURNS
 
     state = State("v3")
     rec = runtime.Recorder(
@@ -1202,7 +1202,7 @@ def test_one_owned_conversation_completion_repair_after_screened_read(client, na
     assert (
         third["requestMetadata"]
         == client.requests[0]["requestMetadata"]
-        == {"sec310_run": "owned-run"}
+        == {"ticketops_run": "owned-run"}
     )
     assert third["toolConfig"]["toolChoice"] == {"auto": {}}
     messages = third["messages"]

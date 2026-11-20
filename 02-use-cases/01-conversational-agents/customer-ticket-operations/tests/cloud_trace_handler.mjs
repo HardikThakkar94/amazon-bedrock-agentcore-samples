@@ -37,5 +37,6 @@ assert.match(body.innerHTML, /unverified Gateway row\(s\) omitted/);
 assert.match(body.innerHTML, /AgentCore Gateway APPLICATION_LOGS/);
 assert.match(body.innerHTML, /Authentication \/ Identity/);
 assert.match(body.innerHTML, /Policy \(agent inference\)/);
-assert.doesNotMatch(body.innerHTML, /foreign-policy|secret request|@message|requestBody|<script>/);
+assert.doesNotMatch(body.innerHTML, /foreign-policy|secret request|@message|requestBody/);
+assert.ok(!body.innerHTML.includes('<script>'));
 console.log('Real offline handler → CloudWatch drawer verified partial/owned evidence: passed');

@@ -52,7 +52,7 @@ moved {
 resource "aws_iam_role" "invocation_logging" {
   count              = local.create_invocation_logging ? 1 : 0
   name               = "${var.name_prefix}_invocation_logging"
-  description        = "SEC310 demo; lets Bedrock write model invocation logs"
+  description        = "Ticket operations demo; lets Bedrock write model invocation logs"
   assume_role_policy = data.aws_iam_policy_document.bedrock_trust[0].json
 }
 

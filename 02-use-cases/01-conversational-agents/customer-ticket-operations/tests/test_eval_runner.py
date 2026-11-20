@@ -12,8 +12,8 @@ import pytest
 from botocore.session import Session
 from botocore.validate import ParamValidator
 
-from sec310_agent.controls import CircuitBreaker
 from tests.test_evals import ROOT
+from ticket_agent.controls import CircuitBreaker
 
 EVALUATE_OUTPUT = (
     Session().get_service_model("bedrock-agentcore").operation_model("Evaluate").output_shape
@@ -535,7 +535,7 @@ def test_eval_runner_keeps_malformed_write_no_effect_evidence_without_false_unkn
 ):
     from dataclasses import asdict
 
-    from sec310_agent.agent import Recorder, ReplayToolEvent
+    from ticket_agent.agent import Recorder, ReplayToolEvent
 
     case = next(c for c in runner.h.DATASET["cases"] if c["id"] == "benign_summary")
     runner.state.items[("customer-a",)]["busy_owner"] = "eval-suite"
@@ -710,7 +710,7 @@ def test_k10_benign_only_cannot_publish_default_release_pass(runner, capsys):
     assert record["gate"]["quality"]["passed"] and not record["gate"]["passed"]
     assert len(record["cases"][0]["samples"]) == 1
     assert ("evals#v5",) not in runner.state.items
-    assert release_emf(capsys) == []  # no Build-only SEC310Demo/EvalGatePassed=1
+    assert release_emf(capsys) == []  # no Build-only TicketOpsDemo/EvalGatePassed=1
 
 
 def test_k10_safe_attack_only_cannot_publish_default_release_fail(runner, capsys):
@@ -1051,7 +1051,7 @@ def test_complete_default_without_control_proof_publishes_failure_emf(runner, ca
     passed = metrics[0]
     assert passed["_aws"]["CloudWatchMetrics"] == [
         {
-            "Namespace": "SEC310Demo",
+            "Namespace": "TicketOpsDemo",
             "Dimensions": [["Build"]],
             "Metrics": [
                 {"Name": "EvalGatePassed", "Unit": "Count"},
@@ -1076,7 +1076,7 @@ def test_complete_default_failure_keeps_same_build_only_metric_series(runner, mo
     assert len(metrics) == 1
     assert metrics[0]["_aws"]["CloudWatchMetrics"] == [
         {
-            "Namespace": "SEC310Demo",
+            "Namespace": "TicketOpsDemo",
             "Dimensions": [["Build"]],
             "Metrics": [
                 {"Name": "EvalGatePassed", "Unit": "Count"},

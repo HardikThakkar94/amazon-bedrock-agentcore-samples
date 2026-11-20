@@ -2,7 +2,7 @@
 
 # The agent's own pins (strands, mcp) are needed to import it under test.
 test:
-	uv run --extra aws --with-requirements src/sec310_agent/requirements.txt python -m pytest
+	uv run --extra aws --with-requirements src/ticket_agent/requirements.txt python -m pytest
 
 lint:
 	uv run --with 'ruff==0.16.8' ruff check src tests scripts functions && uv run --with 'ruff==0.16.8' ruff format --check src tests scripts functions
@@ -16,7 +16,7 @@ preflight: test lint
 #   make whoami     PROFILE=<aws-profile>
 #   make deploy-all PROFILE=<aws-profile>
 # ══════════════════════════════════════════════════════════════════════════
-PROJECT  ?= sec310
+PROJECT  ?= ticketops
 ENV      ?= demo
 REGION   ?= us-east-1
 PROFILE  ?=

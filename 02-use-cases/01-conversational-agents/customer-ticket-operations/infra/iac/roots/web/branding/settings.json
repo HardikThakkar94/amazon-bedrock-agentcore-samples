@@ -259,7 +259,7 @@
         "borderColor": "d6d3ccff"
       },
       "logo": {
-        "enabled": true,
+        "enabled": false,
         "formInclusion": "IN",
         "location": "CENTER",
         "position": "TOP"

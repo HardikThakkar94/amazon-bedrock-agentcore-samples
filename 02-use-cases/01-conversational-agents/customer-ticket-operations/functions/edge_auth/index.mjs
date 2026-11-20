@@ -79,8 +79,8 @@ function cookies(headers) {
   return out;
 }
 
-const cookieName = (realm) => `sec310_${realm}`;
-const sessionName = (realm) => `sec310_s_${realm}`;
+const cookieName = (realm) => `ticketops_${realm}`;
+const sessionName = (realm) => `ticketops_s_${realm}`;
 // session cookie checked by the CloudFront Function: HMAC over realm, expiry and the token's hash
 function session(cfg, realm, exp, token) {
   const th = crypto.createHash("sha256").update(token).digest("hex");
@@ -96,12 +96,12 @@ const realmOf = (role) => (role === "operator" ? "op" : role === "customer" ? "p
 const sessionCookies = (cfg, realm, token, claims, ttl) => [
   setCookie(cookieName(realm), token, ttl),
   setCookie(sessionName(realm), session(cfg, realm, claims.exp, token), ttl),
-  setCookie(`sec310_as_${realm}`, encodeURIComponent(claims.username || ""), ttl),
+  setCookie(`ticketops_as_${realm}`, encodeURIComponent(claims.username || ""), ttl),
 ];
 
 // Presenter persona switch
-const PRESENTER = "sec310_presenter"; // access token, sent only to /auth/*
-const PRESENTER_R = "sec310_presenter_r"; // refresh token, keeps the presenter signed in for the day
+const PRESENTER = "ticketops_presenter"; // access token, sent only to /auth/*
+const PRESENTER_R = "ticketops_presenter_r"; // refresh token, keeps the presenter signed in for the day
 const presenterCookies = (access, refresh, ttl) => [
   setCookie(PRESENTER, access, ttl, "/auth"),
   ...(refresh ? [setCookie(PRESENTER_R, refresh, 86400, "/auth")] : []),
@@ -187,7 +187,7 @@ async function me(cfg, jar) {
   const body = who
     ? {
         presenter: true,
-        acting_as: { op: decodeURIComponent(jar.sec310_as_op || ""), portal: decodeURIComponent(jar.sec310_as_portal || "") },
+        acting_as: { op: decodeURIComponent(jar.ticketops_as_op || ""), portal: decodeURIComponent(jar.ticketops_as_portal || "") },
         personas: Object.entries(cfg.personas).map(([u, p]) => ({ username: u, role: p.role, customer_id: p.customer_id })),
       }
     : { presenter: false };
@@ -238,7 +238,7 @@ background:radial-gradient(80% 90% at 0% 100%,#8c1a4a 0%,transparent 55%),radial
 main{width:min(460px,100%);padding:32px;border:1px solid rgba(245,243,239,.28);border-radius:16px;background:#0d0d18}
 small{display:block;margin-bottom:14px;color:#a7a3bd;font-size:13px;font-weight:600;letter-spacing:.12em}h1{margin:0 0 10px;color:#fff;font-size:28px;line-height:1.15}
 p{margin:0 0 24px}a{display:inline-block;padding:12px 24px;border-radius:999px;background:#ff6200;color:#0a0a14;font-weight:650;text-decoration:none}a:hover{background:#ff7f33}a:focus-visible{outline:2px solid #fff;outline-offset:3px}
-</style></head><body><main><small>AWS RE:INVENT 2026</small><h1>${esc(title)}</h1><p>${esc(message)}</p><a href="${esc(href)}">${esc(action)}</a></main></body></html>`,
+</style></head><body><main><small>CUSTOMER TICKET OPERATIONS</small><h1>${esc(title)}</h1><p>${esc(message)}</p><a href="${esc(href)}">${esc(action)}</a></main></body></html>`,
 });
 
 async function startLogin(cfg, host, uri, realm, jar) {
@@ -247,7 +247,7 @@ async function startLogin(cfg, host, uri, realm, jar) {
   // A signed-in presenter whose persona session expired gets that persona back without a login page.
   const who = await presenter(cfg, jar);
   if (who) {
-    const last = decodeURIComponent(jar[`sec310_as_${realm}`] || "");
+    const last = decodeURIComponent(jar[`ticketops_as_${realm}`] || "");
     const as = await signInAs(cfg, realmOf(cfg.personas[last]?.role) === realm ? last : firstOf(cfg, realm));
     if (as) return redirect(realm === "portal" ? "/portal/" : uri.startsWith("/api") ? "/" : uri, [...who.cookies, ...as.cookies]);
   }
@@ -259,15 +259,15 @@ async function startLogin(cfg, host, uri, realm, jar) {
   const logout = new URL(`https://${cfg.domain}/logout`);
   logout.searchParams.set("client_id", cfg.client_id);
   logout.searchParams.set("logout_uri", `https://${host}/auth/login`);
-  // "sec310_pkce" is the attempt /auth/login authorizes next; the per-attempt copy lets the callback
+  // "ticketops_pkce" is the attempt /auth/login authorizes next; the per-attempt copy lets the callback
   // find its own verifier even if another tab started a login in between.
-  return redirect(logout.toString(), [setCookie("sec310_pkce", pkce, 600), setCookie(`sec310_pkce_${nonce}`, pkce, 600)]);
+  return redirect(logout.toString(), [setCookie("ticketops_pkce", pkce, 600), setCookie(`ticketops_pkce_${nonce}`, pkce, 600)]);
 }
 
 function authorize(cfg, host, jar) {
   let state;
   try {
-    state = JSON.parse(Buffer.from(jar.sec310_pkce || "", "base64url"));
+    state = JSON.parse(Buffer.from(jar.ticketops_pkce || "", "base64url"));
   } catch {
     return redirect("/");
   }
@@ -287,12 +287,12 @@ async function callback(cfg, host, query, jar) {
   const nonce = params.get("state") || "";
   let state;
   try {
-    state = /^[A-Za-z0-9_-]{16,64}$/.test(nonce) ? JSON.parse(Buffer.from(jar[`sec310_pkce_${nonce}`] || "", "base64url")) : null;
+    state = /^[A-Za-z0-9_-]{16,64}$/.test(nonce) ? JSON.parse(Buffer.from(jar[`ticketops_pkce_${nonce}`] || "", "base64url")) : null;
   } catch {
     state = null;
   }
   // Unknown or expired attempt (e.g. a login page left open for over 10 minutes): start again.
-  if (!state || state.n !== nonce || !params.get("code")) return redirect("/", [setCookie(`sec310_pkce_${nonce}`, "", 0)]);
+  if (!state || state.n !== nonce || !params.get("code")) return redirect("/", [setCookie(`ticketops_pkce_${nonce}`, "", 0)]);
   const res = await fetch(`https://${cfg.domain}/oauth2/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -318,14 +318,14 @@ async function callback(cfg, host, query, jar) {
       ...presenterCookies(tokens.access_token, tokens.refresh_token, ttl),
       ...op.cookies,
       ...portal.cookies,
-      setCookie(`sec310_pkce_${nonce}`, "", 0),
+      setCookie(`ticketops_pkce_${nonce}`, "", 0),
     ]);
   }
   if (state.r === "op" && claims.role !== "operator")
     return page(403, "Operators only", "The operator console needs an operator persona such as alice or bob.", "Sign in as another user", "/auth/logout");
   if (state.r === "portal" && claims.role !== "customer")
     return page(403, "Customers only", "The Ticket Portal needs a customer persona such as carol.", "Sign in as another user", "/auth/logout");
-  return redirect(returnPath(state.b, host), [...sessionCookies(cfg, state.r, tokens.access_token, claims, ttl), setCookie(`sec310_pkce_${nonce}`, "", 0)]);
+  return redirect(returnPath(state.b, host), [...sessionCookies(cfg, state.r, tokens.access_token, claims, ttl), setCookie(`ticketops_pkce_${nonce}`, "", 0)]);
 }
 
 export const handler = async (event) => {
@@ -341,7 +341,7 @@ async function route(event) {
   const request = event.Records[0].cf.request;
   const host = request.headers.host[0].value;
   const uri = request.uri;
-  delete request.headers["x-sec310-access-token"]; // never trust a client-supplied value
+  delete request.headers["x-ticketops-access-token"]; // never trust a client-supplied value
   let cfg;
   try {
     cfg = await getConfig();
@@ -364,8 +364,8 @@ async function route(event) {
       setCookie(cookieName("portal"), "", 0),
       setCookie(sessionName("op"), "", 0),
       setCookie(sessionName("portal"), "", 0),
-      setCookie("sec310_as_op", "", 0),
-      setCookie("sec310_as_portal", "", 0),
+      setCookie("ticketops_as_op", "", 0),
+      setCookie("ticketops_as_portal", "", 0),
       setCookie(PRESENTER, "", 0, "/auth"),
       setCookie(PRESENTER_R, "", 0, "/auth"),
     ]);

@@ -188,7 +188,7 @@ def confirm_close(
                 "params": {
                     "protocolVersion": PROTOCOL,
                     "capabilities": {},
-                    "clientInfo": {"name": "sec310-operator-console", "version": "1.0"},
+                    "clientInfo": {"name": "ticketops-operator-console", "version": "1.0"},
                 },
             },
             deadline,

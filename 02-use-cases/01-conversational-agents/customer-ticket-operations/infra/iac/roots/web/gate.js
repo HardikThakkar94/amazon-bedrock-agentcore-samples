@@ -44,11 +44,11 @@ async function valid(realm, session, token) {
 async function handler(event) {
   const req = event.request;
   const uri = req.uri;
-  delete req.headers['x-sec310-access-token']; // never trust a client-supplied value
+  delete req.headers['x-ticketops-access-token']; // never trust a client-supplied value
   const realm = uri.startsWith('/portal') || uri.startsWith('/api/portal') ? 'portal' : 'op';
   const c = req.cookies || {};
-  const token = c['sec310_' + realm] ? c['sec310_' + realm].value : '';
-  const session = c['sec310_s_' + realm] ? c['sec310_s_' + realm].value : '';
+  const token = c['ticketops_' + realm] ? c['ticketops_' + realm].value : '';
+  const session = c['ticketops_s_' + realm] ? c['ticketops_s_' + realm].value : '';
 
   if (!(await valid(realm, session, token))) {
     if (uri.startsWith('/api')) {
@@ -70,7 +70,7 @@ async function handler(event) {
     };
   }
 
-  if (uri.startsWith('/api')) req.headers['x-sec310-access-token'] = { value: token };
+  if (uri.startsWith('/api')) req.headers['x-ticketops-access-token'] = { value: token };
   else if (uri === '/') req.uri = '/index.html';
   else if (uri === '/portal' || uri === '/portal/') req.uri = '/portal/index.html';
   return req;

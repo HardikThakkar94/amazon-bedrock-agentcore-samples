@@ -139,7 +139,7 @@ resource "aws_iam_role_policy" "codebuild" {
 
 resource "aws_codebuild_project" "build" {
   name          = "${local.name}-build"
-  description   = "Packages SEC310 demo Lambdas, web bundle and agent image"
+  description   = "Packages the ticket operations demo Lambdas, web bundle and agent image"
   service_role  = aws_iam_role.codebuild.arn
   build_timeout = 30
 

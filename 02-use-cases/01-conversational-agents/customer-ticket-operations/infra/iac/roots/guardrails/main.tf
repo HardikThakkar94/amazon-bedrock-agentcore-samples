@@ -18,7 +18,7 @@ variable "guardrail_profile_id" {
 
 resource "aws_bedrock_guardrail" "prompt_attack" {
   name                      = var.name_prefix
-  description               = "SEC310 demo; prompt-attack screening on input"
+  description               = "Ticket operations demo; prompt-attack screening on input"
   blocked_input_messaging   = "Blocked by guardrail."
   blocked_outputs_messaging = "Blocked by guardrail."
 
@@ -40,7 +40,7 @@ resource "aws_bedrock_guardrail" "prompt_attack" {
 
 resource "awscc_bedrock_automated_reasoning_policy" "rule_change" {
   name         = "${var.name_prefix}_ar"
-  description  = "SEC310 demo; detection-rule change policy"
+  description  = "Ticket operations demo; detection-rule change policy"
   force_delete = true
 
   policy_definition = {
@@ -70,7 +70,7 @@ resource "awscc_bedrock_automated_reasoning_policy_version" "rule_change" {
 
 resource "awscc_bedrock_guardrail" "automated_reasoning" {
   name                      = "${var.name_prefix}_ar"
-  description               = "SEC310 demo; Automated Reasoning policy attached (detect mode)"
+  description               = "Ticket operations demo; Automated Reasoning policy attached (detect mode)"
   blocked_input_messaging   = "Blocked."
   blocked_outputs_messaging = "Blocked."
 

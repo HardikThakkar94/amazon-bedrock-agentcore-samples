@@ -34,5 +34,5 @@ plans the deletion of the logging configuration it created.
 One S3 object per root:
 
 ```
-s3://sec310-demo-tf-state-<account>-us-east-1/demo/<root-relative-path>/terraform.tfstate
+s3://ticketops-demo-tf-state-<account>-us-east-1/demo/<root-relative-path>/terraform.tfstate
 ```

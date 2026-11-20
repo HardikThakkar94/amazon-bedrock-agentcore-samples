@@ -26,7 +26,8 @@ const context = vm.createContext({
 vm.runInContext(`${esc} function renderTickets(st){${renderer} async function deleteTicket(ticketId){${handler}\nthis.ui={renderTickets,deleteTicket};`, context);
 context.ui.renderTickets({effects:new Set()});
 assert.match(tickets.innerHTML, /data-delete="A-90" aria-label="Delete portal ticket A-90"/);
-assert.doesNotMatch(tickets.innerHTML, /data-delete="A-41"|<script>/);
+assert.doesNotMatch(tickets.innerHTML, /data-delete="A-41"/);
+assert.ok(!tickets.innerHTML.includes('<script>'));
 assert.match(tickets.innerHTML, /&#60;script&#62;/);
 await context.ui.deleteTicket('A-90');
 assert.equal(calls.length, 0);

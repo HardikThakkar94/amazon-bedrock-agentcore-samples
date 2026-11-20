@@ -251,8 +251,8 @@ def test_malformed_mcp_result_never_grants_or_retries(monkeypatch, scenario, ste
 
 def test_api_initialized_approval_to_actual_runtime_recorder_tool_and_store(api, monkeypatch):
     from functions.ticket_tools import handler as tools
-    from sec310_agent import agent as runtime
     from tests.test_security_regressions import ALICE, held, request
+    from ticket_agent import agent as runtime
 
     card = held(api, monkeypatch, "A-41")
     actor = {"user_sub": ALICE["sub"], "customer_id": "customer-a"}

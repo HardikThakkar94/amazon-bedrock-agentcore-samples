@@ -13,7 +13,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/eval_gate.py"
-spec = importlib.util.spec_from_file_location("sec310_eval_gate_cli", ROOT / "scripts/eval_gate.py")
+spec = importlib.util.spec_from_file_location(
+    "ticketops_eval_gate_cli", ROOT / "scripts/eval_gate.py"
+)
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
 

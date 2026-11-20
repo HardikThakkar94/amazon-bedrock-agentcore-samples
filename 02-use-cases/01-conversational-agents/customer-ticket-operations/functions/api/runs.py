@@ -358,7 +358,7 @@ def failed(
     }
 
 
-METRICS_NAMESPACE = "SEC310Demo"
+METRICS_NAMESPACE = "TicketOpsDemo"
 
 
 def metrics(result: dict[str, Any], is_test: bool = False) -> dict[str, Any]:

@@ -1042,7 +1042,7 @@ def exercise(browser, origin, screenshots):
     # External navigation is intentionally blocked in this local mock; inspect destinations only.
     # Real portal/login/logout click-through needs an authenticated deployed session.
     page.locator("#gearBtn").click()
-    expect(page.locator('a[href="/portal/"]')).to_have_attribute("target", "sec310_portal")
+    expect(page.locator('a[href="/portal/"]')).to_have_attribute("target", "ticketops_portal")
     expect(page.locator('a[href="/auth/logout"]')).to_have_count(1)
     assert errors == [] and unexpected == []
     print(

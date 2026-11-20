@@ -227,7 +227,7 @@ def request(api, path, body=None, token="offline"):
             "requestContext": {"http": {"method": "POST"}},
             "rawPath": path,
             "body": json.dumps(body or {}),
-            "headers": {"x-sec310-access-token": token},
+            "headers": {"x-ticketops-access-token": token},
         },
         None,
     )
@@ -467,7 +467,7 @@ def test_malformed_write_projects_explicit_no_effect_without_unknown_owner(
 ):
     from dataclasses import asdict
 
-    from sec310_agent.agent import Recorder, ReplayToolEvent
+    from ticket_agent.agent import Recorder, ReplayToolEvent
 
     state = api.tables["state"].rows[("customer-a",)]
     state["active_stage"] = "v4"
@@ -820,8 +820,8 @@ def _local_jwt():
 def _lost_tool_runtime(api, monkeypatch, tool, live=False, settled_refusal=None):
     """The real Runtime/Recorder dispatch a fake Gateway tool whose reply is lost;
     its actual ticket write is released only after the API has returned."""
-    from sec310_agent import agent as runtime
-    from sec310_agent.agent import ReplayToolEvent
+    from ticket_agent import agent as runtime
+    from ticket_agent.agent import ReplayToolEvent
 
     dispatched, release, committed = threading.Event(), threading.Event(), threading.Event()
     workers = []
@@ -999,7 +999,7 @@ def test_public_state_exposes_only_current_tenant_owned_recorded_run(api, monkey
     recorded = view["recorded_run"]
     assert recorded == {"run_id": result["result"]["run_id"], "stage": "v3"}
     assert view["last_run"]["run_id"] == recorded["run_id"]
-    assert view["observability"]["sec310_run"] == recorded["run_id"]
+    assert view["observability"]["ticketops_run"] == recorded["run_id"]
     assert api.app.public_state({**ALICE, "role": "customer"})["recorded_run"] is None
     assert api.app.run_events(dict(ALICE), recorded["run_id"], "")["events"]
     state = api.tables["state"].rows[("customer-a",)]

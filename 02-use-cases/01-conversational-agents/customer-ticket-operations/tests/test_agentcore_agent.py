@@ -21,9 +21,9 @@ def load(name: str, path: Path):
     return module
 
 
-runs = load("sec310_api_runs", ROOT / "functions/api/runs.py")
-tools = load("sec310_ticket_tools", ROOT / "functions/ticket_tools/handler.py")
-from sec310_agent.agent import (  # noqa: E402
+runs = load("ticketops_api_runs", ROOT / "functions/api/runs.py")
+tools = load("ticketops_ticket_tools", ROOT / "functions/ticket_tools/handler.py")
+from ticket_agent.agent import (  # noqa: E402
     PAYLOAD_LIMIT,
     Recorder,
     _payload,
@@ -297,7 +297,7 @@ def test_add_note_is_bounded(monkeypatch):
     assert tools.lambda_handler({**args, "note": "  "}, ctx("add_note"))["status"] == "EMPTY_NOTE"
 
 
-# ── agent identity (src/sec310_agent/agent.py) ─────────────────────────────
+# ── agent identity (src/ticket_agent/agent.py) ─────────────────────────────
 def test_confirm_close_changes_nothing(monkeypatch):
     tbl = FakeTable(SEED)
     monkeypatch.setattr(tools, "table", lambda: tbl)
@@ -418,7 +418,7 @@ def test_answer_is_the_newest_assistant_text():
 
 def test_failed_run_returns_an_error_instead_of_a_runtime_500(monkeypatch):
     pytest.importorskip("bedrock_agentcore")
-    import sec310_agent.app as entry
+    import ticket_agent.app as entry
 
     calls = []
 
@@ -439,7 +439,7 @@ def test_failed_run_returns_an_error_instead_of_a_runtime_500(monkeypatch):
 @pytest.mark.parametrize("payload", [{}, {"stage": "invalid"}])
 def test_entrypoint_rejects_missing_or_invalid_build_before_dispatch(monkeypatch, payload):
     pytest.importorskip("bedrock_agentcore")
-    import sec310_agent.app as entry
+    import ticket_agent.app as entry
 
     def unexpected(*args, **kwargs):
         pytest.fail("invalid build must not reach controls or run")

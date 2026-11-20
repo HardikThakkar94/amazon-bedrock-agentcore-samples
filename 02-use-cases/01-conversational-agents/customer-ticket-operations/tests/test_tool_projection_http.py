@@ -13,9 +13,9 @@ import pytest
 from mcp.types import Tool
 
 from functions.ticket_tools import handler as tools
-from sec310_agent import agent as runtime
 from tests.test_tool_projection import ADDITIONAL_CASES, ADDITIONAL_IDS, additional_schema
 from tests.test_tool_projection_integration import ACTOR, Bedrock, Guardrail, State
+from ticket_agent import agent as runtime
 
 pytest_plugins = ("tests.test_security_regressions",)
 
@@ -162,7 +162,7 @@ def local_mcp(monkeypatch):
     from strands.tools import mcp
     from strands.tools.mcp.mcp_client import MCPClient as RealMCPClient
 
-    from sec310_agent.events import Events as RuntimeEvents
+    from ticket_agent.events import Events as RuntimeEvents
 
     # Pin the installed public implementations even after older replay-only fake
     # fixtures monkeypatch their module attributes during the same pytest process.
@@ -240,8 +240,8 @@ def test_model_schema_json_text_is_not_a_read_or_pending_approval(
 ):
     import strands.models.bedrock as bedrock_module
 
-    from sec310_agent.events import Events as RuntimeEvents
     from tests.test_security_regressions import request
+    from ticket_agent.events import Events as RuntimeEvents
 
     monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
 
@@ -307,8 +307,8 @@ def test_other_ticket_held_card_does_not_complete_verified_ask_or_trigger_repair
 ):
     import strands.models.bedrock as bedrock_module
 
-    from sec310_agent.events import Events as RuntimeEvents
     from tests.test_security_regressions import request
+    from ticket_agent.events import Events as RuntimeEvents
 
     monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
     model = Bedrock()
@@ -360,9 +360,9 @@ def test_ask_one_repair_exhausted_without_native_close_has_no_card_or_effect(
 ):
     import strands.models.bedrock as bedrock_module
 
-    from sec310_agent.events import Events as RuntimeEvents
     from tests.test_security_regressions import request
     from tests.test_tool_projection_integration import PRINT_AFTER_READ
+    from ticket_agent.events import Events as RuntimeEvents
 
     monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
     model = Bedrock()
@@ -421,9 +421,9 @@ def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact
 ):
     import strands.models.bedrock as bedrock_module
 
-    from sec310_agent.events import Events as RuntimeEvents
     from tests.test_mcp_grant import MCPWire
     from tests.test_security_regressions import request
+    from ticket_agent.events import Events as RuntimeEvents
 
     monkeypatch.setattr(RuntimeEvents, "_tbl", lambda self: api.tables["events"])
     model = Bedrock()
@@ -474,7 +474,7 @@ def test_trusted_api_ask_to_native_held_card_then_initialized_approval_and_exact
         assert (
             model.requests[2]["requestMetadata"]
             == first_request["requestMetadata"]
-            == {"sec310_run": held["result"]["run_id"]}
+            == {"ticketops_run": held["result"]["run_id"]}
         )
         assert model.requests[2]["toolConfig"]["toolChoice"] == {"auto": {}}
         history = model.requests[2]["messages"]
@@ -605,9 +605,9 @@ def test_five_verified_api_targets_keep_late_card_provenance_and_one_approved_ef
 ):
     import strands.models.bedrock as bedrock_module
 
-    from sec310_agent.events import Events as RuntimeEvents
     from tests.test_mcp_grant import MCPWire
     from tests.test_security_regressions import request
+    from ticket_agent.events import Events as RuntimeEvents
 
     for ticket in ("A-43", "A-44", "A-45"):
         api.tables["tickets"].put_item(

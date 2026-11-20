@@ -13,11 +13,11 @@ from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from sec310_agent.agent import bearer, run
-from sec310_agent.controls import GATEWAY, Screen, at_least
+from ticket_agent.agent import bearer, run
+from ticket_agent.controls import GATEWAY, Screen, at_least
 
 app = BedrockAgentCoreApp()
-log = logging.getLogger("sec310_agent")
+log = logging.getLogger("ticket_agent")
 
 
 def build_controls(stage: str) -> dict[str, Any]:

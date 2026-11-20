@@ -55,7 +55,7 @@ def main():
         },
         "recorded_run": {"run_id": RUN_ID, "stage": "v3"},
         "policy_session": "policy-1",
-        "observability": {"sec310_run": RUN_ID},
+        "observability": {"ticketops_run": RUN_ID},
     }
     flags = {
         "events_status": 200,

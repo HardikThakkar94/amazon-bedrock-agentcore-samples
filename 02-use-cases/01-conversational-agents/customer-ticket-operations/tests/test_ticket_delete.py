@@ -22,7 +22,7 @@ def delete(api, ticket_id):
             "requestContext": {"http": {"method": "POST"}},
             "rawPath": "/api/tickets/delete",
             "body": json.dumps({"ticket_id": ticket_id}),
-            "headers": {"x-sec310-access-token": "offline"},
+            "headers": {"x-ticketops-access-token": "offline"},
         },
         None,
     )
@@ -283,7 +283,7 @@ def post_as(api, monkeypatch, path, body, who):
                 "requestContext": {"http": {"method": "POST"}},
                 "rawPath": path,
                 "body": json.dumps(body),
-                "headers": {"x-sec310-access-token": "offline"},
+                "headers": {"x-ticketops-access-token": "offline"},
             },
             None,
         )
