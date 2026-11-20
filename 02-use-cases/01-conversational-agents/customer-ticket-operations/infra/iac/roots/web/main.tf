@@ -291,7 +291,7 @@ resource "aws_cloudfront_response_headers_policy" "security" {
       override        = true
     }
     content_security_policy {
-      content_security_policy = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'self' vscode-webview: vscode-file:"
+      content_security_policy = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'self'"
       override                = true
     }
   }
